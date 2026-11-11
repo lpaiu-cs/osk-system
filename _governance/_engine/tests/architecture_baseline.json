@@ -4,21 +4,20 @@
   "function_branches": 15
  },
  "totals": {
-  "upward_imports": 4,
-  "lazy_imports": 52,
-  "two_module_cycles": 14,
-  "tangled_modules": 36,
+  "upward_imports": 2,
+  "lazy_imports": 48,
+  "two_module_cycles": 13,
+  "tangled_modules": 23,
   "private_access": 0,
   "vault_fixed_names": 0,
   "vault_unthreaded": 0,
   "broad_except": 125,
   "oversize_functions": 119,
-  "excess_lines": 2739,
+  "excess_lines": 2737,
   "excess_branches": 1605,
-  "late_loads": 9
+  "late_loads": 3
  },
  "upward_imports": {
-  "osk.rechecks -> osk.growth": 2,
   "osk.validate -> mcp_server": 1,
   "osk.validate -> osk.cli": 1
  },
@@ -28,12 +27,11 @@
   "osk.evictions": 2,
   "osk.evidence": 3,
   "osk.graph": 7,
-  "osk.growth": 8,
+  "osk.growth": 3,
   "osk.harness": 1,
   "osk.node_moves": 1,
   "osk.publish": 1,
   "osk.raw": 4,
-  "osk.rechecks": 2,
   "osk.response_growth": 2,
   "osk.services": 2,
   "osk.setup": 1,
@@ -41,6 +39,7 @@
   "osk.transcripts": 1,
   "osk.update": 2,
   "osk.validate": 9,
+  "osk.worker_process": 3,
   "osk.write": 2
  },
  "two_module_cycles": [
@@ -54,12 +53,11 @@
   "osk.graph <-> osk.rechecks",
   "osk.graph <-> osk.signatures",
   "osk.growth <-> osk.growth_daily",
-  "osk.growth <-> osk.rechecks",
   "osk.growth <-> osk.response_growth",
   "osk.publish <-> osk.release",
   "osk.update <-> osk.update_check"
  ],
- "tangled_modules": 36,
+ "tangled_modules": 23,
  "private_access": {},
  "vault_fixed_names": {},
  "vault_unthreaded": {},
@@ -242,40 +240,12 @@
    94,
    37
   ],
-  "osk.growth:_apply_reviews": [
-   97,
-   29
-  ],
-  "osk.growth:_check_entry": [
-   81,
-   62
-  ],
-  "osk.growth:_eviction_status": [
-   25,
-   21
-  ],
-  "osk.growth:_final_packet": [
-   36,
-   23
-  ],
-  "osk.growth:_plan": [
-   117,
-   36
-  ],
-  "osk.growth:_stalled": [
-   18,
-   16
-  ],
-  "osk.growth:daily_status": [
-   24,
-   28
-  ],
   "osk.growth:prompt": [
    196,
    5
   ],
   "osk.growth:run": [
-   203,
+   201,
    74
   ],
   "osk.growth_daily:_scan": [
@@ -289,6 +259,34 @@
   "osk.growth_daily:idle": [
    28,
    16
+  ],
+  "osk.growth_ledger:daily_status": [
+   24,
+   28
+  ],
+  "osk.growth_plan:eviction_status": [
+   25,
+   21
+  ],
+  "osk.growth_plan:plan_locked": [
+   117,
+   36
+  ],
+  "osk.growth_plan:stalled": [
+   18,
+   16
+  ],
+  "osk.growth_reviews:_apply_reviews": [
+   97,
+   29
+  ],
+  "osk.growth_reviews:_check_entry": [
+   81,
+   62
+  ],
+  "osk.growth_reviews:_final_packet": [
+   36,
+   23
   ],
   "osk.growth_status:_runs": [
    54,
@@ -581,15 +579,9 @@
  },
  "late_loads": {
   "mcp_server": [
-   "osk.cli",
-   "osk.doctor",
-   "osk.evidence_migration",
-   "osk.growth",
-   "osk.growth_daily",
-   "osk.growth_status",
-   "osk.native_cli",
-   "osk.release",
-   "osk.response_growth"
+   "osk.harness -> osk.native_cli",
+   "osk.publish -> osk.release",
+   "osk.validate -> osk.cli"
   ]
  }
 }

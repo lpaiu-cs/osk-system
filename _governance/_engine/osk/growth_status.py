@@ -10,8 +10,8 @@ from collections import Counter
 from datetime import datetime
 import json
 
-from . import (core, epoch, growth, organization, rechecks, evictions, distillation, harness, response_growth, update,
-               conversation_capture, conversation_state)
+from . import (core, epoch, organization, rechecks, evictions, distillation, harness, response_growth, update,
+               conversation_capture, conversation_state, growth_ledger, growth_plan)
 from .vault import Vault
 
 
@@ -259,7 +259,7 @@ def report(vault: Vault, *, since: str | None = None, until: str | None = None, 
     else:
         out['reviews'] = None
     def run_history():
-        history.extend(growth.ledger_records(vault))
+        history.extend(growth_ledger.ledger_records(vault))
         return _runs(history, begin, end)
     section('runs', run_history)
     def recheck_records():
@@ -277,7 +277,7 @@ def report(vault: Vault, *, since: str | None = None, until: str | None = None, 
                 'settlement_records': dict(Counter(r['outcome'] for r in records if r.get('kind') == 'settle'))}
     section('evictions', eviction_inventory)
     try:
-        idx = growth.node_index(vault)
+        idx = growth_plan.node_index(vault)
     except (ValueError, OSError) as exc:
         out['ok'] = False
         out['errors'].append({'section': 'graph', 'error': str(exc)})

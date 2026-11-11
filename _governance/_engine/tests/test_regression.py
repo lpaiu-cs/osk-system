@@ -969,7 +969,7 @@ def test_jsonl_readers_line_separators():
     """대장 밖의 JSONL(제공자 출력·갱신 저널)도 행 경계는 "\\n"뿐이다 — serde_json·
     JSON.stringify·`ensure_ascii=False`는 U+2028 등을 날것으로 둔다."""
     import importlib.util as _ilu
-    from osk import growth, response_growth as rg, update
+    from osk import response_growth as rg, update, growth_reviews
     _spec = _ilu.spec_from_file_location("osk_recover_seps", ENGINE / "scripts" / "recover.py")
     _rec = _ilu.module_from_spec(_spec)
     _spec.loader.exec_module(_rec)
@@ -988,7 +988,7 @@ def test_jsonl_readers_line_separators():
             {"type": "result", "subtype": "success", "is_error": False,
              "result": json.dumps(packet), "usage": {"input_tokens": 3, "output_tokens": 1}})),
             encoding="utf-8")
-        ok("제공자 최종 출력 판독 — 구분 문자 행", lambda: growth._final_packet(out) == packet)
+        ok("제공자 최종 출력 판독 — 구분 문자 행", lambda: growth_reviews._final_packet(out) == packet)
         ok("제공자 사용량 판독 — 구분 문자 행",
            lambda: rg.cache_usage(out, {"harness": "claude"})["measured"])
         j = td / "00_Scope/Workbench/_ledger/update.jsonl"
@@ -9174,11 +9174,11 @@ def test_rechecks():
         _age_all()
         check("제목이 사라진 근거는 해석 불능 후보로 남는다",
               why("regr-rc-H", ref) == {"근거를 해석할 수 없다"})
-        from osk import growth
+        from osk import growth_plan
         hid = graph.Index(VAULT).node(W / "regr-rc-H.md").id
         job = {"id": hid, "target_key": graph.Index(VAULT).node(hsrc).id + "#A", "target": ref}
         check("그 작업은 근거를 뺀 것으로 닫히지 않는다",
-              growth._recheck_status(VAULT, job, graph.Index(VAULT))["status"] == "pending")
+              growth_plan.recheck_status(VAULT, job, graph.Index(VAULT))["status"] == "pending")
 
         # 변경분: 점검 때의 판(상태 해시가 같은 판)을 이력에서 찾아 바뀐 쪽의 diff를 싣는다
         from unittest import mock

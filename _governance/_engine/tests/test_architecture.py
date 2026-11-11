@@ -35,12 +35,12 @@ LAYERS = {
     MODEL: ["osk.contract", "osk.naming", "osk.prose", "osk.secrets", "osk.raw_view"],
     STORE: ["osk.graph", "osk.nodefile", "osk.cluster_gate", "osk.raw", "osk.evidence", "osk.roots", "osk.workspaces", "osk.signatures", "osk.routing",
             "osk.approvals", "osk.scope_memory", "osk.evictions", "osk.rechecks", "osk.transcripts",
-            "osk.conversation_state",
+            "osk.conversation_state", "osk.growth_ledger", "osk.worker_process",
             "osk.native_cli", "osk.harness", "osk.harness.base", "osk.harness.runs", "osk.harness.claude",
             "osk.harness.codex", "osk.harness.kiro", "osk.harness.antigravity"],
     SERVICE: ["osk.write", "osk.node_checks", "osk.node_moves", "osk.search", "osk.authority", "osk.organization", "osk.distillation",
               "osk.validate", "osk.conversation_capture", "osk.conversation_review", "osk.conversation_cite",
-              "osk.integration", "osk.growth", "osk.growth_daily", "osk.growth_status",
+              "osk.integration", "osk.growth_plan", "osk.growth_reviews", "osk.growth", "osk.growth_daily", "osk.growth_status",
               "osk.response_growth", "osk.update", "osk.release", "osk.publish", "osk.update_check",
               "osk.setup", "osk.services", "osk.doctor", "osk.evidence_migration", "osk.hook_text", "osk.sync_status",
               "osk._fixture_approvals", "vault_sync"],
@@ -58,7 +58,7 @@ TOTALS = ("upward_imports", "lazy_imports", "two_module_cycles", "private_access
           "vault_unthreaded", "broad_except", "oversize_functions", "excess_lines", "excess_branches",
           "late_loads")
 # 뜬 채로 오래 도는 진입점. 도는 프로세스는 뜬 시각의 코드를 쥔다(`osk.epoch`) — 뜬 뒤에 디스크에서
-# 읽힐 수 있는 엔진 모듈(`late_loads`)은 엔진이 갱신된 뒤라면 옛 판 위에 새 판으로 얹힌다.
+# 읽는 엔진 모듈은 엔진이 갱신된 뒤라면 옛 판 위에 새 판으로 얹힌다. `late_loads`는 그 문을 센다.
 LONG_LIVED = ("mcp_server",)
 
 
@@ -583,22 +583,21 @@ def _tangled(edges: dict[str, set[str]]) -> int:
 
 
 def _late_loads(entry: str, imports: dict[str, list], known: set[str]) -> list[str]:
-    """`entry`가 뜬 뒤에 디스크에서 읽힐 수 있는 엔진 모듈. 맨 위 import를 따라 닿는 모듈은 뜰 때 읽힌다.
-    거기서 함수 안 import로만 닿는 모듈과 그 모듈이 읽는 것은 처음 쓰일 때 그 시점의 디스크에서 온다."""
-    def reach(start: set[str], lazy_too: bool) -> set[str]:
-        seen, stack = set(start), list(start)
-        while stack:
-            for target, in_function in imports.get(stack.pop(), ()):
-                if in_function and not lazy_too:
-                    continue
-                parts = target.split(".")                  # 모듈을 읽으면 그 위의 패키지도 읽힌다
-                for module in (".".join(parts[:i]) for i in range(1, len(parts) + 1)):
-                    if module in known and module not in seen:
-                        seen.add(module)
-                        stack.append(module)
-        return seen
-    at_start = reach({entry}, False)
-    return sorted(reach(at_start, True) - at_start)
+    """`entry`가 뜬 뒤에 엔진을 디스크에서 읽게 되는 문 — 뜰 때 읽힌 모듈이 함수 안에서 읽는, 뜰 때
+    읽히지 않은 모듈(`읽는 쪽 -> 읽히는 쪽`). 맨 위 import를 따라 닿는 모듈은 뜰 때 읽힌다. 문이 없으면
+    뜬 뒤에 읽힐 모듈도 없다. 문 뒤의 모듈 수는 세지 않는다: 그 수는 모듈을 가르면 늘지만 문은 그대로다."""
+    at_start, stack = {entry}, [entry]
+    while stack:
+        for target, in_function in imports.get(stack.pop(), ()):
+            if in_function:
+                continue
+            parts = target.split(".")                      # 모듈을 읽으면 그 위의 패키지도 읽힌다
+            for module in (".".join(parts[:i]) for i in range(1, len(parts) + 1)):
+                if module in known and module not in at_start:
+                    at_start.add(module)
+                    stack.append(module)
+    return sorted({f"{name} -> {target}" for name in at_start for target, in_function in imports.get(name, ())
+                   if in_function and target not in at_start})
 
 
 def measure(srcs: dict[str, str], layer_of: dict[str, int], long_lived: tuple = LONG_LIVED) -> dict:
@@ -707,7 +706,7 @@ def self_test() -> None:
             "private_access": {"osk.high": 2}, "broad_except": {"osk.high": 1},
             **_VAULT_WANT,
             "oversize_functions": {"osk.high:big": [63, 31]},
-            "late_loads": {"edge": ["osk", "osk.high", "osk.low"]}}
+            "late_loads": {"edge": ["edge -> osk.low"]}}
     for key, value in want.items():
         assert got[key] == value, f"자가 계량 실패 — {key}: {got[key]} != {value}"
     assert got["totals"]["excess_lines"] == 3 and got["totals"]["excess_branches"] == 16, got["totals"]

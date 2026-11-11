@@ -20,7 +20,7 @@ from pathlib import Path
 
 from .core import (ID_RE, causal_maxima, effective_parents, ledger_damage, ledger_extend, ledger_read,
                    posix_rel, sha256_bytes)
-from . import contract, graph
+from . import contract, graph, growth_ledger
 from .vault import Vault
 
 
@@ -324,8 +324,7 @@ def _mark_reports(vault: Vault, items: list[dict], idx, cache: dict) -> None:
     넘긴다(시행령 §7 2항). 그 사이 두 상태가 바뀌었으면 `state_changed`가 알린다."""
     global misses
     try:
-        from . import growth
-        rows = growth.ledger_records(vault)
+        rows = growth_ledger.ledger_records(vault)
     except OSError:
         misses += 1
         return
@@ -336,7 +335,7 @@ def _mark_reports(vault: Vault, items: list[dict], idx, cache: dict) -> None:
     par = effective_parents(rows)
     for i in items:
         # 앞 선택을 이은 선택의 보고가 정한다 — 옛 상태에 대한 제안이 늦게 붙어도 지금 상태의 올림을 덮지 않는다.
-        r = growth.latest_report(rows, f"recheck:{i['id']}:{i['key']}", "key", par) or {}
+        r = growth_ledger.latest_report(rows, f"recheck:{i['id']}:{i['key']}", "key", par) or {}
         if r.get("kind") != "recheck_review":
             continue
         same = _alike(idx, i["id"], i["key"], i["node_state"], i["target_state"],
@@ -517,8 +516,7 @@ def _carry_reports(vault: Vault, idx, held: dict, cache: dict) -> int:
     if not held:
         return 0
     try:
-        from . import growth
-        rows = growth.ledger_records(vault)
+        rows = growth_ledger.ledger_records(vault)
     except Exception:
         return 0
     keys = {r.get("key") for r in rows if r.get("kind") == "recheck_review"} & held.keys()
@@ -527,14 +525,14 @@ def _carry_reports(vault: Vault, idx, held: dict, cache: dict) -> int:
     par, out = effective_parents(rows), []
     for k in sorted(keys):
         nid, key, ns, ts = held[k]
-        r = growth.latest_report(rows, k, "key", par) or {}
+        r = growth_ledger.latest_report(rows, k, "key", par) or {}
         was = (r.get("node_state"), r.get("target_state"))
         if (r.get("kind") == "recheck_review" and r.get("outcome") == "escalated" and was != (ns, ts)
                 and _alike(idx, nid, key, ns, ts, *was, cache)):
             out.append({**{f: v for f, v in r.items() if f not in ("rid", "parents", "at")},
                         "node_state": ns, "target_state": ts})
     if out:
-        ledger_extend(growth.ledger_path(vault), out)
+        ledger_extend(growth_ledger.ledger_path(vault), out)
     return len(out)
 
 

@@ -95,17 +95,17 @@ class OrganizationTests(unittest.TestCase):
             assert not organization.load_state(VAULT).get('coverage'), 'failed completion must not mutate receipts'
             saved = organization.review(VAULT, job['key'],'W1','deferred','Continue at the next selected range',after=job['snapshot'],checked=checked)
             before = organization.plan(VAULT, 'W1')
-            from osk import growth
+            from osk import growth, growth_ledger, growth_plan, growth_reviews, worker_process
             packet = {'osk_reviews':{'manifest':'fixture','domain':[],'scope':[],
                       'organization':[{'key':job['key'],'scope':'W1','outcome':'deferred',
                       'reason':'Forged later selection','checked':[{'unit':before['review_units'][0]['unit'],'reason':'not in manifest'}]}]}}
             # A unit outside the manifest is dropped and named; the entry itself still applies.
-            out = growth._validate_packet(packet,{'manifest':'fixture','candidates':[],
+            out = growth_reviews._validate_packet(packet,{'manifest':'fixture','candidates':[],
                                           'scope_jobs':[],'organization_jobs':[job]})
             assert out['organization'][0]['checked'] == [] and out['notes'], out
             for malformed in ([], {}, None):
                 packet['osk_reviews']['organization'][0]['checked'][0]['unit'] = malformed
-                out = growth._validate_packet(packet,{'manifest':'fixture','candidates':[],
+                out = growth_reviews._validate_packet(packet,{'manifest':'fixture','candidates':[],
                                               'scope_jobs':[],'organization_jobs':[job]})
                 assert not out['organization'] and out['errors'], out   # only that entry is set aside
             assert saved['remaining_units'] == job['coverage']['remaining'] - 3
@@ -152,7 +152,7 @@ class OrganizationTests(unittest.TestCase):
 
     def test_deferred_resume_context_reaches_next_job_and_growth_manifest(self):
         self.case("""
-            from osk import growth
+            from osk import growth, growth_ledger, growth_plan, growth_reviews, worker_process
             for name in ('A', 'B', 'C', 'D'):
                 node(name)
             job = organization.plan(VAULT, 'W1')
@@ -170,7 +170,7 @@ class OrganizationTests(unittest.TestCase):
             assert changed['previous_deferral']['snapshot_changed']
             result = growth.run(VAULT, [sys.executable, '-B', '-c', 'import sys; p=sys.stdin.read(); assert "section Limits; verify condition X." in p'], limit=3)
             assert result['returncode'] == 0, result
-            manifest = [r for r in core.ledger_read(growth.ledger_path(VAULT)) if r['kind']=='plan'][-1]
+            manifest = [r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='plan'][-1]
             carried = next(j for j in manifest['organization_jobs'] if j['scope']=='W1')
             assert carried['previous_deferral'] == changed['previous_deferral']
             finish_review('W1', 'Checked D as well.')
@@ -575,8 +575,8 @@ class OrganizationTests(unittest.TestCase):
             write.update_node(VAULT, "W1",old_text="- [[A]]",new_text="")
             resumed=organization.plan(VAULT, "W1")
             assert resumed["key"]==job["key"] and a["id"] in resumed["missing_ids"],resumed
-            from osk import growth
-            assert growth.plan(VAULT, 20)["organization_jobs"],"lost ID fell out of next run"
+            from osk import growth, growth_ledger, growth_plan, growth_reviews, worker_process
+            assert growth_plan.plan(VAULT, 20)["organization_jobs"],"lost ID fell out of next run"
         """)
 
     def test_id_hub_navigation_matches_title_navigation(self):

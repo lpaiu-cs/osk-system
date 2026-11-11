@@ -11,7 +11,7 @@ ENGINE = Path(__file__).resolve().parent.parent
 BOOT = """
 import json, sys
 from pathlib import Path
-from osk import core, graph, growth, validate, write, contract, organization, cluster_gate, node_checks, node_moves, nodefile
+from osk import core, graph, growth, validate, write, contract, organization, cluster_gate, node_checks, node_moves, nodefile, growth_ledger, growth_plan, growth_reviews, worker_process
 from osk.vault import Vault
 VAULT = Vault.open()
 validate.make_mini_vault(VAULT, VAULT.root)
@@ -30,7 +30,7 @@ def node(title, scope='W1', body=None):
     hub = directory / (scope + '.md')
     old = contract.parse(hub).body
     write.update_node(VAULT, scope, body=old.rstrip() + chr(10) + '- [[' + title + ']]', expect_hash=core.sha256_file(hub))
-    return next(s for c in growth.plan(VAULT, 20)['candidates'] for s in c['sources']
+    return next(s for c in growth_plan.plan(VAULT, 20)['candidates'] for s in c['sources']
                 if s['name'] == title)
 def legacy(sid, transcript, scope='W1'):
     # Rewrite a fresh cursor as the full-capture engine (<= v4.1) left it: rounds stored
@@ -51,16 +51,16 @@ def legacy(sid, transcript, scope='W1'):
     s['snapshots'] = {conversation_state.snapshot(s): {'count': len(s['rounds']), 'prompt_count': s['prompt_count']}}
     conversation_state.save_state(path, s)
 def register(planned=None):
-    planned = growth.plan(VAULT, 20) if planned is None else planned
+    planned = growth_plan.plan(VAULT, 20) if planned is None else planned
     with core.mutation_lock(VAULT):
-        return core.ledger_append(growth.ledger_path(VAULT), {'kind':'plan', **planned})
+        return core.ledger_append(growth_ledger.ledger_path(VAULT), {'kind':'plan', **planned})
 def no_value_all():
     manifest = register()
     for candidate in manifest['candidates']:
-        growth.review(VAULT, candidate['key'], 'no_value', reason='No reusable synthesis in this exact set.', manifest=manifest['rid'])
+        growth_reviews.review(VAULT, candidate['key'], 'no_value', reason='No reusable synthesis in this exact set.', manifest=manifest['rid'])
 def packet_worker(change='', wrapper='plain', code=0, org='complete', read='True'):
     # org: the organization review outcome; read: which review units u the worker read
-    source = "import json,sys; from osk import core,growth,distillation,integration, conversation_capture, conversation_cite, conversation_review, conversation_state; from osk.vault import Vault; VAULT = Vault.open(); sys.stdin.read(); p=[r for r in core.ledger_read(growth.ledger_path(VAULT)) if r['kind']=='plan'][-1]; q={'osk_reviews':{'manifest':p['rid'],'domain':[{'key':c['key'],'outcome':'no_value','reason':'No reusable synthesis in these compared sources.'} for c in p['candidates']],'scope':[dict((k,j[k]) for k in ('harness','conversation_id','through')) | {'outcome':'no_value','reason':'Only a completed one-off job.'} for j in p['scope_jobs']]}}; "
+    source = "import json,sys; from osk import core,growth,distillation,integration, conversation_capture, conversation_cite, conversation_review, conversation_state, growth_ledger, growth_plan, growth_reviews, worker_process; from osk.vault import Vault; VAULT = Vault.open(); sys.stdin.read(); p=[r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='plan'][-1]; q={'osk_reviews':{'manifest':p['rid'],'domain':[{'key':c['key'],'outcome':'no_value','reason':'No reusable synthesis in these compared sources.'} for c in p['candidates']],'scope':[dict((k,j[k]) for k in ('harness','conversation_id','through')) | {'outcome':'no_value','reason':'Only a completed one-off job.'} for j in p['scope_jobs']]}}; "
     if change:
         source += change + '; '
     source += "from osk import organization; q['osk_reviews']['organization']=[{'key':j['key'],'scope':j['scope'],'outcome':'" + org + "','reason':'The fixture is one coherent, directly wired group.','intentional':[],'checked':[{'unit':u['unit'],'reason':'Known fixture claim and conditions'} for u in j['review_units'] if " + read + "]} for j in p['organization_jobs']]; "
@@ -100,17 +100,17 @@ UPGRADE_CARRY = """
                                  edges={'derived-from': basis})['ok']
     write.update_node(VAULT, 'A', old_text='A reusable observation', new_text='A revised observation')
     write.update_node(VAULT, 'B', old_text='B relies on A.', new_text='B relies on revised A.', rechecked=['A'])
-    planned = growth.plan(VAULT, 3)
+    planned = growth_plan.plan(VAULT, 3)
     assert [(j['node'], j['cascade']) for j in planned['recheck_jobs']] == [('C', True)], planned['recheck_jobs']
     manifest = register({**planned, 'scope_jobs': []})
-    assert growth.checkpoint(VAULT, {'osk_reviews': {'manifest': manifest['rid'], 'domain': [], 'scope': [],
+    assert growth_reviews.checkpoint(VAULT, {'osk_reviews': {'manifest': manifest['rid'], 'domain': [], 'scope': [],
         'recheck': [{'key': planned['recheck_jobs'][0]['key'], 'outcome': 'escalated',
                      'reason': 'A second correction needs the user.', 'proposal': 'Change C later.'}]}})['ok']
     rechecks.state = new_state   # the upgrade
     def held():
         items = rechecks.candidates(VAULT, graph.Index(VAULT))[0]
         assert [(i['node'], i['cascade'], 'escalated' in i) for i in items] == [('C', True, True)], items
-        assert not growth.plan(VAULT, 3)['recheck_jobs'], 'the escalated check returned to the agent queue'
+        assert not growth_plan.plan(VAULT, 3)['recheck_jobs'], 'the escalated check returned to the agent queue'
         assert [h['node'] for h in rechecks.report(VAULT, graph.Index(VAULT))['escalated']] == ['C']
     held()
     idx = graph.Index(VAULT)
@@ -126,12 +126,12 @@ UPGRADE_CARRY = """
     results = {r['result'] for r in core.ledger_read(rechecks.ledger_path(VAULT))[-2:] if r['node'] == idx.node(b).id
                and r['reason'] == rechecks.CARRIED and r['node_state'] == rechecks.state(b.read_bytes())}
     assert 'updated' in results and (V50_CARRY or results == {'updated'}), results
-    review = core.ledger_read(growth.ledger_path(VAULT))[-1]
+    review = core.ledger_read(growth_ledger.ledger_path(VAULT))[-1]
     assert review['kind'] == 'recheck_review' and (review['reason'], review['proposal']) == (
         'A second correction needs the user.', 'Change C later.'), review
     held()
     # Another device carried the same review before the two synced: a sibling row, equal but for its id.
-    with open(growth.ledger_path(VAULT), 'a', encoding='utf-8') as f:
+    with open(growth_ledger.ledger_path(VAULT), 'a', encoding='utf-8') as f:
         f.write(json.dumps({**review, 'rid': core._next_rid(review['rid'])}, ensure_ascii=False) + chr(10))
     held()
     # a 근거 section is not a related state — editing the cited node's, then the citing node's
@@ -177,37 +177,37 @@ class GrowthTests(unittest.TestCase):
             for limit in (3, 1, 2, 4, 5):
                 rows, first = [], []
                 for _ in range(8):
-                    planned = {key:[{'key':key+'-0'}, {'key':key+'-1'}] for key in growth.QUEUES}
-                    growth._select_work(planned,limit,rows)
+                    planned = {key:[{'key':key+'-0'}, {'key':key+'-1'}] for key in growth_ledger.QUEUES}
+                    growth_plan.select_work(planned,limit,rows)
                     order = planned['work_order']
                     first.append(order[0]['queue'])
                     assert len(order) == limit
                     assert len({(i['queue'],i['index']) for i in order}) == limit
-                    for key in growth.QUEUES:
+                    for key in growth_ledger.QUEUES:
                         assert [i['index'] for i in order if i['queue']==key] == list(range(len(planned[key])))
                         assert len(planned[key]) + planned['queued_not_selected'][key] == 2
                     rows.append({'kind':'plan',**planned})
                 # Even if each worker stops after its first job, every queue
                 # receives a turn within one attempt per queue.
-                q = len(growth.QUEUES)
-                assert all(set(first[n:n+q]) == set(growth.QUEUES) for n in range(9-q)), (limit,first)
+                q = len(growth_ledger.QUEUES)
+                assert all(set(first[n:n+q]) == set(growth_ledger.QUEUES) for n in range(9-q)), (limit,first)
         """)
 
     def test_execution_order_rotates_even_when_every_queue_is_selected(self):
         self.check_case("""
-            rows, first, q = [], [], len(growth.QUEUES)
+            rows, first, q = [], [], len(growth_ledger.QUEUES)
             for _ in range(2 * q):
-                planned = {key:[{'key':key}] for key in growth.QUEUES}
-                growth._select_work(planned,q,rows)
+                planned = {key:[{'key':key}] for key in growth_ledger.QUEUES}
+                growth_plan.select_work(planned,q,rows)
                 order = planned['work_order']
                 first.append(order[0]['queue'])
-                assert len(order) == q and {i['queue'] for i in order} == set(growth.QUEUES)
+                assert len(order) == q and {i['queue'] for i in order} == set(growth_ledger.QUEUES)
                 rows.append({'kind':'plan',**planned})
-            assert first[:q] == list(growth.QUEUES), first
+            assert first[:q] == list(growth_ledger.QUEUES), first
             assert first[q:] == first[:q], first
-            daily = {key:[{'key':key}] for key in growth.QUEUES}
-            growth._select_work(daily,q,[dict(row,work_context='stop:W1') for row in rows])
-            assert daily['work_order'][0]['queue'] == growth.QUEUES[0], daily
+            daily = {key:[{'key':key}] for key in growth_ledger.QUEUES}
+            growth_plan.select_work(daily,q,[dict(row,work_context='stop:W1') for row in rows])
+            assert daily['work_order'][0]['queue'] == growth_ledger.QUEUES[0], daily
         """)
 
     def test_eviction_settlement_needs_review_and_deferred_returns_to_queue(self):
@@ -219,16 +219,16 @@ class GrowthTests(unittest.TestCase):
             with patch.object(evictions, 'age_days', return_value=17):
                 action = "from osk import evictions, write, cluster_gate, node_checks, node_moves, nodefile; j=p['eviction_jobs'][0]; saved=write.create_node(VAULT, 'Partial', 'Partial evidence', 'Only the first claim is verified.', 'fixture', space='00_Scope/W1', settle=j['of']); assert saved['ok']; "
                 if DEFERRED_CASE:
-                    action += "q['osk_reviews']['eviction']=[{'of':j['of'],'outcome':'deferred','reason':'First claim saved; resume second claim against the source.'}]; assert growth.checkpoint(VAULT, q)['ok']"
+                    action += "q['osk_reviews']['eviction']=[{'of':j['of'],'outcome':'deferred','reason':'First claim saved; resume second claim against the source.'}]; assert growth_reviews.checkpoint(VAULT, q)['ok']"
                 else:
                     action += "sys.exit(7)"
                 result = growth.run(VAULT, [sys.executable, '-B', '-c', packet_worker(action)], limit=1)
                 assert not result['ok'], result
                 assert result['eviction_outcomes']['eviction:'+item['rid']]['status'] == 'pending', result
-                manifest = [r for r in core.ledger_read(growth.ledger_path(VAULT)) if r['kind']=='plan'][-1]
+                manifest = [r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='plan'][-1]
                 job = manifest['eviction_jobs'][0]
                 assert item['rid'] not in {r['rid'] for r in evictions.unsettled(VAULT)}
-                again = growth.plan(VAULT)['eviction_jobs']
+                again = growth_plan.plan(VAULT)['eviction_jobs']
                 assert any(j['of']==item['rid'] for j in again), again
                 assert again[0]['previous_settlement']['target'] == 'Partial'
                 if DEFERRED_CASE:
@@ -239,25 +239,25 @@ class GrowthTests(unittest.TestCase):
                     mismatch = {'osk_reviews': {'manifest':manifest['rid'], 'domain':[], 'scope':[],
                                 'eviction':[{'of':item['rid'],'outcome':outcome,'target':target,
                                              'reason':'Disagrees with the recorded settlement.'}]}}
-                    refused = growth.checkpoint(VAULT, mismatch)
+                    refused = growth_reviews.checkpoint(VAULT, mismatch)
                     assert not refused['ok'] and any('different disposition' in e for e in refused['errors']), refused
-                    assert growth._eviction_status(VAULT, job)['status'] == 'pending'
+                    assert growth_plan.eviction_status(VAULT, job)['status'] == 'pending'
                 packet = {'osk_reviews': {'manifest':manifest['rid'], 'domain':[], 'scope':[],
                           'eviction':[{'of':item['rid'],'outcome':'node','target':'Partial',
                                        'reason':'Both claims now checked; second is a one-off value.'}]}}
-                assert growth.checkpoint(VAULT, packet)['ok']
-                assert growth._eviction_status(VAULT, job)['status'] == 'complete'
-                count = len([r for r in core.ledger_read(growth.ledger_path(VAULT)) if r['kind']=='eviction_review'])
-                assert growth.checkpoint(VAULT, packet)['ok']
-                assert len([r for r in core.ledger_read(growth.ledger_path(VAULT)) if r['kind']=='eviction_review']) == count
-                assert not growth.plan(VAULT)['eviction_jobs']
+                assert growth_reviews.checkpoint(VAULT, packet)['ok']
+                assert growth_plan.eviction_status(VAULT, job)['status'] == 'complete'
+                count = len([r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='eviction_review'])
+                assert growth_reviews.checkpoint(VAULT, packet)['ok']
+                assert len([r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='eviction_review']) == count
+                assert not growth_plan.plan(VAULT)['eviction_jobs']
                 # A later explicit deferral must supersede even a completed review.
                 packet['osk_reviews']['eviction'] = [{'of':item['rid'],'outcome':'deferred','reason':'Reopen a newly disputed condition.'}]
-                assert growth.checkpoint(VAULT, packet)['ok']
-                assert growth._eviction_status(VAULT, job)['status'] == 'pending'
-                assert growth.plan(VAULT)['eviction_jobs'][0]['of'] == item['rid']
+                assert growth_reviews.checkpoint(VAULT, packet)['ok']
+                assert growth_plan.eviction_status(VAULT, job)['status'] == 'pending'
+                assert growth_plan.plan(VAULT)['eviction_jobs'][0]['of'] == item['rid']
                 packet['osk_reviews']['eviction'] = [{'of':item['rid'],'outcome':'node','target':'Partial','reason':'Dispute resolved against the source.'}]
-                assert growth.checkpoint(VAULT, packet)['ok']
+                assert growth_reviews.checkpoint(VAULT, packet)['ok']
             """.replace('DEFERRED_CASE', repr(deferred)))
 
     def test_cli_checkpoint_survives_later_worker_failure_without_closing_other_jobs(self):
@@ -272,23 +272,23 @@ class GrowthTests(unittest.TestCase):
             assert result['final_reviews']['state'] == 'not_applied', result['final_reviews']
             assert list(result['domain_outcomes'].values()).count('no_value') == 1, result
             assert 'pending' in result['domain_outcomes'].values(), result
-            rows = [r for r in core.ledger_read(growth.ledger_path(VAULT)) if r['kind'] == 'review']
+            rows = [r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind'] == 'review']
             assert len(rows) == 1
             packet = json.loads((VAULT.root/'checkpoint.json').read_text(encoding='utf-8'))
-            assert growth.checkpoint(VAULT, packet)['ok']  # Retry is idempotent.
-            assert len([r for r in core.ledger_read(growth.ledger_path(VAULT)) if r['kind']=='review']) == 1
+            assert growth_reviews.checkpoint(VAULT, packet)['ok']  # Retry is idempotent.
+            assert len([r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='review']) == 1
             packet['osk_reviews']['domain'][0]['key'] = 'unselected'
-            refused = growth.checkpoint(VAULT, packet)   # only that entry is set aside, with its reason
+            refused = growth_reviews.checkpoint(VAULT, packet)   # only that entry is set aside, with its reason
             assert not refused['ok'] and any('unselected domain review' in e for e in refused['errors']), refused
-            assert len([r for r in core.ledger_read(growth.ledger_path(VAULT)) if r['kind']=='review']) == 1
+            assert len([r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='review']) == 1
             # The manual path applies decisions only to a plan the runner recorded.
             packet['osk_reviews']['manifest'] = 'not-a-recorded-plan'
             try:
-                growth.checkpoint(VAULT, packet)
+                growth_reviews.checkpoint(VAULT, packet)
                 raise AssertionError('a checkpoint applied decisions without a recorded plan')
             except ValueError as e:
                 assert 'recorded growth manifest' in str(e), e
-            assert len([r for r in core.ledger_read(growth.ledger_path(VAULT)) if r['kind']=='review']) == 1
+            assert len([r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='review']) == 1
         """)
 
     def test_scope_checkpoint_survives_worker_failure_and_resumes_only_pending_work(self):
@@ -305,19 +305,19 @@ class GrowthTests(unittest.TestCase):
                 path.write_text(''.join(json.dumps(row)+'\\n' for row in rows), encoding='utf-8')
                 assert conversation_capture.capture(VAULT, 'claude',sid,str(path),'checkpoint-fixture',space='00_Scope/W1')['ok']
                 legacy(sid, path)
-            change = "q['osk_reviews']['domain']=[]; q['osk_reviews']['scope']=q['osk_reviews']['scope'][:1]; (VAULT.root/'saved-checkpoint.json').write_text(json.dumps(q),encoding='utf-8'); assert growth.checkpoint(VAULT, q)['ok']; sys.exit(7)"
+            change = "q['osk_reviews']['domain']=[]; q['osk_reviews']['scope']=q['osk_reviews']['scope'][:1]; (VAULT.root/'saved-checkpoint.json').write_text(json.dumps(q),encoding='utf-8'); assert growth_reviews.checkpoint(VAULT, q)['ok']; sys.exit(7)"
             result = growth.run(VAULT, [sys.executable,'-B','-c',packet_worker(change)],limit=3)
             assert not result['ok'] and result['returncode'] == 7, result
-            first_plan = [r for r in core.ledger_read(growth.ledger_path(VAULT)) if r['kind']=='plan'][-1]
+            first_plan = [r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='plan'][-1]
             assert [j['conversation_id'] for j in first_plan['scope_jobs']] == ['first']
             assert conversation_capture.status(VAULT, 'claude','first')['reviewed_rounds'] == 1
             packet = json.loads((VAULT.root/'saved-checkpoint.json').read_text(encoding='utf-8'))
-            assert growth.checkpoint(VAULT, packet)['ok']
+            assert growth_reviews.checkpoint(VAULT, packet)['ok']
             before = conversation_state.load_state(VAULT, conversation_state.state_path(VAULT, 'claude','first'),'claude','first')
             assert len(before['reviews']) == 1
             retry = growth.run(VAULT, [sys.executable,'-B','-c','import sys; sys.stdin.read()'],limit=3)
             assert not retry['ok']
-            next_plan = [r for r in core.ledger_read(growth.ledger_path(VAULT)) if r['kind']=='plan'][-1]
+            next_plan = [r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='plan'][-1]
             assert [j['conversation_id'] for j in next_plan['scope_jobs']] == ['second'], next_plan
             visible = growth._reading_plan(next_plan)['scope_jobs'][0]
             assert visible['raw_review'] == {'state':'verified','rounds':1,'error':None}
@@ -332,25 +332,25 @@ class GrowthTests(unittest.TestCase):
             node('A')
             assert write.create_node(VAULT, 'B', 'b', 'B relies on A.', 'gpt-6-astra', space='00_Scope/W1',
                                      edges={'derived-from': 'A'})['ok']
-            assert not growth.plan(VAULT, 3)['recheck_jobs']
+            assert not growth_plan.plan(VAULT, 3)['recheck_jobs']
             write.update_node(VAULT, 'A', old_text='A reusable observation', new_text='A revised observation')
-            planned = growth.plan(VAULT, 3)
+            planned = growth_plan.plan(VAULT, 3)
             jobs = planned['recheck_jobs']
             assert [(j['node'], j['target']) for j in jobs] == [('B', '[[A]]')], jobs
-            assert growth._recheck_status(VAULT, jobs[0], graph.Index(VAULT))['status'] == 'pending'
+            assert growth_plan.recheck_status(VAULT, jobs[0], graph.Index(VAULT))['status'] == 'pending'
             assert 'For recheck_jobs' in growth.prompt(VAULT, planned)
-            assert [j['node'] for j in growth._recheck_jobs(VAULT, graph.Index(VAULT), 'W1')] == ['B']
-            assert not growth._recheck_jobs(VAULT, graph.Index(VAULT), 'W2')   # a fork keeps to its scope
-            assert not growth.daily_active(VAULT)
+            assert [j['node'] for j in growth_plan._recheck_jobs(VAULT, graph.Index(VAULT), 'W1')] == ['B']
+            assert not growth_plan._recheck_jobs(VAULT, graph.Index(VAULT), 'W2')   # a fork keeps to its scope
+            assert not growth_ledger.daily_active(VAULT)
             manifest = register(planned)
-            assert not growth.daily_active(VAULT), 'a plan is not completed work'
-            core.ledger_append(growth.ledger_path(VAULT), {'kind':'run','manifest':manifest['rid'],'ok':True})
-            assert growth.daily_active(VAULT)
+            assert not growth_ledger.daily_active(VAULT), 'a plan is not completed work'
+            core.ledger_append(growth_ledger.ledger_path(VAULT), {'kind':'run','manifest':manifest['rid'],'ok':True})
+            assert growth_ledger.daily_active(VAULT)
             write.update_node(VAULT, 'B', add_edges={'derived-from': 'A'})
-            assert growth._recheck_status(VAULT, jobs[0], graph.Index(VAULT))['status'] == 'pending', 'wiring is not a check'
+            assert growth_plan.recheck_status(VAULT, jobs[0], graph.Index(VAULT))['status'] == 'pending', 'wiring is not a check'
             write.update_node(VAULT, 'B', rechecked=['A'])
-            assert growth._recheck_status(VAULT, jobs[0], graph.Index(VAULT))['status'] == 'complete'
-            assert not growth.plan(VAULT, 3)['recheck_jobs']
+            assert growth_plan.recheck_status(VAULT, jobs[0], graph.Index(VAULT))['status'] == 'complete'
+            assert not growth_plan.plan(VAULT, 3)['recheck_jobs']
         """)
 
     def test_latest_daily_result_controls_recheck_handoff(self):
@@ -358,23 +358,23 @@ class GrowthTests(unittest.TestCase):
             from datetime import datetime, timedelta, timezone
             from unittest.mock import patch
             planned = register()
-            assert not growth.daily_active(VAULT)
-            core.ledger_append(growth.ledger_path(VAULT), {'kind':'run','manifest':planned['rid'],'ok':True})
-            assert growth.daily_active(VAULT)
-            core.ledger_append(growth.ledger_path(VAULT), {'kind':'plan','work_context':'stop:W1'})
-            assert growth.daily_active(VAULT), 'Stop work must not replace daily health'
+            assert not growth_ledger.daily_active(VAULT)
+            core.ledger_append(growth_ledger.ledger_path(VAULT), {'kind':'run','manifest':planned['rid'],'ok':True})
+            assert growth_ledger.daily_active(VAULT)
+            core.ledger_append(growth_ledger.ledger_path(VAULT), {'kind':'plan','work_context':'stop:W1'})
+            assert growth_ledger.daily_active(VAULT), 'Stop work must not replace daily health'
             latest = register()
-            assert not growth.daily_active(VAULT), 'a newer unfinished plan supersedes old success'
-            core.ledger_append(growth.ledger_path(VAULT), {'kind':'run','manifest':latest['rid'],'ok':False})
-            assert not growth.daily_active(VAULT), 'failed daily work must yield rechecks to forks'
-            core.ledger_append(growth.ledger_path(VAULT), {'kind':'run','manifest':latest['rid'],'ok':True})
-            assert growth.daily_active(VAULT)
-            rows = growth.ledger_records(VAULT)
+            assert not growth_ledger.daily_active(VAULT), 'a newer unfinished plan supersedes old success'
+            core.ledger_append(growth_ledger.ledger_path(VAULT), {'kind':'run','manifest':latest['rid'],'ok':False})
+            assert not growth_ledger.daily_active(VAULT), 'failed daily work must yield rechecks to forks'
+            core.ledger_append(growth_ledger.ledger_path(VAULT), {'kind':'run','manifest':latest['rid'],'ok':True})
+            assert growth_ledger.daily_active(VAULT)
+            rows = growth_ledger.ledger_records(VAULT)
             old = (datetime.now(timezone.utc)-timedelta(days=4)).isoformat()
             for row in rows:
                 row['at'] = old
-            with patch.object(growth,'ledger_records',return_value=rows):
-                assert not growth.daily_active(VAULT), 'expired success does not suppress fallback'
+            with patch.object(growth_ledger,'ledger_records',return_value=rows):
+                assert not growth_ledger.daily_active(VAULT), 'expired success does not suppress fallback'
         """)
 
     def test_unfinished_organization_is_remaining_work_not_a_failed_run(self):
@@ -394,18 +394,18 @@ class GrowthTests(unittest.TestCase):
             result = json.loads(proc.stdout)
             assert result['state'] == 'incomplete' and not result['final_reviews']['errors'], result
             assert {s['status'] for s in result['organization_outcomes'].values()} == {'pending'}, result
-            assert proc.returncode == 0 and not growth.run_failed(result), (proc.returncode, result)
+            assert proc.returncode == 0 and not growth_ledger.run_failed(result), (proc.returncode, result)
             # #301: an organization left over is no reason to hand rechecks to the fork.
-            status = growth.daily_status(VAULT)
+            status = growth_ledger.daily_status(VAULT)
             assert status['ran'] and status['active'], status
             assert status['last']['state'] == 'incomplete', status
             # A run that could not run, or whose worker or packet failed, still fails.
-            assert growth.run_failed({**result, 'returncode': 1})
-            assert growth.run_failed({**result, 'final_reviews': {'state': 'rejected', 'errors': ['no packet']}})
-            assert growth.run_failed({'ok': False, 'state': 'unavailable'})
-            assert not growth.run_failed({'ok': True, 'state': 'skipped', 'selected': 0})
+            assert growth_ledger.run_failed({**result, 'returncode': 1})
+            assert growth_ledger.run_failed({**result, 'final_reviews': {'state': 'rejected', 'errors': ['no packet']}})
+            assert growth_ledger.run_failed({'ok': False, 'state': 'unavailable'})
+            assert not growth_ledger.run_failed({'ok': True, 'state': 'skipped', 'selected': 0})
             # Another run holding the lock is a wait, not a failure (#175: 10-05 and 10-06 ended busy).
-            assert not growth.run_failed({'ok': False, 'state': 'busy'})
+            assert not growth_ledger.run_failed({'ok': False, 'state': 'busy'})
         """)
 
     def test_daily_handoff_follows_the_days_recheck_queue(self):
@@ -415,49 +415,49 @@ class GrowthTests(unittest.TestCase):
             from datetime import datetime, timezone
             day = datetime.now(timezone.utc).astimezone().date().isoformat()
             def batch(kind, run=None, rechecks=(), waiting=0, **daily):
-                plan = core.ledger_append(growth.ledger_path(VAULT), {'kind': 'plan', 'work_context': 'daily',
+                plan = core.ledger_append(growth_ledger.ledger_path(VAULT), {'kind': 'plan', 'work_context': 'daily',
                                                           'daily': {'day': day, 'kind': kind, **daily},
                                                           'recheck_jobs': [{'key': k} for k in rechecks],
                                                           'queued_not_selected': {'recheck_jobs': waiting}})
                 if run is not None:
-                    core.ledger_append(growth.ledger_path(VAULT), {'kind': 'run', 'manifest': plan['rid'], 'returncode': 0, **run})
+                    core.ledger_append(growth_ledger.ledger_path(VAULT), {'kind': 'run', 'manifest': plan['rid'], 'returncode': 0, **run})
                 return plan
             def fresh():
-                growth.ledger_path(VAULT).unlink(missing_ok=True)
+                growth_ledger.ledger_path(VAULT).unlink(missing_ok=True)
             fresh()
             batch('scope', {'state': 'incomplete', 'ok': False, 'returncode': 1})
-            assert not growth.daily_active(VAULT), 'the day stopped before any recheck batch'
+            assert not growth_ledger.daily_active(VAULT), 'the day stopped before any recheck batch'
             batch('light', {'state': 'incomplete', 'ok': False,
                             'recheck_outcomes': {'r1': {'status': 'complete'}}}, ['r1'])
-            assert growth.daily_active(VAULT), 'a failed Scope batch and leftover organization do not hand rechecks over'
+            assert growth_ledger.daily_active(VAULT), 'a failed Scope batch and leftover organization do not hand rechecks over'
             batch('light', {'state': 'limited', 'ok': False}, ['r2'])
-            assert growth.daily_active(VAULT), 'a limited batch is a wait — another provider ran it again'
+            assert growth_ledger.daily_active(VAULT), 'a limited batch is a wait — another provider ran it again'
             plan = batch('light', {'state': 'incomplete', 'ok': False,
                                    'recheck_outcomes': {'r3': {'status': 'pending'}}}, ['r3'])
-            assert not growth.daily_active(VAULT), 'a selected recheck left open'
-            core.ledger_append(growth.ledger_path(VAULT), {'kind': 'recheck_review', 'manifest': plan['rid'], 'key': 'r3',
+            assert not growth_ledger.daily_active(VAULT), 'a selected recheck left open'
+            core.ledger_append(growth_ledger.ledger_path(VAULT), {'kind': 'recheck_review', 'manifest': plan['rid'], 'key': 'r3',
                                                'outcome': 'deferred', 'reason': 'cannot judge yet'})
-            assert growth.daily_active(VAULT), 'a deferral is a judgement'
+            assert growth_ledger.daily_active(VAULT), 'a deferral is a judgement'
             batch('light', {'state': 'incomplete', 'ok': False, 'returncode': 1,
                             'recheck_outcomes': {'r4': {'status': 'complete'}}}, ['r4'])
-            assert not growth.daily_active(VAULT), 'a failed worker judged nothing'
+            assert not growth_ledger.daily_active(VAULT), 'a failed worker judged nothing'
             fresh()
             batch('light')
-            assert growth.daily_status(VAULT)['ran'] and not growth.daily_active(VAULT), 'a plan without a result'
+            assert growth_ledger.daily_status(VAULT)['ran'] and not growth_ledger.daily_active(VAULT), 'a plan without a result'
             # #312 review: other light work took the places, so no recheck was picked though some waited.
             fresh()
             batch('light', {'state': 'complete', 'ok': True}, waiting=2)
-            assert not growth.daily_active(VAULT), 'rechecks waited while other light work took the places'
+            assert not growth_ledger.daily_active(VAULT), 'rechecks waited while other light work took the places'
             batch('light', {'state': 'incomplete', 'ok': False,
                             'recheck_outcomes': {'r5': {'status': 'complete'}}}, ['r5'], waiting=1)
-            assert growth.daily_active(VAULT), 'a later batch of the day gave the rechecks their turn'
+            assert growth_ledger.daily_active(VAULT), 'a later batch of the day gave the rechecks their turn'
             # With no candidate waiting, a light batch without rechecks leaves nothing to hand over.
             fresh()
             batch('light', {'state': 'complete', 'ok': True})
-            assert growth.daily_active(VAULT)
+            assert growth_ledger.daily_active(VAULT)
             # A backlog run is not the daily run: its Scope batches neither replace nor date the day.
             batch('scope', {'state': 'incomplete', 'ok': False}, backlog=True)
-            assert growth.daily_active(VAULT) and growth.daily_status(VAULT)['last']['state'] == 'complete'
+            assert growth_ledger.daily_active(VAULT) and growth_ledger.daily_status(VAULT)['last']['state'] == 'complete'
         """)
 
     def test_scope_tries_count_only_what_the_daily_run_judged(self):
@@ -481,10 +481,10 @@ class GrowthTests(unittest.TestCase):
             attempt({'state': 'incomplete', 'returncode': 1})      # the worker failed, three weeks ago
             attempt()                                              # no result
             attempt({'state': 'incomplete'}, context='stop:W1')    # a fork's own attempt
-            assert growth._scope_tried(rows)(state) == 1
+            assert growth_plan.scope_tried(rows)(state) == 1
             # A recent failure still counts: a conversation that keeps failing gives others their turn (#136 M4).
             attempt({'state': 'incomplete', 'returncode': 1, 'at': ago(1)})
-            assert growth._scope_tried(rows)(state) == 2
+            assert growth_plan.scope_tried(rows)(state) == 2
         """)
 
     def test_final_packet_reads_a_trailing_block_not_prose_or_fences(self):
@@ -496,7 +496,7 @@ class GrowthTests(unittest.TestCase):
             def final(text):
                 out.write_text(json.dumps({'type': 'result', 'subtype': 'success', 'is_error': False,
                                            'result': text}) + chr(10), encoding='utf-8')
-                return growth._final_packet(out)
+                return growth_reviews._final_packet(out)
             nl = chr(10)
             assert final(body) == packet
             assert final('Reviewed both jobs.' + nl + body) == packet
@@ -515,13 +515,13 @@ class GrowthTests(unittest.TestCase):
 
     def test_daily_status_keeps_a_plan_without_result_as_ran_not_completed(self):
         self.check_case("""
-            assert growth.daily_status(VAULT) == {'ran': False, 'active': False, 'last': None}
+            assert growth_ledger.daily_status(VAULT) == {'ran': False, 'active': False, 'last': None}
             planned = register()
-            status = growth.daily_status(VAULT)
+            status = growth_ledger.daily_status(VAULT)
             assert status['ran'] and not status['active'] and status['last']['state'] is None, status
-            core.ledger_append(growth.ledger_path(VAULT), {'kind':'run','manifest':planned['rid'],'ok':True,
+            core.ledger_append(growth_ledger.ledger_path(VAULT), {'kind':'run','manifest':planned['rid'],'ok':True,
                                                'state':'complete'})
-            assert growth.daily_status(VAULT)['active'] and growth.daily_active(VAULT)
+            assert growth_ledger.daily_status(VAULT)['active'] and growth_ledger.daily_active(VAULT)
         """)
 
     def test_recheck_note_tells_an_unfinished_daily_run_from_a_missing_one(self):
@@ -535,11 +535,11 @@ class GrowthTests(unittest.TestCase):
                     return [{'node': 'B', 'target': '[[A]]'}], False
             ran = {'ran': True, 'active': False,
                    'last': {'at': '2026-10-09T09:00:02+09:00', 'state': 'incomplete'}}
-            with patch.object(growth, 'daily_status', return_value=ran):
+            with patch.object(growth_ledger, 'daily_status', return_value=ran):
                 text = hook._recheck_note(VAULT, Rechecks)
             assert '최신 정기 실행(' in text and '다 끝내지 못해' in text, text
             assert '돌지 않아' not in text and 'SETUP' not in text, text
-            with patch.object(growth, 'daily_status', return_value={'ran': False, 'active': False, 'last': None}):
+            with patch.object(growth_ledger, 'daily_status', return_value={'ran': False, 'active': False, 'last': None}):
                 text = hook._recheck_note(VAULT, Rechecks)
             assert '돌지 않아' in text and 'SETUP' in text, text
         """)
@@ -595,25 +595,25 @@ class GrowthTests(unittest.TestCase):
                 assert write.create_node(VAULT, title, title, body, 'gpt-6-astra', space='00_Scope/W1',
                                          edges={'derived-from': basis})['ok']
             write.update_node(VAULT, 'A', old_text='A reusable observation', new_text='A revised observation')
-            jobs = growth.plan(VAULT, 3)['recheck_jobs']
+            jobs = growth_plan.plan(VAULT, 3)['recheck_jobs']
             assert [(j['node'], j['cascade'], j['next']) for j in jobs] == [('B', False, ['C'])], jobs
             # the agent's own correction of B is autonomous; C's recheck is then a cascade
             write.update_node(VAULT, 'B', old_text='B relies on A.', new_text='B relies on revised A.',
                               rechecked=['A'])
-            planned = growth.plan(VAULT, 3)
+            planned = growth_plan.plan(VAULT, 3)
             jobs = planned['recheck_jobs']
             assert [(j['node'], j['cascade']) for j in jobs] == [('C', True)], jobs
             manifest = register({**planned, 'scope_jobs': []})   # as run() records it
             packet = {'osk_reviews': {'manifest': manifest['rid'], 'domain': [], 'scope': [],
                       'recheck': [{'key': jobs[0]['key'], 'outcome': 'unchanged',
                                    'reason': 'x', 'proposal': 'y'}]}}
-            refused = growth.checkpoint(VAULT, packet)
+            refused = growth_reviews.checkpoint(VAULT, packet)
             assert not refused['ok'] and any('only escalates' in e for e in refused['errors']), refused
-            assert growth._recheck_status(VAULT, jobs[0], graph.Index(VAULT))['status'] != 'complete', 'a recheck review closed a check'
+            assert growth_plan.recheck_status(VAULT, jobs[0], graph.Index(VAULT))['status'] != 'complete', 'a recheck review closed a check'
             packet['osk_reviews']['recheck'][0]['outcome'] = 'escalated'
-            assert growth.checkpoint(VAULT, packet)['ok']
-            assert growth._recheck_status(VAULT, jobs[0], graph.Index(VAULT))['status'] == 'complete'
-            assert not growth.plan(VAULT, 3)['recheck_jobs'], 'an escalated check returned to the agent queue'
+            assert growth_reviews.checkpoint(VAULT, packet)['ok']
+            assert growth_plan.recheck_status(VAULT, jobs[0], graph.Index(VAULT))['status'] == 'complete'
+            assert not growth_plan.plan(VAULT, 3)['recheck_jobs'], 'an escalated check returned to the agent queue'
             held = rechecks.report(VAULT, graph.Index(VAULT)).get('escalated')
             assert [h['node'] for h in held] == ['C'] and held[0]['proposal'] == 'y', held
             write.update_node(VAULT, 'C', rechecked=['B'])   # the user's decision
@@ -629,28 +629,28 @@ class GrowthTests(unittest.TestCase):
             assert write.create_node(VAULT, 'B', 'B', 'B relies on A.', 'gpt-6-astra', space='00_Scope/W1',
                                      edges={'derived-from': 'A'})['ok']
             write.update_node(VAULT, 'A', old_text='A reusable observation', new_text='A revised observation')
-            planned = growth.plan(VAULT, 3)
+            planned = growth_plan.plan(VAULT, 3)
             job = planned['recheck_jobs'][0]
             assert 'previous_deferral' not in job, job
             manifest = register({**planned, 'scope_jobs': []})
-            done = growth.checkpoint(VAULT, {'osk_reviews': {'manifest': manifest['rid'], 'domain': [], 'scope': [],
+            done = growth_reviews.checkpoint(VAULT, {'osk_reviews': {'manifest': manifest['rid'], 'domain': [], 'scope': [],
                 'recheck': [{'key': job['key'], 'outcome': 'deferred',
                              'reason': 'read both; the revision may narrow B', 'proposal': 'drop me'}]}})
             assert done['ok'] and any('carries no proposal' in n for n in done['notes']), done
-            row = [r for r in growth.ledger_records(VAULT) if r.get('kind') == 'recheck_review'][-1]
+            row = [r for r in growth_ledger.ledger_records(VAULT) if r.get('kind') == 'recheck_review'][-1]
             assert row['outcome'] == 'deferred' and 'proposal' not in row, row
-            assert growth._recheck_status(VAULT, job, graph.Index(VAULT))['status'] == 'pending', 'a deferral closed the check'
+            assert growth_plan.recheck_status(VAULT, job, graph.Index(VAULT))['status'] == 'pending', 'a deferral closed the check'
             assert not rechecks.report(VAULT, graph.Index(VAULT)).get('escalated'), 'a deferral reached the user'
-            again = growth.plan(VAULT, 3)['recheck_jobs']
+            again = growth_plan.plan(VAULT, 3)['recheck_jobs']
             assert [j['key'] for j in again] == [job['key']], again
             handed = again[0]['previous_deferral']
             assert handed['reason'].startswith('read both') and handed['state_changed'] is False, handed
             write.update_node(VAULT, 'A', old_text='A revised observation', new_text='A twice revised observation')
-            planned = growth.plan(VAULT, 3)
+            planned = growth_plan.plan(VAULT, 3)
             assert planned['recheck_jobs'][0]['previous_deferral']['state_changed'] is True, planned['recheck_jobs']
             # an escalation still carries its proposal
             manifest = register({**planned, 'scope_jobs': []})
-            refused = growth.checkpoint(VAULT, {'osk_reviews': {'manifest': manifest['rid'], 'domain': [], 'scope': [],
+            refused = growth_reviews.checkpoint(VAULT, {'osk_reviews': {'manifest': manifest['rid'], 'domain': [], 'scope': [],
                 'recheck': [{'key': planned['recheck_jobs'][0]['key'], 'outcome': 'escalated', 'reason': 'x'}]}})
             assert not refused['ok'] and any('invalid recheck review fields' in e for e in refused['errors']), refused
         """)
@@ -663,12 +663,12 @@ class GrowthTests(unittest.TestCase):
             assert write.create_node(VAULT, 'B', 'B', 'B relies on A.', 'gpt-6-astra', space='00_Scope/W1',
                                      edges={'derived-from': 'A'})['ok']
             write.update_node(VAULT, 'A', old_text='A reusable observation', new_text='A revised observation')
-            job = growth.plan(VAULT, 3)['recheck_jobs'][0]
+            job = growth_plan.plan(VAULT, 3)['recheck_jobs'][0]
             only = {'candidates': [], 'scope_jobs': [], 'organization_jobs': [], 'eviction_jobs': [],
                     'recheck_jobs': [job]}
-            assert growth._needs_review(VAULT, only, growth.ledger_records(VAULT), graph.Index(VAULT)), 'an open recheck did not ask for the packet'
+            assert growth_reviews.needs_review(VAULT, only, growth_ledger.ledger_records(VAULT), graph.Index(VAULT)), 'an open recheck did not ask for the packet'
             write.update_node(VAULT, 'B', rechecked=['A'])
-            assert not growth._needs_review(VAULT, only, growth.ledger_records(VAULT), graph.Index(VAULT))
+            assert not growth_reviews.needs_review(VAULT, only, growth_ledger.ledger_records(VAULT), graph.Index(VAULT))
         """)
 
     def test_evidence_section_changes_do_not_propagate_and_old_records_carry_over(self):
@@ -1096,9 +1096,9 @@ class GrowthTests(unittest.TestCase):
                 assert write.create_node(VAULT, title, title, title + ' relies on A.', 'gpt-6-astra',
                                          space='00_Scope/W1', edges={'derived-from': 'A'})['ok']
             write.update_node(VAULT, 'A', old_text='A reusable observation', new_text='A revised observation')
-            first = growth._pick_rechecks(VAULT, graph.Index(VAULT), 1, 'W1')
-            register({**growth.plan(VAULT, 3), 'scope_jobs': [], 'recheck_jobs': first})
-            again = growth._pick_rechecks(VAULT, graph.Index(VAULT), 1, 'W1')
+            first = growth_plan.pick_rechecks(VAULT, graph.Index(VAULT), 1, 'W1')
+            register({**growth_plan.plan(VAULT, 3), 'scope_jobs': [], 'recheck_jobs': first})
+            again = growth_plan.pick_rechecks(VAULT, graph.Index(VAULT), 1, 'W1')
             assert {first[0]['node'], again[0]['node']} == {'B1', 'B2'}, (first, again)
         """)
 
@@ -1144,7 +1144,7 @@ class GrowthTests(unittest.TestCase):
             with patch.dict(os.environ, env):
                 refused = growth.run(VAULT, argv)
             assert refused['state'] == 'unavailable' and 'subscription' in refused['error'], refused
-            assert not growth.ledger_path(VAULT).exists() and not (VAULT.root / 'seen-env.json').exists()
+            assert not growth_ledger.ledger_path(VAULT).exists() and not (VAULT.root / 'seen-env.json').exists()
             # On a confirmed subscription the command runs, and no API credential reaches it.
             env['OSK_TEST_AUTH'] = json.dumps({'loggedIn': True, 'authMethod': 'claude.ai', 'subscriptionType': 'max'})
             with patch.dict(os.environ, env):
@@ -1180,7 +1180,7 @@ class GrowthTests(unittest.TestCase):
             with patch('osk.growth.subprocess.Popen', side_effect=AssertionError('launched')):
                 result = growth.run(VAULT, ['unused-command'])
             assert result == {'ok':True, 'state':'skipped', 'selected':0}, result
-            assert not growth.ledger_path(VAULT).exists()
+            assert not growth_ledger.ledger_path(VAULT).exists()
         """)
 
     def test_command_check_rejects_missing_binary_without_launch_or_writes(self):
@@ -1192,20 +1192,20 @@ class GrowthTests(unittest.TestCase):
             program.write_text('fixture executable')
             program.chmod(0o755)
             with patch.dict(os.environ, {'PATH':'bin'}):
-                found = growth.check_command(VAULT, [program.name])
+                found = worker_process.check_command(VAULT, [program.name])
                 # Contract: absolute, symlinks kept; POSIX searches from the vault,
                 # Windows from the caller's cwd (spelled as the caller spells it).
                 base = VAULT.root if os.name == 'posix' else Path.cwd()
                 assert found['executable'] == str(base / program), found
             before = {str(p):p.read_bytes() for p in VAULT.root.rglob('*') if p.is_file()}
             with patch('osk.growth.subprocess.Popen', side_effect=AssertionError('launched')):
-                assert growth.check_command(VAULT, [sys.executable,'--version'])['ok']
-                missing = growth.check_command(VAULT, [str(VAULT.root/'retired-version/codex.exe')])
+                assert worker_process.check_command(VAULT, [sys.executable,'--version'])['ok']
+                missing = worker_process.check_command(VAULT, [str(VAULT.root/'retired-version/codex.exe')])
                 assert not missing['ok'] and missing['state'] == 'invalid_command', missing
-                assert not growth.check_command(VAULT, [str(VAULT.root)])['ok']
+                assert not worker_process.check_command(VAULT, [str(VAULT.root)])['ok']
                 for bad in ([], 'codex', ['codex', 'bad' + chr(0)], [''], ['', '--tools']):
                     try:
-                        growth.check_command(VAULT, bad)
+                        worker_process.check_command(VAULT, bad)
                         raise AssertionError('invalid argv accepted')
                     except ValueError:
                         pass
@@ -1214,7 +1214,7 @@ class GrowthTests(unittest.TestCase):
             node('A')
             rejected = growth.run(VAULT, [str(VAULT.root/'retired-version/codex.exe')])
             assert rejected['state'] == 'invalid_command', rejected
-            assert not growth.ledger_path(VAULT).exists()
+            assert not growth_ledger.ledger_path(VAULT).exists()
         """)
 
     @unittest.skipUnless(os.name == 'nt', 'only Windows runs a batch file through cmd.exe')
@@ -1234,13 +1234,13 @@ class GrowthTests(unittest.TestCase):
                 seen = subprocess.run(argv, capture_output=True, text=True, encoding='utf-8')
                 intact = seen.returncode == 0 and json.loads(seen.stdout) == argv[1:]
                 assert intact == ('&' not in root), (root, seen.stdout, seen.stderr)  # cmd's own verdict
-                checked = growth.check_command(VAULT, argv)
+                checked = worker_process.check_command(VAULT, argv)
                 assert checked['ok'] == intact, (root, checked)
                 assert intact or 'cmd.exe' in checked['violations'][0], checked
             # The daily run refuses before it plans or starts anything.
             node('A')
             refused = growth.run(VAULT, argv)
-            assert refused['state'] == 'invalid_command' and not growth.ledger_path(VAULT).exists(), refused
+            assert refused['state'] == 'invalid_command' and not growth_ledger.ledger_path(VAULT).exists(), refused
         """)
 
     @unittest.skipIf(os.name == 'nt', 'POSIX symlink venv execution')
@@ -1264,7 +1264,7 @@ class GrowthTests(unittest.TestCase):
                                       capture_output=True, text=True, check=True)
             assert json.loads(original.stdout) == expected
             for entry in (str(executable), '.venv/bin/python'):
-                checked = growth.check_command(VAULT, [entry])
+                checked = worker_process.check_command(VAULT, [entry])
                 observed = subprocess.run([checked['executable'], '-c', probe], cwd=VAULT.root,
                                           capture_output=True, text=True)
                 assert observed.returncode == 0, observed.stderr
@@ -1302,15 +1302,15 @@ class GrowthTests(unittest.TestCase):
                             original = subprocess.run(['worker'], cwd=VAULT.root,
                                 capture_output=True, text=True, check=True)
                             assert original.stdout.strip() == label
-                            checked = growth.check_command(VAULT, ['worker'])
+                            checked = worker_process.check_command(VAULT, ['worker'])
                             assert checked['ok'], checked
                             actual = subprocess.run([checked['executable']], cwd=VAULT.root,
                                 capture_output=True, text=True, check=True)
                             assert actual.stdout == original.stdout, (path, checked, actual.stdout)
                             assert Path.cwd() == caller
                     with patch.dict(os.environ, {'PATH':'bin'}):
-                        assert growth.check_command(VAULT, ['vault-only'])['ok']
-                        assert not growth.check_command(VAULT, ['caller-only'])['ok']
+                        assert worker_process.check_command(VAULT, ['vault-only'])['ok']
+                        assert not worker_process.check_command(VAULT, ['caller-only'])['ok']
                 finally:
                     os.chdir(VAULT.root)
         """)
@@ -1329,7 +1329,7 @@ class GrowthTests(unittest.TestCase):
             text = (VAULT.root / result['output'] / 'prompt.txt').read_text(encoding='utf-8')
             assert 'Every create_node uses drafter "gpt-5.6-sol"' in text, text[:600]
             assert 'not notes about this review' in text and 'such as -2' in text
-            assert [r for r in core.ledger_read(growth.ledger_path(VAULT)) if r['kind'] == 'plan'][-1]['drafter'] == 'gpt-5.6-sol'
+            assert [r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind'] == 'plan'][-1]['drafter'] == 'gpt-5.6-sol'
         """)
 
     def test_reviews_keep_current_claims_and_bind_existing_ones_by_evidence_line(self):
@@ -1338,7 +1338,7 @@ class GrowthTests(unittest.TestCase):
         self.check_case("""
             from osk import integration, conversation_capture, conversation_cite, conversation_review, conversation_state
             node('A')
-            worker = growth.prompt(VAULT, growth.plan(VAULT, 3))
+            worker = growth.prompt(VAULT, growth_plan.plan(VAULT, 3))
             assert 'never replace, weaken or reorder a current claim' in worker
             assert '"# 관측" section' in worker and '42cf0fc0#1' in worker
             path = VAULT.root / 'held.jsonl'
@@ -1365,43 +1365,43 @@ class GrowthTests(unittest.TestCase):
         self.check_case("""
             first = node('A')
             no_value_all()
-            assert not growth.plan(VAULT)['candidates']
+            assert not growth_plan.plan(VAULT)['candidates']
             node('B')
-            candidates = growth.plan(VAULT)['candidates']
+            candidates = growth_plan.plan(VAULT)['candidates']
             assert any({s['name'] for s in c['sources']} == {'A','B'} for c in candidates)
             no_value_all()
-            assert not growth.plan(VAULT)['candidates']
+            assert not growth_plan.plan(VAULT)['candidates']
             result = write.update_node(VAULT, 'A', old_text='A reusable observation', new_text='A revised observation')
             assert result['ok'], result
-            assert growth.plan(VAULT)['candidates']
+            assert growth_plan.plan(VAULT)['candidates']
         """)
 
     def test_cross_scope_old_new_and_completed_batch_progress(self):
         self.check_case("""
             for name in ('A','B','C','D','E'):
                 node(name)
-            first = growth.plan(VAULT, 1)
+            first = growth_plan.plan(VAULT, 1)
             assert len(first['candidates']) == 1
             manifest = register(first)
-            growth.review(VAULT, first['candidates'][0]['key'], 'no_value', reason='No value in first batch', manifest=manifest['rid'])
-            second = growth.plan(VAULT, 1)
+            growth_reviews.review(VAULT, first['candidates'][0]['key'], 'no_value', reason='No value in first batch', manifest=manifest['rid'])
+            second = growth_plan.plan(VAULT, 1)
             assert second['candidates'][0]['key'] != first['candidates'][0]['key']
             no_value_all()
-            assert not growth.plan(VAULT)['candidates']
+            assert not growth_plan.plan(VAULT)['candidates']
             node('Z', 'W2')
-            candidates = growth.plan(VAULT, 20)['candidates']
+            candidates = growth_plan.plan(VAULT, 20)['candidates']
             assert any({'A','Z'} <= {s['name'] for s in c['sources']} for c in candidates)
             assert all(len(c['sources']) <= 8 for c in candidates)
             no_value_all()
-            assert not growth.plan(VAULT)['candidates']
+            assert not growth_plan.plan(VAULT)['candidates']
         """)
 
     def test_stale_manifest_and_unrecorded_key_are_rejected(self):
         self.check_case("""
             node('A')
-            candidate = growth.plan(VAULT)['candidates'][0]
+            candidate = growth_plan.plan(VAULT)['candidates'][0]
             try:
-                growth.review(VAULT, candidate['key'], 'no_value', reason='Not registered', manifest='unknown')
+                growth_reviews.review(VAULT, candidate['key'], 'no_value', reason='Not registered', manifest='unknown')
                 raise AssertionError('unrecorded review accepted')
             except ValueError:
                 pass
@@ -1410,9 +1410,9 @@ class GrowthTests(unittest.TestCase):
             # A decision on the selected sources is the reviewer's report and is kept, but it does
             # not complete a comparison whose sources changed; those form a new comparison.
             for outcome in ('no_value','deferred'):
-                growth.review(VAULT, candidate['key'], outcome, reason='Stale', manifest=manifest['rid'])
-            assert not growth._completed(VAULT, candidate['key'], growth.ledger_records(VAULT), graph.Index(VAULT))
-            assert candidate['key'] not in {c['key'] for c in growth.plan(VAULT)['candidates']}
+                growth_reviews.review(VAULT, candidate['key'], outcome, reason='Stale', manifest=manifest['rid'])
+            assert not growth_plan.completed(VAULT, candidate['key'], growth_ledger.ledger_records(VAULT), graph.Index(VAULT))
+            assert candidate['key'] not in {c['key'] for c in growth_plan.plan(VAULT)['candidates']}
         """)
 
     def test_process_exit_alone_is_not_receipt(self):
@@ -1423,17 +1423,17 @@ class GrowthTests(unittest.TestCase):
                 assert not result['ok'], result
                 assert result['returncode'] == code
                 assert set(result['outcomes'].values()) == {'pending'}
-                assert growth.plan(VAULT)['candidates']
-            assert not [r for r in core.ledger_read(growth.ledger_path(VAULT)) if r.get('kind') == 'review']
+                assert growth_plan.plan(VAULT)['candidates']
+            assert not [r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r.get('kind') == 'review']
         """)
 
     def test_worker_receipt_and_deferred_next_run(self):
         self.check_case("""
             node('A')
-            worker = "import sys; from osk import core,growth; from osk.vault import Vault; VAULT = Vault.open(); assert sys.stdin.read(); plans=[r for r in core.ledger_read(growth.ledger_path(VAULT)) if r.get('kind')=='plan']; [growth.review(VAULT, c['key'], 'deferred', reason='Need more evidence',manifest=plans[-1]['rid']) for c in plans[-1]['candidates']]"
+            worker = "import sys; from osk import core,growth, growth_ledger, growth_plan, growth_reviews, worker_process; from osk.vault import Vault; VAULT = Vault.open(); assert sys.stdin.read(); plans=[r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r.get('kind')=='plan']; [growth_reviews.review(VAULT, c['key'], 'deferred', reason='Need more evidence',manifest=plans[-1]['rid']) for c in plans[-1]['candidates']]"
             result = growth.run(VAULT, [sys.executable, '-c', worker])
             assert not result['ok'], result
-            assert growth.plan(VAULT)['candidates']
+            assert growth_plan.plan(VAULT)['candidates']
             worker = worker.replace("'deferred'", "'no_value'")
             worker += "; from osk import organization; [organization.review(VAULT, j['key'],j['scope'],'complete','The fixture group remains coherent.',after=organization.snapshot(VAULT, j['scope'])['snapshot'],checked=[{'unit':u['unit'],'reason':'Known fixture claim'} for u in j['review_units']]) for j in plans[-1]['organization_jobs']]"
             result = growth.run(VAULT, [sys.executable, '-c', worker])
@@ -1448,11 +1448,11 @@ class GrowthTests(unittest.TestCase):
             manifest = register()
             candidate = manifest['candidates'][0]
             try:
-                growth.review(VAULT, candidate['key'], 'preserved', target='Invented', reason='A process said success',manifest=manifest['rid'])
+                growth_reviews.review(VAULT, candidate['key'], 'preserved', target='Invented', reason='A process said success',manifest=manifest['rid'])
                 raise AssertionError('unverified preservation accepted')
             except ValueError:
                 pass
-            assert growth.plan(VAULT)['candidates']
+            assert growth_plan.plan(VAULT)['candidates']
         """)
 
     def test_deferred_candidates_rotate(self):
@@ -1461,37 +1461,37 @@ class GrowthTests(unittest.TestCase):
                 node(name)
             tried = []
             for _ in range(4):
-                selected = register(growth.plan(VAULT, 1))
+                selected = register(growth_plan.plan(VAULT, 1))
                 candidate = selected['candidates'][0]
                 assert candidate['key'] not in tried, tried
                 tried.append(candidate['key'])
-                growth.review(VAULT, candidate['key'], 'deferred', reason='Need independent corroboration', manifest=selected['rid'])
-            assert growth.plan(VAULT)['candidates']
+                growth_reviews.review(VAULT, candidate['key'], 'deferred', reason='Need independent corroboration', manifest=selected['rid'])
+            assert growth_plan.plan(VAULT)['candidates']
         """)
 
     def test_new_versions_get_priority_without_starving_old_comparisons(self):
         self.check_case("""
             for name in ('A','B','C','D','E','F','G','H','I'):
                 node(name)
-            inventory = growth.plan(VAULT, 20)
+            inventory = growth_plan.plan(VAULT, 20)
             register(dict(inventory, candidates=[c for c in inventory['candidates']
                                                 if c['grouping']=='comparison']))
             # Sources were attempted in pairs, but individual batches remain untried.
             node('Z', 'W2')
-            first = growth.plan(VAULT, 2)
+            first = growth_plan.plan(VAULT, 2)
             assert any(s['name']=='Z' for s in first['candidates'][0]['sources']), first
             assert all(s['name']!='Z' for s in first['candidates'][1]['sources']), first
-            assert growth.plan(VAULT, 2)==first, 'preview consumed the new version'
+            assert growth_plan.plan(VAULT, 2)==first, 'preview consumed the new version'
             register(first)
             assert write.update_node(VAULT, 'I', old_text='I reusable observation', new_text='I changed')['ok']
-            second = growth.plan(VAULT, 2)
+            second = growth_plan.plan(VAULT, 2)
             assert any(s['name']=='I' for s in second['candidates'][0]['sources']), second
             assert all(s['name']!='I' for s in second['candidates'][1]['sources']), second
             register(second)
             picked = []
             for i in range(4):
                 node('Z'+str(i), 'W2')  # continuous new content, limit=1 still rotates
-                selected = register(growth.plan(VAULT, 1))['candidates'][0]
+                selected = register(growth_plan.plan(VAULT, 1))['candidates'][0]
                 picked.append({s['name'] for s in selected['sources']})
             assert any(names <= set('ABCDEFGHI') for names in picked), picked
         """)
@@ -1507,7 +1507,7 @@ class GrowthTests(unittest.TestCase):
             except write.WriteError:
                 pass
             assert write.create_node(VAULT, **request)['ok']
-            manifest = register(growth.plan(VAULT, 1))
+            manifest = register(growth_plan.plan(VAULT, 1))
             candidate = manifest['candidates'][0]
             selected = [s for s in candidate['sources'] if s['name'] in {'A','B'}]
             result = distillation.create_node(VAULT, 
@@ -1515,16 +1515,16 @@ class GrowthTests(unittest.TestCase):
                 title='Shared rule',summary='Rule from A and B',body='A and B support this rule, with limited scope.',
                 drafter='gpt-6-astra',space='00_Domain/Principles')
             assert result['ok'], result
-            receipt = growth.review(VAULT, candidate['key'],'preserved',target='Shared rule',
+            receipt = growth_reviews.review(VAULT, candidate['key'],'preserved',target='Shared rule',
                 reason='A and B support the rule; Noise and Other are unrelated and omitted.',manifest=manifest['rid'])
             actual = contract.parse(VAULT.root / '00_Domain/Principles/Shared rule.md').edges('derived-from')
             assert set(actual) == {s['name'] for s in selected}, actual
             assert len(receipt['omitted_sources']) == 2
-            assert candidate['key'] not in {c['key'] for c in growth.plan(VAULT, 20)['candidates']}
+            assert candidate['key'] not in {c['key'] for c in growth_plan.plan(VAULT, 20)['candidates']}
             distillation._job_path(VAULT, candidate['key']).unlink()
-            assert candidate['key'] not in {c['key'] for c in growth.plan(VAULT, 20)['candidates']}, 'shared receipt depended on local journal'
+            assert candidate['key'] not in {c['key'] for c in growth_plan.plan(VAULT, 20)['candidates']}, 'shared receipt depended on local journal'
             write.update_node(VAULT, 'Shared rule',old_text='A and B support this rule, with limited scope.',new_text='Changed after completion.')
-            assert candidate['key'] in {c['key'] for c in growth.plan(VAULT, 20)['candidates']}
+            assert candidate['key'] in {c['key'] for c in growth_plan.plan(VAULT, 20)['candidates']}
         """)
 
     def test_timeout_stops_owned_descendants(self):
@@ -1539,7 +1539,7 @@ class GrowthTests(unittest.TestCase):
             assert result['cleanup_error'] is None, result
             time.sleep(4)
             assert not marker.exists(), 'descendant survived runner timeout'
-            assert growth.plan(VAULT)['candidates']
+            assert growth_plan.plan(VAULT)['candidates']
         """)
 
     @unittest.skipUnless(os.name == 'nt', 'only Windows cleans the tree with taskkill /T')
@@ -1553,17 +1553,17 @@ class GrowthTests(unittest.TestCase):
             # An older process naming the root as parent outlived an earlier owner of that pid.
             table = {10: (1, 'python.exe'), 11: (10, 'python.exe'), 12: (10, 'Taskmgr.exe'), 13: (11, 'conhost.exe')}
             with patch.object(native_cli, 'process_created', {10: 100, 11: 150, 12: 50, 13: 160}.get):
-                assert set(growth._tree(table, {10: 100})) == {10, 11, 13}
+                assert set(worker_process._tree(table, {10: 100})) == {10, 11, 13}
             run = subprocess.run
             lost = subprocess.CompletedProcess([], 128, b'', b'ERROR: There is no running instance of the task.')
             def worker():
                 return subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'],
                                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                         stderr=subprocess.DEVNULL, creationflags=0x08000200)
-            with patch.object(growth.subprocess, 'run', lambda argv, **kw: (run(argv, **kw), lost)[1]):
-                assert growth.stop_tree(worker()) is None
-            with patch.object(growth.subprocess, 'run', lambda argv, **kw: lost):  # kills nothing
-                error = growth.stop_tree(worker())
+            with patch.object(worker_process.subprocess, 'run', lambda argv, **kw: (run(argv, **kw), lost)[1]):
+                assert worker_process.stop_tree(worker()) is None
+            with patch.object(worker_process.subprocess, 'run', lambda argv, **kw: lost):  # kills nothing
+                error = worker_process.stop_tree(worker())
             assert error and error.startswith('process-tree cleanup was not confirmed'), error
             # #231 review: after the snapshot the root starts a child and exits first, so taskkill
             # finds no root. The base interpreter keeps a venv launcher from between them, and the
@@ -1580,8 +1580,8 @@ class GrowthTests(unittest.TestCase):
                 child.append(int(root.stdout.readline()))
                 root.wait(10)
                 return lost
-            with patch.object(growth.subprocess, 'run', vanish):
-                error = growth.stop_tree(root)
+            with patch.object(worker_process.subprocess, 'run', vanish):
+                error = worker_process.stop_tree(root)
             run(['taskkill', '/PID', str(child[0]), '/F'], capture_output=True)
             assert error and error.startswith('process-tree cleanup was not confirmed'), error
         """)
@@ -1598,16 +1598,16 @@ class GrowthTests(unittest.TestCase):
                 pass
             assert write.create_node(VAULT, **request)['ok']
             growth.run(VAULT, [sys.executable,'-c','import sys; sys.stdin.read()'],limit=1)
-            first = [r for r in core.ledger_read(growth.ledger_path(VAULT)) if r['kind'] == 'plan'][-1]
+            first = [r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind'] == 'plan'][-1]
             candidate = first['candidates'][0]
             result = distillation.create_node(VAULT, 
                 {'key':candidate['distill_key'],'sources':[{'ref':s['id'],'hash':s['hash']} for s in candidate['sources']],'hub':'Principles'},
                 title='Retained rule',summary='Previously written rule',body='A and B support this bounded rule.',
                 drafter='gpt-6-astra',space='00_Domain/Principles')
             assert result['ok'], result
-            next_candidate = growth.plan(VAULT, 1)['candidates'][0]
+            next_candidate = growth_plan.plan(VAULT, 1)['candidates'][0]
             assert next_candidate['previous_distillations'][0]['key'] == candidate['distill_key']
-            worker = "import sys; from osk import core,growth,organization; from osk.vault import Vault; VAULT = Vault.open(); sys.stdin.read(); p=[r for r in core.ledger_read(growth.ledger_path(VAULT)) if r['kind']=='plan'][-1]; [growth.review(VAULT, c['key'],'preserved',target='Retained rule',reason='Existing saved result still covers A and B.',manifest=p['rid']) for c in p['candidates']]; [organization.review(VAULT, j['key'],j['scope'],'complete','Sources and local hub read; one coherent group.',after=organization.snapshot(VAULT, j['scope'])['snapshot'],checked=[{'unit':u['unit'],'reason':'Known fixture claim'} for u in j['review_units']]) for j in p['organization_jobs']]"
+            worker = "import sys; from osk import core,growth,organization, growth_ledger, growth_plan, growth_reviews, worker_process; from osk.vault import Vault; VAULT = Vault.open(); sys.stdin.read(); p=[r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='plan'][-1]; [growth_reviews.review(VAULT, c['key'],'preserved',target='Retained rule',reason='Existing saved result still covers A and B.',manifest=p['rid']) for c in p['candidates']]; [organization.review(VAULT, j['key'],j['scope'],'complete','Sources and local hub read; one coherent group.',after=organization.snapshot(VAULT, j['scope'])['snapshot'],checked=[{'unit':u['unit'],'reason':'Known fixture claim'} for u in j['review_units']]) for j in p['organization_jobs']]"
             outcome = growth.run(VAULT, [sys.executable,'-c',worker],limit=2)
             assert outcome['ok'], outcome
             assert len([1 for p,k in graph.Index(VAULT).nodes.values() if k[0]=='domain' and not graph.is_hub(p)]) == 1
@@ -1661,7 +1661,7 @@ class GrowthTests(unittest.TestCase):
             os.utime(path, (old, old))
             result = growth.run(VAULT, [sys.executable,'-c',packet_worker()],limit=3)
             assert result['ok'] and result['scope_selected'] == 1, result
-            plan = [r for r in core.ledger_read(growth.ledger_path(VAULT)) if r['kind']=='plan'][-1]
+            plan = [r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='plan'][-1]
             job = growth._reading_plan(plan)['scope_jobs'][0]
             assert job['pending_refs'] == ['native:claude:ended:u' + str(i) for i in (1, 2, 3)], job
             assert 'read_command' not in job, job
@@ -1674,8 +1674,8 @@ class GrowthTests(unittest.TestCase):
     def test_organization_packet_without_snapshot_refuses_a_unit_changed_after_reading(self):
         self.check_case("""
             node('A')
-            assert 'Use osk MCP tools only' in growth.prompt(VAULT, growth.plan(VAULT, 3))
-            assert 'growth checkpoint --file' not in growth.prompt(VAULT, growth.plan(VAULT, 3))
+            assert 'Use osk MCP tools only' in growth.prompt(VAULT, growth_plan.plan(VAULT, 3))
+            assert 'growth checkpoint --file' not in growth.prompt(VAULT, growth_plan.plan(VAULT, 3))
             # The worker has no CLI snapshot. A unit it read that changes before the
             # runner applies the packet no longer matches its content key.
             change = ("from osk import write, cluster_gate, node_checks, node_moves, nodefile; n=VAULT.root/'00_Scope/W1/A.md'; "
@@ -1747,7 +1747,7 @@ class GrowthTests(unittest.TestCase):
             import mcp_server as M
             node('A')
             node('B')
-            text = growth.prompt(VAULT, growth.plan(VAULT, 3))
+            text = growth.prompt(VAULT, growth_plan.plan(VAULT, 3))
             assert organization.guidance() in text and 'expect_view_hash' in organization.guidance()
             units = [u for j in json.loads(text.rsplit(chr(10), 1)[1])['organization_jobs'] for u in j['review_units']]
             assert units
@@ -1774,7 +1774,7 @@ class GrowthTests(unittest.TestCase):
             assert result['final_reviews']['state'] == 'applied', result
             # Newly created Domain knowledge is pending its own organization
             # review; the Scope review cannot acknowledge it implicitly.
-            pending = growth.plan(VAULT)['organization_jobs']
+            pending = growth_plan.plan(VAULT)['organization_jobs']
             assert [j['scope'] for j in pending] == ['00_Domain/Principles'], pending
             reviewed = growth.run(VAULT, [sys.executable,'-c',packet_worker()],limit=1)
             assert reviewed['ok'], reviewed
@@ -1800,7 +1800,7 @@ class GrowthTests(unittest.TestCase):
                 assert set(result['domain_outcomes'].values()) == {'pending'}, result
             result = growth.run(VAULT, [sys.executable,'-c',packet_worker(code=7)])
             assert not result['ok'] and result['final_reviews']['state'] == 'not_applied', result
-            assert not [r for r in core.ledger_read(growth.ledger_path(VAULT)) if r['kind']=='review']
+            assert not [r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='review']
         """)
 
     def test_a_wrong_packet_is_refused_whole_and_a_wrong_entry_only_itself(self):
@@ -1808,7 +1808,7 @@ class GrowthTests(unittest.TestCase):
             node('A')
             result = growth.run(VAULT, [sys.executable,'-c',packet_worker("q['osk_reviews']['manifest']='old-manifest'")])
             assert not result['ok'] and result['final_reviews']['state'] == 'rejected', result
-            assert not [r for r in core.ledger_read(growth.ledger_path(VAULT)) if r['kind']=='review']
+            assert not [r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='review']
         """)
         for change, kept in (
                 ("q['osk_reviews']['domain'][0]['key']='unselected'", False),
@@ -1824,7 +1824,7 @@ class GrowthTests(unittest.TestCase):
                 assert not result['ok'] and result['final_reviews']['state'] == 'incomplete', result
                 assert result['final_reviews']['errors'], result
                 assert {{s['status'] for s in result['organization_outcomes'].values()}} == {{'complete'}}, result
-                reviews = [r for r in core.ledger_read(growth.ledger_path(VAULT)) if r['kind']=='review']
+                reviews = [r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='review']
                 assert bool(reviews) == {kept}, reviews
             """)
         # A decision with a needless part (a target on no_value) keeps its meaning; the part is
@@ -1834,7 +1834,7 @@ class GrowthTests(unittest.TestCase):
             result = growth.run(VAULT, [sys.executable,'-c',packet_worker("q['osk_reviews']['domain'][0]['target']='Whatever'")])
             assert result['ok'], result
             assert any('target was dropped' in n for n in result['final_reviews']['notes']), result
-            assert [r['outcome'] for r in core.ledger_read(growth.ledger_path(VAULT)) if r['kind']=='review'] == ['no_value']
+            assert [r['outcome'] for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='review'] == ['no_value']
         """)
 
     def test_a_report_from_an_older_selection_does_not_undo_a_newer_one(self):
@@ -1843,17 +1843,17 @@ class GrowthTests(unittest.TestCase):
             old, new = register(), register()        # two selections of the same comparison
             key = old['candidates'][0]['key']
             assert key == new['candidates'][0]['key']
-            growth.review(VAULT, key, 'no_value', reason='Decided on the later selection.', manifest=new['rid'])
-            assert growth._completed(VAULT, key, growth.ledger_records(VAULT), graph.Index(VAULT))
+            growth_reviews.review(VAULT, key, 'no_value', reason='Decided on the later selection.', manifest=new['rid'])
+            assert growth_plan.completed(VAULT, key, growth_ledger.ledger_records(VAULT), graph.Index(VAULT))
             # The earlier selection's worker reports late. Its report is kept, but it does not
             # undo the later selection's decision (the growth ledger is causal, so a late append
             # would otherwise become the latest).
-            growth.review(VAULT, key, 'deferred', reason='Late report from the earlier selection.', manifest=old['rid'])
-            assert growth._completed(VAULT, key, growth.ledger_records(VAULT), graph.Index(VAULT)), 'an older report reopened it'
-            assert len([r for r in core.ledger_read(growth.ledger_path(VAULT)) if r['kind']=='review']) == 2
+            growth_reviews.review(VAULT, key, 'deferred', reason='Late report from the earlier selection.', manifest=old['rid'])
+            assert growth_plan.completed(VAULT, key, growth_ledger.ledger_records(VAULT), graph.Index(VAULT)), 'an older report reopened it'
+            assert len([r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='review']) == 2
             # The same selection can still reopen its own decision on purpose.
-            growth.review(VAULT, key, 'deferred', reason='Reopened within the later selection.', manifest=new['rid'])
-            assert not growth._completed(VAULT, key, growth.ledger_records(VAULT), graph.Index(VAULT))
+            growth_reviews.review(VAULT, key, 'deferred', reason='Reopened within the later selection.', manifest=new['rid'])
+            assert not growth_plan.completed(VAULT, key, growth_ledger.ledger_records(VAULT), graph.Index(VAULT))
         """)
 
     def test_selections_made_apart_stay_undecided_until_a_later_one(self):
@@ -1862,22 +1862,22 @@ class GrowthTests(unittest.TestCase):
             # Two devices select the same comparison before syncing. Neither selection follows
             # the other, so their different reports leave it undecided (Mechanism §3 1) instead
             # of letting the larger RID win. A selection made after the merge decides it.
-            base = growth.ledger_path(VAULT).read_bytes() if growth.ledger_path(VAULT).exists() else b''
+            base = growth_ledger.ledger_path(VAULT).read_bytes() if growth_ledger.ledger_path(VAULT).exists() else b''
             x = register()
             key = x['candidates'][0]['key']
-            growth.review(VAULT, key, 'deferred', reason='Device X could not decide.', manifest=x['rid'])
-            branch = growth.ledger_path(VAULT).read_bytes()[len(base):]
-            growth.ledger_path(VAULT).write_bytes(base)
+            growth_reviews.review(VAULT, key, 'deferred', reason='Device X could not decide.', manifest=x['rid'])
+            branch = growth_ledger.ledger_path(VAULT).read_bytes()[len(base):]
+            growth_ledger.ledger_path(VAULT).write_bytes(base)
             y = register()
             assert y['candidates'][0]['key'] == key and core.rid_key(x['rid']) < core.rid_key(y['rid'])
-            growth.review(VAULT, key, 'no_value', reason='Device Y found nothing to keep.', manifest=y['rid'])
-            growth.ledger_path(VAULT).write_bytes(growth.ledger_path(VAULT).read_bytes() + branch)    # the sync merge
-            rows = growth.ledger_records(VAULT)
-            assert growth.latest_report(rows, key, 'key') is None
-            assert not growth._completed(VAULT, key, rows, graph.Index(VAULT)), 'the larger RID decided a fork'
+            growth_reviews.review(VAULT, key, 'no_value', reason='Device Y found nothing to keep.', manifest=y['rid'])
+            growth_ledger.ledger_path(VAULT).write_bytes(growth_ledger.ledger_path(VAULT).read_bytes() + branch)    # the sync merge
+            rows = growth_ledger.ledger_records(VAULT)
+            assert growth_ledger.latest_report(rows, key, 'key') is None
+            assert not growth_plan.completed(VAULT, key, rows, graph.Index(VAULT)), 'the larger RID decided a fork'
             z = register()
-            growth.review(VAULT, key, 'no_value', reason='Decided after the merge.', manifest=z['rid'])
-            assert growth._completed(VAULT, key, growth.ledger_records(VAULT), graph.Index(VAULT))
+            growth_reviews.review(VAULT, key, 'no_value', reason='Decided after the merge.', manifest=z['rid'])
+            assert growth_plan.completed(VAULT, key, growth_ledger.ledger_records(VAULT), graph.Index(VAULT))
         """)
 
     def test_a_runner_stopped_while_applying_keeps_what_it_applied(self):
@@ -1890,24 +1890,24 @@ class GrowthTests(unittest.TestCase):
             # only the selection whose decision was not applied.
             class Crash(BaseException):
                 pass
-            real, calls = growth.review, []
+            real, calls = growth_reviews.review, []
             def review(*a, **kw):
                 calls.append(kw.get('key', a[0] if a else None))
                 if len(calls) == 2:
                     raise Crash()
                 return real(*a, **kw)
-            with patch.object(growth, 'review', side_effect=review):
+            with patch.object(growth_reviews, 'review', side_effect=review):
                 try:
                     growth.run(VAULT, [sys.executable,'-c',packet_worker()], limit=3)
                     raise AssertionError('the run went on after the runner died')
                 except Crash:
                     pass
-            rows = core.ledger_read(growth.ledger_path(VAULT))
+            rows = core.ledger_read(growth_ledger.ledger_path(VAULT))
             reviews = [r for r in rows if r['kind']=='review']
             assert [r['key'] for r in reviews] == calls[:1], (reviews, calls)
             assert not [r for r in rows if r['kind']=='run']
-            assert growth._completed(VAULT, calls[0], growth.ledger_records(VAULT), graph.Index(VAULT))
-            keys = [c['key'] for c in growth.plan(VAULT, 3)['candidates']]
+            assert growth_plan.completed(VAULT, calls[0], growth_ledger.ledger_records(VAULT), graph.Index(VAULT))
+            keys = [c['key'] for c in growth_plan.plan(VAULT, 3)['candidates']]
             assert calls[0] not in keys and calls[1] in keys, (keys, calls)
         """)
 
@@ -1930,9 +1930,9 @@ class GrowthTests(unittest.TestCase):
                     raise AssertionError('the run went on after the runner died')
                 except Crash:
                     pass
-            rows = core.ledger_read(growth.ledger_path(VAULT))
+            rows = core.ledger_read(growth_ledger.ledger_path(VAULT))
             assert [r for r in rows if r['kind']=='review'] and not [r for r in rows if r['kind']=='run'], rows
-            again = growth.plan(VAULT, 3)
+            again = growth_plan.plan(VAULT, 3)
             assert not again['candidates'], again['candidates']
             assert not again['organization_jobs'], again['organization_jobs']
         """)
@@ -1944,18 +1944,18 @@ class GrowthTests(unittest.TestCase):
             result = growth.run(VAULT, [sys.executable,'-c',packet_worker(change)])
             assert not result['ok'] and result['final_reviews']['state'] == 'incomplete', result
             assert result['final_reviews']['errors'], result
-            assert not [r for r in core.ledger_read(growth.ledger_path(VAULT)) if r['kind']=='review']
+            assert not [r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='review']
         """)
 
     def test_final_packet_does_not_duplicate_existing_valid_review(self):
         self.check_case("""
             node('A')
             node('B','W2')
-            change = "growth.review(VAULT, **q['osk_reviews']['domain'][0],manifest=p['rid'])"
+            change = "growth_reviews.review(VAULT, **q['osk_reviews']['domain'][0],manifest=p['rid'])"
             result = growth.run(VAULT, [sys.executable,'-c',packet_worker(change)],limit=3)
             assert result['ok'], result
             assert 'already_complete' in result['final_reviews']['domain'].values(), result
-            assert len([r for r in core.ledger_read(growth.ledger_path(VAULT)) if r['kind']=='review']) == result['domain_selected'] == 2
+            assert len([r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='review']) == result['domain_selected'] == 2
         """)
 
     def test_total_budget_and_queue_rotation_do_not_ack_unselected_scope(self):
@@ -1976,8 +1976,8 @@ class GrowthTests(unittest.TestCase):
             for i in range(3):
                 result = growth.run(VAULT, worker,limit=1)
                 assert result['selected'] == 1 and not result['ok'], result
-                plan = [r for r in core.ledger_read(growth.ledger_path(VAULT)) if r['kind']=='plan'][-1]
-                queue = next(k for k in growth.QUEUES if plan[k])
+                plan = [r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='plan'][-1]
+                queue = next(k for k in growth_ledger.QUEUES if plan[k])
                 seen.append(queue)
                 if plan['scope_jobs']:
                     job = plan['scope_jobs'][0]
@@ -2023,7 +2023,7 @@ class GrowthTests(unittest.TestCase):
             for _ in range(3):
                 result = growth.run(VAULT, worker, limit=3)
                 assert not result['ok'], result
-                plan = [r for r in core.ledger_read(growth.ledger_path(VAULT)) if r['kind']=='plan'][-1]
+                plan = [r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='plan'][-1]
                 picks.append(plan['scope_jobs'][0]['conversation_id'])
             assert picks == ['early', 'late', 'early'], picks
         """)
@@ -2058,7 +2058,7 @@ class GrowthTests(unittest.TestCase):
             assert len(first) == 100 and 'b' not in first, first[-3:]
             result = growth.run(VAULT, [sys.executable,'-c','import sys; sys.stdin.read()'], limit=1)
             assert result.get('state') != 'capture_pending', result
-            plan = [r for r in core.ledger_read(growth.ledger_path(VAULT)) if r['kind']=='plan'][-1]
+            plan = [r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='plan'][-1]
             assert [j['conversation_id'] for j in plan['scope_jobs']] == ['b'], plan['scope_jobs']
             assert conversation_capture.status(VAULT, 'codex','lost0')['capture_error'], 'the failure stays visible'
         """)
@@ -2115,17 +2115,17 @@ class GrowthTests(unittest.TestCase):
                 os.utime(path, (ended, ended))
             ident = {'candidates': 'key', 'scope_jobs': 'conversation_id', 'organization_jobs': 'scope',
                      'eviction_jobs': 'of', 'recheck_jobs': 'key'}
-            assert set(ident) == set(growth.QUEUES)
+            assert set(ident) == set(growth_ledger.QUEUES)
             worker = [sys.executable, '-c', 'import sys; sys.stdin.read()']    # never acknowledges
             seen = {k: [] for k in ident}
             with patch.object(evictions, 'age_days', return_value=17):
-                planned = growth.plan(VAULT, 3)       # Scope jobs join at run time, from the conversations
+                planned = growth_plan.plan(VAULT, 3)       # Scope jobs join at run time, from the conversations
                 assert all(len(planned[k]) >= 2 for k in ident if k != 'scope_jobs'), planned
                 assert len(integration._known_pending(VAULT, 3)[0]) == 2
                 for _ in range(5):
                     result = growth.run(VAULT, worker, limit=3)
                     assert not result['ok'] and result['selected'] == 3, result
-                    plan = [r for r in core.ledger_read(growth.ledger_path(VAULT)) if r['kind']=='plan'][-1]
+                    plan = [r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='plan'][-1]
                     for k, field in ident.items():
                         seen[k] += [j[field] for j in plan[k]]
             assert all(len(set(v)) >= 2 for v in seen.values()), seen
@@ -2144,17 +2144,17 @@ class GrowthTests(unittest.TestCase):
             path.write_text(''.join(json.dumps(r)+'\\n' for r in rows),encoding='utf-8')
             assert conversation_capture.capture(VAULT, 'claude','waiting',str(path),'waiting',space='00_Scope/W1')['ok']
             legacy('waiting', path)
-            worker = "import sys; from osk import core,growth,organization; from osk.vault import Vault; VAULT = Vault.open(); sys.stdin.read(); p=[r for r in core.ledger_read(growth.ledger_path(VAULT)) if r['kind']=='plan'][-1]; [organization.review(VAULT, j['key'],j['scope'],'deferred','Needs a later targeted review.') for j in p['organization_jobs']]"
+            worker = "import sys; from osk import core,growth,organization, growth_ledger, growth_plan, growth_reviews, worker_process; from osk.vault import Vault; VAULT = Vault.open(); sys.stdin.read(); p=[r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='plan'][-1]; [organization.review(VAULT, j['key'],j['scope'],'deferred','Needs a later targeted review.') for j in p['organization_jobs']]"
             visited = []
             for i in range(8):
                 before = organization.load_state(VAULT)['plans']
                 # Inventories and previews must never create/refresh attempts.
-                growth.plan(VAULT, 3)
+                growth_plan.plan(VAULT, 3)
                 assert organization.load_state(VAULT)['plans'] == before
                 with patch.object(core, 'now_kst', return_value=f'2026-09-20T12:00:{i:02d}+09:00'):
                     result = growth.run(VAULT, [sys.executable,'-c',worker],limit=3)
                 assert result['selected'] == 3 and not result['ok'], result
-                manifest = [r for r in core.ledger_read(growth.ledger_path(VAULT)) if r['kind']=='plan'][-1]
+                manifest = [r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='plan'][-1]
                 jobs = manifest['organization_jobs']
                 assert len(jobs) == 1 and len(manifest['scope_jobs']) == len(manifest['candidates']) == 1, manifest
                 selected = jobs[0]
@@ -2191,18 +2191,18 @@ class GrowthTests(unittest.TestCase):
             c, d = {'key':'org-c'}, {'key':'org-d'}
             run(1, c, state='limited', returncode=1); run(0, c, state='limited', returncode=1)
             run(1, d, returncode=1); run(0, d, final_reviews={'state':'rejected','errors':['bad packet']})
-            stalled = growth._stalled(rows)
+            stalled = growth_plan.stalled(rows)
             assert stalled == {('org-a',None,None), ('rc-1','n1','t1')}, stalled
-            assert growth._skip_stalled([c, d], stalled, 2, {}) == [c, d]
+            assert growth_plan.skip_stalled([c, d], stalled, 2, {}) == [c, d]
             planned = {}
             # A stalled first candidate gives way to the next one (review of #268).
-            assert growth._skip_stalled([a, b], stalled, 1, planned) == [b], planned
+            assert growth_plan.skip_stalled([a, b], stalled, 1, planned) == [b], planned
             # Any write in the scope changes an organization snapshot, so the job stays stalled (#268).
-            assert growth._skip_stalled([dict(a, snapshot='s2'), b], stalled, 1, {}) == [b]
-            assert growth._skip_stalled([rc1, {'key':'rc-2'}, {'key':'rc-3'}], stalled, 1, planned) == [{'key':'rc-2'}]
+            assert growth_plan.skip_stalled([dict(a, snapshot='s2'), b], stalled, 1, {}) == [b]
+            assert growth_plan.skip_stalled([rc1, {'key':'rc-2'}, {'key':'rc-3'}], stalled, 1, planned) == [{'key':'rc-2'}]
             # A recheck keeps its key when the cited node or its basis changes: either state makes a new place.
-            assert growth._skip_stalled([dict(rc1, target_state='t2')], stalled, 1, planned) == [dict(rc1, target_state='t2')]
-            assert growth._skip_stalled([dict(rc1, node_state='n2')], stalled, 1, planned) == [dict(rc1, node_state='n2')]
+            assert growth_plan.skip_stalled([dict(rc1, target_state='t2')], stalled, 1, planned) == [dict(rc1, target_state='t2')]
+            assert growth_plan.skip_stalled([dict(rc1, node_state='n2')], stalled, 1, planned) == [dict(rc1, node_state='n2')]
             assert planned['stalled'] == ['org-a', 'rc-1'], planned
         """)
 
@@ -2212,30 +2212,30 @@ class GrowthTests(unittest.TestCase):
             from osk import evictions
             node('A')
             items = [evictions.record_evict(VAULT, 'W1', 'session', 'Temporary observation '+str(i)) for i in range(3)]
-            assert not growth.plan(VAULT)['eviction_jobs']  # Young entries retain the session-hook path.
+            assert not growth_plan.plan(VAULT)['eviction_jobs']  # Young entries retain the session-hook path.
             with patch.object(evictions, 'age_days', return_value=17):
-                preview = growth.plan(VAULT, 1)
+                preview = growth_plan.plan(VAULT, 1)
                 assert preview['eviction_jobs'][0]['of'] == items[0]['rid']
                 worker = [sys.executable, '-B', '-c', 'import sys; sys.stdin.read()']
                 selected = []
                 for _ in range(3):
                     result = growth.run(VAULT, worker, limit=1)
                     assert result['selected'] == 1 and not result['ok'], result
-                    manifest = [r for r in core.ledger_read(growth.ledger_path(VAULT)) if r['kind']=='plan'][-1]
+                    manifest = [r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='plan'][-1]
                     selected.extend(manifest['eviction_jobs'])
                 assert len(selected) == 1 and selected[0]['of'] == items[0]['rid'], selected
-                assert growth.plan(VAULT, 1)['eviction_jobs'][0]['of'] == items[1]['rid']  # Unattempted work progresses.
+                assert growth_plan.plan(VAULT, 1)['eviction_jobs'][0]['of'] == items[1]['rid']  # Unattempted work progresses.
                 assert len(evictions.unsettled(VAULT)) == 3
                 packet = {'osk_reviews': {'manifest':manifest['rid'], 'domain':[], 'scope':[],
                           'eviction':[{'of':items[0]['rid'],'outcome':'discarded',
                                        'reason':'Only the completed fixture job counter; no durable claim.'}]}}
-                assert growth.checkpoint(VAULT, packet)['ok']
+                assert growth_reviews.checkpoint(VAULT, packet)['ok']
                 assert len(evictions.unsettled(VAULT)) == 2
-                assert growth._eviction_status(VAULT, selected[0])['status'] == 'complete'
-                assert growth.checkpoint(VAULT, packet)['ok']
+                assert growth_plan.eviction_status(VAULT, selected[0])['status'] == 'complete'
+                assert growth_reviews.checkpoint(VAULT, packet)['ok']
                 assert len([r for r in evictions.records(VAULT) if r['kind']=='settle']) == 1
                 packet['osk_reviews']['eviction'][0]['of'] = items[1]['rid']
-                refused = growth.checkpoint(VAULT, packet)
+                refused = growth_reviews.checkpoint(VAULT, packet)
                 assert not refused['ok'] and any('unselected eviction review' in e for e in refused['errors']), refused
                 assert len([r for r in evictions.records(VAULT) if r['kind']=='settle']) == 1
         """)

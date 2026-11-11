@@ -37,7 +37,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from . import core, services, update, growth, growth_daily, response_growth, sync_status
+from . import core, services, update, growth_daily, response_growth, sync_status, growth_ledger, worker_process
 from . import harness as adapters
 from .doctor import engine_dir, venv_python
 from .harness import base
@@ -329,7 +329,7 @@ def _schedule(vault: Vault, manager, harness: str | None, at: str, uninstall: bo
         try:
             each = (argv if path == file else out["claude_command"].get("argv")
                     or json.loads(path.read_text(encoding="utf-8-sig")))
-            checked = growth.check_command(vault, each)
+            checked = worker_process.check_command(vault, each)
         except (OSError, ValueError) as e:
             checked = {"ok": False, "violations": [str(e)]}
         if checked["ok"]:
@@ -342,7 +342,7 @@ def _schedule(vault: Vault, manager, harness: str | None, at: str, uninstall: bo
         notes.append(f"Codex 소진일의 Claude 워커를 쓸 수 없어 빼고 등록한다 — " + "; ".join(checked["violations"]))
     out["command_files"] = [str(f) for f in files]
     out["task"] = services.plan(vault, manager, "growth", services.job(vault, "growth", command_files=files, at=at), False)
-    if out["task"].get("action") == "add" and growth.daily_status(vault)["ran"]:
+    if out["task"].get("action") == "add" and growth_ledger.daily_status(vault)["ran"]:
         notes.append("최근 3일 안에 정기 실행이 돌았다 — 다른 기기에 등록돼 있으면 한 곳에만 둔다"
                      "(결과는 대장으로 모든 기기가 나눈다)")
     if out["command"]["action"] == "add" and _synced(vault, file):

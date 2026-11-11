@@ -12,7 +12,7 @@ BOOT = '''
 import json, os, sys
 from pathlib import Path
 from unittest.mock import patch
-from osk import core, growth, growth_status as S, integration, validate, write, conversation_capture, conversation_cite, conversation_review, conversation_state
+from osk import core, growth, growth_status as S, integration, validate, write, conversation_capture, conversation_cite, conversation_review, conversation_state, growth_ledger, growth_plan, growth_reviews, worker_process
 from osk.vault import Vault
 VAULT = Vault.open()
 validate.make_mini_vault(VAULT, VAULT.root)
@@ -140,7 +140,7 @@ class GrowthStatusTests(unittest.TestCase):
                     row=evictions.record_evict(VAULT, 'W1','test','Anonymous source '+name)
                     jobs[name]={'key':'eviction:'+row['rid'],'of':row['rid'],
                                 'scope':row['scope'],'text':row['text']}
-                plan=core.ledger_append(growth.ledger_path(VAULT),{'kind':'plan','candidates':[],
+                plan=core.ledger_append(growth_ledger.ledger_path(VAULT),{'kind':'plan','candidates':[],
                     'scope_jobs':[],'eviction_jobs':list(jobs.values())})
                 evictions.settle(VAULT, jobs['settled_unreviewed']['of'],'merged',target='Retained')
                 evictions.settle(VAULT, jobs['settled_deferred']['of'],'node',target='Retained')
@@ -150,14 +150,14 @@ class GrowthStatusTests(unittest.TestCase):
                     entry={'of':jobs[name]['of'],'outcome':outcome,'reason':'Fixture review decision.'}
                     if outcome in ('node','merged'): entry['target']='Retained'
                     reviews.append(entry)
-                done=growth.checkpoint(VAULT, {'osk_reviews':{'manifest':plan['rid'],'domain':[],
+                done=growth_reviews.checkpoint(VAULT, {'osk_reviews':{'manifest':plan['rid'],'domain':[],
                                        'scope':[],'eviction':reviews}})
                 assert done['ok'],done
-                outcomes={job['key']:growth._eviction_status(VAULT, job) for job in jobs.values()}
-                core.ledger_append(growth.ledger_path(VAULT),{'kind':'run','manifest':plan['rid'],
+                outcomes={job['key']:growth_plan.eviction_status(VAULT, job) for job in jobs.values()}
+                core.ledger_append(growth_ledger.ledger_path(VAULT),{'kind':'run','manifest':plan['rid'],
                                    'selected':len(jobs),'ok':False,'eviction_outcomes':outcomes})
             with patch.object(core,'now_iso',return_value=END):
-                core.ledger_append(growth.ledger_path(VAULT),{'kind':'run','manifest':plan['rid'],
+                core.ledger_append(growth_ledger.ledger_path(VAULT),{'kind':'run','manifest':plan['rid'],
                                    'selected':len(jobs),'ok':False,'eviction_outcomes':outcomes})
             before=files()
             result=report()
@@ -230,7 +230,7 @@ class GrowthStatusTests(unittest.TestCase):
             before=files()
             with patch.object(conversation_capture,'status',side_effect=AssertionError('status writes repairs')), \
                  patch.object(conversation_state,'save_state',side_effect=AssertionError('unexpected write')), \
-                 patch.object(growth,'plan',side_effect=AssertionError('report selected work')), \
+                 patch.object(growth_plan,'plan',side_effect=AssertionError('report selected work')), \
                  patch.object(core,'ledger_append',side_effect=AssertionError('unexpected ledger write')):
                 first,second=report(),report()
             assert first['ok'],first
@@ -283,8 +283,8 @@ class GrowthStatusTests(unittest.TestCase):
             assert not damaged['ok'] and damaged['integration'] is None,damaged
             assert damaged['reviews'] is None and damaged['preservation'] is None,damaged
             path.unlink()
-            growth.ledger_path(VAULT).parent.mkdir(parents=True,exist_ok=True)
-            growth.ledger_path(VAULT).write_text('not json'+chr(10),encoding='utf-8')
+            growth_ledger.ledger_path(VAULT).parent.mkdir(parents=True,exist_ok=True)
+            growth_ledger.ledger_path(VAULT).write_text('not json'+chr(10),encoding='utf-8')
             damaged=report()
             assert not damaged['ok'] and damaged['runs'] is None,damaged
         ''')
@@ -336,10 +336,10 @@ class GrowthStatusTests(unittest.TestCase):
                                 capture_output=True,text=True,encoding='utf-8',timeout=30)
             assert proc.returncode==1,(proc.stdout,proc.stderr)
             assert json.loads(proc.stdout)['state']=='incomplete',proc.stdout
-            plan=[r for r in growth.ledger_records(VAULT) if r['kind']=='plan'][-1]
+            plan=[r for r in growth_ledger.ledger_records(VAULT) if r['kind']=='plan'][-1]
             assert plan['invocation']=='user_request' and plan['work_context']=='daily',plan
             assert plan['engine_rev']==epoch.loaded(),plan
-            with patch.object(growth,'check_command',side_effect=AssertionError('launched invalid invocation')):
+            with patch.object(worker_process,'check_command',side_effect=AssertionError('launched invalid invocation')):
                 try: growth.run(VAULT, ['worker'],invocation='invented')
                 except ValueError: pass
                 else: raise AssertionError('invalid invocation accepted')

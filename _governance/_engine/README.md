@@ -24,6 +24,7 @@
 | `osk/node_moves.py` | Mechanism §6-2 3항·시행령 §3 — 노드와 군집의 이동(계획·실행·허브 배선) |
 | `osk/raw.py` | 헌법 4조 3~4항·Mechanism §9 4~9항 — 인용 기록(`_cited/`, 호환 `_raw/`) append와 좌표 회상 |
 | `osk/integration.py`·`osk/conversation_*.py` | Mechanism §9-4·§9 9항 — 대화 통합: 대화 하나의 커서 파일(`conversation_state`), 전사의 포착(`conversation_capture`), 검토 닫기(`conversation_review`), 원본 턴 인용(`conversation_cite`), 밀린 대화의 목록·따라잡기와 검토 안내(`integration`) |
+| `osk/growth.py`·`growth_ledger.py`·`growth_plan.py`·`growth_reviews.py`·`worker_process.py` | Mechanism §9-4 — 성장의 한 묶음: 기록부와 그 행이 말하는 것(`growth_ledger`), 무엇을 고를지(`growth_plan`), 작업자의 판정을 받아 적기(`growth_reviews`), 작업자의 프로세스(`worker_process`), 지시문과 실행(`growth`) |
 | `osk/scope_memory.py` | Mechanism §9-2 — scope 기억(상한·앵커 일괄·거부 계약) |
 | `osk/evictions.py` | Mechanism §9-2 12항·§9-3 — 퇴출 기록부(evict·settle)와 정돈 실행(훅 주입·`status`·`tidy`) |
 | `osk/epoch.py` | 판본 관문 — 이 프로세스가 적재한 엔진과 디스크의 대조 |
