@@ -1290,7 +1290,6 @@ def test_dir_entries_durable_before_ledger():
 
     def spying():
         return [mock.patch.object(core, "fsync_dir", spy_fd, create=True),
-                mock.patch.object(A, "fsync_dir", spy_fd, create=True),
                 mock.patch.object(A, "ledger_append", spy_append),
                 mock.patch.object(approval_acts, "fsync_dir", spy_fd),
                 mock.patch.object(approval_acts, "ledger_append", spy_append),

@@ -198,10 +198,10 @@ def _verify(vault: Vault, job: dict, idx=None) -> dict:
         if not {raw.canonical_ref(vault, s["ref"]) for s in job["sources"]}.issubset(_cites(vault, node, idx)):
             raise write.WriteError("target provenance is incomplete; pending")
         retained = True
-        placement = write.node_placement(vault, p, idx, selected=job)
+        placed = write.node_placement(vault, p, idx, selected=job)
         receipt = _receipt(job)
         receipt["preservation"] = {"status": "complete"}
-        receipt["placement"] = placement
+        receipt["placement"] = placed
         return receipt
     except (write.WriteError, OSError, ValueError, KeyError, TypeError) as e:
         receipt = _receipt(job, str(e))
