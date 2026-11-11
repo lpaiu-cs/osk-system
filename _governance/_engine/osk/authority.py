@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from . import contract, approvals
+from . import contract, approvals, core, region_tree
 from .vault import Vault
 
 
@@ -66,11 +66,11 @@ def _baseline_nodes(vault: Vault) -> list[Path] | None:
     빠진다. 그래서 열거의 출처는 승인본 manifest다."""
     for region in sorted(covering_regions(vault), key=len, reverse=True):
         tree = approvals.approved_hash(vault, region)
-        table = approvals.tree_table_for_region(vault, region, tree) if tree else None
+        table = region_tree.tree_table_for_region(vault, region, tree) if tree else None
         if table is None:
             continue
         pre = delegation_region(vault) + "/"
-        return [p for p in (approvals.resolve_in_root(vault, rel) for rel in sorted(table)
+        return [p for p in (core.resolve_in_root(vault, rel) for rel in sorted(table)
                             if rel.startswith(pre) and rel.lower().endswith(".md"))
                 if p is not None]
     return None

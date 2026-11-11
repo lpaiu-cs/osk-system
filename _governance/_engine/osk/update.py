@@ -33,7 +33,7 @@ from pathlib import Path
 
 from .core import ledger_append, ledger_damage, ledger_read, sha256_file, sha256_bytes, posix_rel, local_lock_path
 from .core import fsync_dir as _fsync_dir, mkdirs_durable as _mkdirs_durable
-from . import approvals, daemon_control, update_check, update_plan, update_source, update_state, update_txn
+from . import approvals, daemon_control, update_check, update_plan, update_source, update_state, update_txn, approval_acts, region_tree
 from .vault import Vault
 
 
@@ -143,20 +143,20 @@ def _governance_review(vault: Vault, tree: Path, p: dict, side_write: list, ad_w
     if state == "stale":
         raise update_state.UpdateError("통치 구획 승인본이 stale이다 — 사용자 검토로 먼저 해소한다")
     files = {rel: sha256_file(path) for rel, path in
-             approvals.region_files(vault, vault.root / "_governance")}
-    before = sha256_bytes(approvals.manifest_blob(sorted(files.items())))
+             region_tree.region_files(vault, vault.root / "_governance")}
+    before = sha256_bytes(region_tree.manifest_blob(sorted(files.items())))
     base = approvals.approved_hash(vault, "_governance")
     prior = approvals.changeset(vault, "_governance") if base else None
     for src, dest in p["add"] + p["update"] + side_write:
-        if dest.startswith("_governance/") and not approvals.excluded_rel(dest, "_governance"):
+        if dest.startswith("_governance/") and not region_tree.excluded_rel(dest, "_governance"):
             files[dest] = sha256_file(tree / src)
     for data, dest in ad_write:
-        if dest.startswith("_governance/") and not approvals.excluded_rel(dest, "_governance"):
+        if dest.startswith("_governance/") and not region_tree.excluded_rel(dest, "_governance"):
             files[dest] = sha256_bytes(data)
     for dest in p["remove"]:
         files.pop(dest, None)
     out = {"state": state, "base": base, "before": before,
-           "after": sha256_bytes(approvals.manifest_blob(sorted(files.items()))),
+           "after": sha256_bytes(region_tree.manifest_blob(sorted(files.items()))),
            "existing_changes": prior if state == "pending" else None}
     if state != "unprotected":
         return out
@@ -170,7 +170,7 @@ def _governance_review(vault: Vault, tree: Path, p: dict, side_write: list, ad_w
         return out
     attested = {dest: rel["files"][src] for src, dest in targets
                 if dest.startswith("_governance/")
-                and not approvals.excluded_rel(dest, "_governance")}
+                and not region_tree.excluded_rel(dest, "_governance")}
     diff = sorted(k for k in files.keys() | attested.keys()
                   if files.get(k) != attested.get(k))
     out["protect"] = "withheld" if diff or approvals.ledger_is_damaged(vault, recs) else "establish"
@@ -355,11 +355,11 @@ def _run_locked(vault: Vault, source: str | None, ref: str | None, bundle: str |
                     update_txn.write_atomic(d / ".gitkeep", b"")
                     made_skel.append(posix_rel(d, vault.root))
             if accept_governance:
-                approvals.approve_locked(vault, "_governance", governance["base"],
+                approval_acts.approve_locked(vault, "_governance", governance["base"],
                                           governance["after"],
                                           f"osk.update {v}; user confirmation: {reviewed}")
             if establish:                     # 확인받은 증빙 tree 그대로만 지정
-                approvals.protect(vault, "_governance",
+                approval_acts.protect(vault, "_governance",
                                   f"osk.update {v}; user confirmation: {reviewed}",
                                   expect_work=governance["after"], _locked=True)
         except (OSError, ValueError) as e:

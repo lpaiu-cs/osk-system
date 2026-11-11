@@ -10,7 +10,7 @@ from pathlib import Path
 
 from .core import StaleEngineError
 from . import (graph, approvals, authority, raw, scope_memory, validate, search,
-               write, evictions)
+               write, evictions, approval_acts, region_tree)
 from . import harness as adapters
 from .vault import Vault
 
@@ -711,11 +711,11 @@ def main(argv=None):
         st = approvals.state(vault, a.region)
         print(f"보호영역 지정: {a.region}\n현재 상태: {st}")
         _confirm("지정 시점의 작업본이 초기 승인본이 됩니다. 지정합니까? [y/N] ")
-        rec = approvals.protect(vault, a.region, a.reason)
+        rec = approval_acts.protect(vault, a.region, a.reason)
         print("지정 등재:", rec["rid"], "| 승인본:", rec["accepted"])
     elif a.cmd == "unprotect":
         _confirm(f"{a.region} 보호를 해제합니까? (clean 상태에서만) [y/N] ")
-        rec = approvals.unprotect(vault, a.region, a.reason)
+        rec = approval_acts.unprotect(vault, a.region, a.reason)
         print("해제 등재:", rec["rid"])
     elif a.cmd == "approve":
         st = approvals.state(vault, a.region)
@@ -723,7 +723,7 @@ def main(argv=None):
             # 봉합 승인 — 승인 기록이 갈렸다(다기기 병합). 사용자가 갈래를 보고
             # 현재 작업본을 새 승인본으로 삼는다(Mechanism §3 5항).
             forks = approvals.divergence(vault, a.region)
-            work = approvals.working_tree_hash(vault, a.region)
+            work = region_tree.working_tree_hash(vault, a.region)
             if not forks or work is None:
                 raise ValueError("갈래 또는 작업본을 판정할 수 없다 — 봉합하지 않았다")
             print(f"영역이 stale입니다 — 승인 기록이 {len(forks)}갈래로 갈렸습니다.")
@@ -738,7 +738,7 @@ def main(argv=None):
             # 검토한 갈래 집합을 프롬프트 **전에** 고정해 넘긴다 — 프롬프트
             # 사이 동기화로 새 갈래가 오면 봉합이 거부된다(본 적 없는 갈래를
             # 함께 봉합하지 않는다).
-            rec = approvals.approve(vault, a.region, None, expect_work=work,
+            rec = approval_acts.approve(vault, a.region, None, expect_work=work,
                                     reason=a.reason or "분기 봉합",
                                     seal_heads=[f["rid"] for f in forks])
             print("봉합 승인 등재:", rec["rid"], "| 새 승인본:", rec["accepted"])
@@ -748,11 +748,11 @@ def main(argv=None):
         # 양측 CAS의 두 예상값을 확인 프롬프트 **전에** 고정한다 — 프롬프트
         # 사이에 작업본이 바뀌면 approve가 거부한다(검토한 것만 승인).
         base = approvals.approved_hash(vault, a.region)
-        work = approvals.working_tree_hash(vault, a.region)
+        work = region_tree.working_tree_hash(vault, a.region)
         print(f"승인 대상: {a.region}\n승인본→작업본: {base} → {work}")
         _print_changeset(vault, a.region, expect_work=work)
         _confirm("검토한 이 변경집합을 승인본으로 받아들입니까? [y/N] ")
-        rec = approvals.approve(vault, a.region, base, expect_work=work, reason=a.reason)
+        rec = approval_acts.approve(vault, a.region, base, expect_work=work, reason=a.reason)
         print("승인 등재:", rec["rid"], "| 새 승인본:", rec["accepted"])
     elif a.cmd == "revert":
         st = approvals.state(vault, a.region)
@@ -762,12 +762,12 @@ def main(argv=None):
         # (승인본→작업본)을 프롬프트 **전에** 고정한다. 프롬프트 사이에
         # 에이전트가 더 쓴 변경이 '사용자가 승인한 반려'에 묶여 사라지지 않게.
         base = approvals.approved_hash(vault, a.region)
-        work = approvals.working_tree_hash(vault, a.region)
+        work = region_tree.working_tree_hash(vault, a.region)
         print(f"반려 대상: {a.region} — 작업본을 승인본으로 원상 복원합니다")
         print(f"버릴 변경집합(작업본→승인본): {work} → {base}")
         _print_changeset(vault, a.region, expect_work=work)
         _confirm("에이전트의 변경을 버리고 승인본으로 되돌립니까? [y/N] ")
-        rec = approvals.revert(vault, a.region, base, expect_work=work, reason=a.reason)
+        rec = approval_acts.revert(vault, a.region, base, expect_work=work, reason=a.reason)
         print("반려 등재:", rec["rid"], "| 복원 승인본:", rec["base"])
     elif a.cmd == "store-reconcile":
         # EOL 이행의 저장소 몫. `-text`를 얻은 구획은 어느 쪽을 무조건 택해도
@@ -788,7 +788,7 @@ def main(argv=None):
             else:
                 _sp.run(["git", "-C", _root, "checkout", "--", rel], check=True)
 
-        res = approvals.reconcile_store(vault,
+        res = region_tree.reconcile_store(vault,
             _index_bytes, _apply if a.apply else None)
         print(f"객체 {res['checked']}건 판독 — 색인을 고칠 것 {len(res['stage'])}, "
               f"작업 트리를 고칠 것 {len(res['restore'])}, "
