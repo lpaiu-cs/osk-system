@@ -14,9 +14,9 @@
   "broad_except": 0,
   "boundary_excepts": 43,
   "isolated_excepts": 44,
-  "oversize_functions": 111,
-  "excess_lines": 1597,
-  "excess_branches": 1162,
+  "oversize_functions": 109,
+  "excess_lines": 1487,
+  "excess_branches": 1124,
   "late_loads": 1
  },
  "upward_imports": {},
@@ -150,14 +150,6 @@
   "osk.core:effective_parents": [
    22,
    16
-  ],
-  "osk.distillation:_execute": [
-   170,
-   45
-  ],
-  "osk.distillation:_execute.prepare": [
-   47,
-   23
   ],
   "osk.distillation:discover": [
    66,

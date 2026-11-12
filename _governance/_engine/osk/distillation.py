@@ -370,6 +370,184 @@ def resume(vault: Vault, key: str, *, name: str | None = None) -> dict:
                 "new_hash": sha256_file(path) if saved else None, "distillation": receipt}
 
 
+def _completed_before(vault: Vault, job: dict, idx) -> dict:
+    """보존이 이미 끝난 작업을 다시 청했다 — 허브 연결만 다시 해 보고 지금 판을 알린다."""
+    try:
+        receipt = _wire_hub(vault, job)
+    except (write.WriteError, OSError, ValueError) as exc:
+        receipt = _verify(vault, job)
+        receipt["reason"] = str(exc)
+    current = _retained_target(vault, job["target"], idx)
+    # 증류한 문단이 남은 채 다른 문단이 고쳐졌을 수 있다 — 지금 판의 해시를 준다
+    return {"ok": True, "resumed": True, "node_preserved": True,
+            "name": current.stem, "id": job["target"]["id"],
+            "path": posix_rel(current, vault.root), "new_hash": sha256_file(current),
+            "distillation": receipt}
+
+
+def _update_target(vault: Vault, request: dict, idx) -> tuple:
+    """고칠 대상의 지금 해시와, 요청이 남기려는 본문."""
+    target_path = nodefile.live_locate(vault, request["name"], idx)
+    if target_path is None or not target_path.is_file():
+        raise write.WriteError("distillation target does not exist")
+    if placement.space_of(vault, target_path)[0] not in _TARGETS:
+        raise write.WriteError("distillation target must be a Scope/Domain/Person node")
+    old = contract.parse(target_path)
+    selected_hash = sha256_file(target_path)
+    supplied_body = request.get("body")
+    if request.get("old_text") is not None:
+        supplied_body = request.get("new_text")
+    if supplied_body is not None and request.get("body") is not None:
+        if prose.norm_body(supplied_body) == prose.norm_body(old.body):
+            raise write.WriteError("distillation requires a changed retained body")
+    return selected_hash, supplied_body
+
+
+def _new_selection(vault: Vault, operation: str, distill: dict, request: dict, idx) -> tuple:
+    """새 작업의 `(출처, 허브, 쓰기 전 대상의 해시)`. 요청이 증류의 조건을 채우지 못하면 거부한다."""
+    sources = _sources(vault, distill["sources"], idx)
+    hub = _hub(vault, distill["hub"], idx)
+    # 호출자가 필수 출처를 빼라고 하면 거부한다 — 증류가 그 출처를 다시 대어
+    # 요청을 조용히 뒤집지 않는다(같은 근거를 빼고 대면 남는 것이 쓰기의 규칙이다).
+    # 비교는 실제 제거와 같은 동일성(`write.edge_key`)으로 한다 — 별칭·경로·id
+    # 어느 표기로 빼든 쓰기가 빼는 것이면 여기서도 잡힌다. 인용 라운드는 근거 절의 줄이 다므로
+    # 이행 전 derived-from의 같은 라운드를 빼는 것은 출처를 빼는 것이 아니다.
+    removed = {write.edge_key(vault, str(ref), idx) for ref in
+               contract.as_list((request.get("remove_edges") or {}).get("derived-from", []))}
+    if removed & {write.edge_key(vault, s["ref"], idx) for s in sources if s.get("id")}:
+        raise write.WriteError("required provenance was removed; no node written")
+    if operation == "create":
+        selected_hash, supplied_body = None, request.get("body")
+    else:
+        selected_hash, supplied_body = _update_target(vault, request, idx)
+    if not isinstance(supplied_body, str) or not prose.norm_body(supplied_body):
+        raise write.WriteError("distillation requires retained body content")
+    return sources, hub, selected_hash
+
+
+class _Distilling:
+    """증류 한 건의 쓰기. 쓸 것을 저널(`job`)에 먼저 적고(`prepare`), 노드를 쓰고 허브에 잇는다(`write`).
+    저널이 선 뒤의 실패는 영수증에 적는다(`failed`)."""
+
+    def __init__(self, vault: Vault, operation: str, key: str, binding: str, job: dict | None, idx,
+                 sources: list, hub: dict, selected_hash: str | None):
+        self.vault, self.operation, self.key, self.binding = vault, operation, key, binding
+        self.job, self.idx = job, idx
+        self.sources, self.hub, self.selected_hash = sources, hub, selected_hash
+
+    def admit(self, path, n) -> None:
+        """쓰려는 것이 증류의 조건을 채우는가 — 아니면 `WriteError`."""
+        vault, hub, sources = self.vault, self.hub, self.sources
+        current_hash = sha256_file(path) if path.exists() else None
+        if current_hash != self.selected_hash:
+            raise write.WriteError("target changed before write; pending")
+        if self.operation == "update" and prose.norm_body(n.body) == prose.norm_body(contract.parse(path).body):
+            raise write.WriteError("distillation requires a changed retained body")
+        if placement.space_of(vault, path)[0] not in _TARGETS:
+            raise write.WriteError("distillation target must be a Scope/Domain/Person node")
+        if path.parent != resolve_in_root(vault, hub["path"]).parent or path.stem == hub["name"]:
+            raise write.WriteError("target must be a knowledge node under the selected hub")
+        if any(s["path"] in (posix_rel(path, vault.root), hub["path"]) for s in sources):
+            raise write.WriteError("distillation cannot cite its target or wiring hub as input")
+        if not prose.norm_body(n.body):
+            raise write.WriteError("distillation has no retained body after validation")
+        cites = _cites(vault, n, self.idx, legacy=False)
+        if not {source["ref"] for source in sources if source.get("id")}.issubset(cites):
+            raise write.WriteError("required provenance was removed; no node written")
+        unlined = [s for s in sources if not s.get("id") and raw.canonical_ref(vault, s["ref"]) not in cites]
+        if unlined:
+            coords = [raw.coordinate(vault, s["path"], raw.parse_ref(s["ref"])[1]) for s in unlined]
+            raise write.WriteError(
+                "출처 라운드를 관측 절의 줄로 달지 않았다 — 쓰지 않았다",
+                [f"노드 끝 `# 관측` 절에 `- 날짜 · `{c}` · 지지|조건|반례 — 그 턴이 보인 것` "
+                 f"한 줄을 단다(헌법 제8조 6항)" for c in coords])
+
+    def prepare(self, path, data) -> None:
+        """쓰기 직전에 불린다. 쓸 것을 확인하고, 그 정체와 바이트를 저널에 먼저 적는다."""
+        vault, job = self.vault, self.job
+        n = contract.parse_bytes(path, data)
+        self.admit(path, n)
+        planned = {"name": path.stem, "id": n.id, "path": posix_rel(path, vault.root),
+                   "before_hash": sha256_file(path) if path.exists() else None,
+                   "hash": sha256_bytes(data)}
+        old_body = contract.parse(path).body if path.exists() else ""
+        added = _added_segments(old_body, n.body)
+        if job and job["target"].get("paragraphs") == _added_segments(old_body, n.body, headings=False):
+            # 제목이 단위가 되기 전에 저장한 미완료 저널은 그때 예약한 결속으로 재생한다(#141 리뷰).
+            added = job["target"]["paragraphs"]
+        # 더한 단위가 없으면(삭제만 한 쓰기) 파일 전체에 결속한다. 이 판 이전에 시작한
+        # 작업은 그 작업의 형식(파일 전체)을 그대로 잇는다.
+        if added and (job is None or "paragraphs" in job["target"]):
+            planned["paragraphs"] = added
+        if job:
+            if job["target"] != planned:
+                raise write.WriteError("prepared target changed; pending")
+        else:
+            self.job = {"version": 2, "key": self.key, "binding": self.binding,
+                        "sources": self.sources, "hub": self.hub, "target": planned,
+                        "identity": {"id": n.id, "created": n.meta["created"]},
+                        "stamp": n.meta["updated"]}
+            _check_sources(vault, self.job, graph.Index(vault))
+            _save(vault, self.job)  # identity and exact expected bytes BEFORE graph write
+
+    def write(self, request: dict, _seen: dict | None) -> tuple:
+        """노드를 쓰고(이미 쓰였으면 건너뛰고) 허브에 잇는다 — `(쓰기의 결과, 영수증)`."""
+        vault, job = self.vault, self.job
+        if job:
+            _check_sources(vault, job, self.idx)
+            target = job["target"]
+            path = resolve_in_root(vault, target["path"])
+            current = sha256_file(path) if path and path.is_file() else None
+            if current not in (target["before_hash"], target["hash"]):
+                raise write.WriteError("target changed concurrently; pending")
+            already_written = current == target["hash"]
+        else:
+            already_written = False
+        if not already_written:
+            result = self.write_node(request, _seen, job)
+        else:
+            result = {"ok": True, "name": target["name"], "id": target["id"],
+                      "path": target["path"], "new_hash": target["hash"], "resumed": True}
+        return result, _wire_hub(vault, self.job)
+
+    def write_node(self, request: dict, _seen: dict | None, job: dict | None) -> dict:
+        # 노드 출처는 엔진이 derived-from에 단다. 인용 라운드는 무엇을 보였는지 아는
+        # 호출자가 근거 절에 줄로 적고, `prepare`가 그 줄을 확인한다(헌법 제8조 5·6항).
+        nodes = [s["ref"] for s in self.sources if s.get("id")]
+        if nodes:
+            edge_arg = "edges" if self.operation == "create" else "add_edges"
+            edges = dict(request.get(edge_arg) or {})
+            edges["derived-from"] = contract.as_list(edges.get("derived-from", [])) + nodes
+            request[edge_arg] = edges
+        # v1 reserved wiki-form raw edges. Replay those exact bytes;
+        # never replace the journal's expected hash to permit a retry.
+        legacy_raw = bool(job and job["version"] == 1)
+        if self.operation == "create":
+            result = write.create_node_locked(self.vault,
+                **request, _before_write=self.prepare, _legacy_raw=legacy_raw,
+                _identity=job["identity"] if job else None)
+        else:
+            result = write.update_node_locked(self.vault,
+                **request, _before_write=self.prepare, _legacy_raw=legacy_raw,
+                _stamp=job["stamp"] if job else None, _seen=_seen)
+        if self.job is None:
+            raise write.WriteError("no retained body was written")
+        return result
+
+    def failed(self, e: Exception) -> tuple:
+        """저널이 선 뒤의 실패 — 저장됐는지를 파일로 다시 보고 `(결과, 영수증)`을 낸다."""
+        job = self.job
+        receipt = _verify(self.vault, job)
+        if receipt["status"] != "complete":
+            receipt["reason"] = str(e)
+        p = resolve_in_root(self.vault, job["target"]["path"])
+        saved = bool(p and p.is_file() and sha256_file(p) == job["target"]["hash"])
+        result = {"ok": saved, "name": job["target"]["name"], "id": job["target"]["id"],
+                  "path": job["target"]["path"], "node_preserved": saved,
+                  "new_hash": job["target"]["hash"] if saved else None}
+        return result, receipt
+
+
 def _execute(vault: Vault, operation: str, distill: dict, request: dict, *,
              _seen: dict | None = None) -> dict:
     if not isinstance(distill, dict) or set(distill) != {"key", "sources", "hub"}:
@@ -394,150 +572,18 @@ def _execute(vault: Vault, operation: str, distill: dict, request: dict, *,
         idx = graph.Index(vault)
         nodefile.require_complete(idx)
         if job and _verify(vault, job).get("preservation", {}).get("status") == "complete":
-            try:
-                receipt = _wire_hub(vault, job)
-            except (write.WriteError, OSError, ValueError) as exc:
-                receipt = _verify(vault, job)
-                receipt["reason"] = str(exc)
-            current = _retained_target(vault, job["target"], idx)
-            # 증류한 문단이 남은 채 다른 문단이 고쳐졌을 수 있다 — 지금 판의 해시를 준다
-            return {"ok": True, "resumed": True, "node_preserved": True,
-                    "name": current.stem, "id": job["target"]["id"],
-                    "path": posix_rel(current, vault.root), "new_hash": sha256_file(current),
-                    "distillation": receipt}
-        if not job:
-            sources = _sources(vault, distill["sources"], idx)
-            hub = _hub(vault, distill["hub"], idx)
-            # 호출자가 필수 출처를 빼라고 하면 거부한다 — 증류가 그 출처를 다시 대어
-            # 요청을 조용히 뒤집지 않는다(같은 근거를 빼고 대면 남는 것이 쓰기의 규칙이다).
-            # 비교는 실제 제거와 같은 동일성(`write.edge_key`)으로 한다 — 별칭·경로·id
-            # 어느 표기로 빼든 쓰기가 빼는 것이면 여기서도 잡힌다. 인용 라운드는 근거 절의 줄이 다므로
-            # 이행 전 derived-from의 같은 라운드를 빼는 것은 출처를 빼는 것이 아니다.
-            removed = {write.edge_key(vault, str(ref), idx) for ref in
-                       contract.as_list((request.get("remove_edges") or {}).get("derived-from", []))}
-            if removed & {write.edge_key(vault, s["ref"], idx) for s in sources if s.get("id")}:
-                raise write.WriteError("required provenance was removed; no node written")
-            if operation == "create":
-                supplied_body = request.get("body")
-                target_path = None
-                selected_hash = None
-            else:
-                target_path = nodefile.live_locate(vault, request["name"], idx)
-                if target_path is None or not target_path.is_file():
-                    raise write.WriteError("distillation target does not exist")
-                if placement.space_of(vault, target_path)[0] not in _TARGETS:
-                    raise write.WriteError("distillation target must be a Scope/Domain/Person node")
-                old = contract.parse(target_path)
-                selected_hash = sha256_file(target_path)
-                supplied_body = request.get("body")
-                if request.get("old_text") is not None:
-                    supplied_body = request.get("new_text")
-                if supplied_body is not None and request.get("body") is not None:
-                    if prose.norm_body(supplied_body) == prose.norm_body(old.body):
-                        raise write.WriteError("distillation requires a changed retained body")
-            if not isinstance(supplied_body, str) or not prose.norm_body(supplied_body):
-                raise write.WriteError("distillation requires retained body content")
+            return _completed_before(vault, job, idx)
+        if job:
+            sources, hub, selected_hash = job["sources"], job["hub"], job["target"]["before_hash"]
         else:
-            sources, hub = job["sources"], job["hub"]
-            selected_hash = job["target"]["before_hash"]
-
-        def prepare(path, data):
-            nonlocal job
-            n = contract.parse_bytes(path, data)
-            current_hash = sha256_file(path) if path.exists() else None
-            if current_hash != selected_hash:
-                raise write.WriteError("target changed before write; pending")
-            if operation == "update" and prose.norm_body(n.body) == prose.norm_body(contract.parse(path).body):
-                raise write.WriteError("distillation requires a changed retained body")
-            if placement.space_of(vault, path)[0] not in _TARGETS:
-                raise write.WriteError("distillation target must be a Scope/Domain/Person node")
-            if path.parent != resolve_in_root(vault, hub["path"]).parent or path.stem == hub["name"]:
-                raise write.WriteError("target must be a knowledge node under the selected hub")
-            if any(s["path"] in (posix_rel(path, vault.root), hub["path"]) for s in sources):
-                raise write.WriteError("distillation cannot cite its target or wiring hub as input")
-            if not prose.norm_body(n.body):
-                raise write.WriteError("distillation has no retained body after validation")
-            cites = _cites(vault, n, idx, legacy=False)
-            if not {source["ref"] for source in sources if source.get("id")}.issubset(cites):
-                raise write.WriteError("required provenance was removed; no node written")
-            unlined = [s for s in sources if not s.get("id") and raw.canonical_ref(vault, s["ref"]) not in cites]
-            if unlined:
-                coords = [raw.coordinate(vault, s["path"], raw.parse_ref(s["ref"])[1]) for s in unlined]
-                raise write.WriteError(
-                    "출처 라운드를 관측 절의 줄로 달지 않았다 — 쓰지 않았다",
-                    [f"노드 끝 `# 관측` 절에 `- 날짜 · `{c}` · 지지|조건|반례 — 그 턴이 보인 것` "
-                     f"한 줄을 단다(헌법 제8조 6항)" for c in coords])
-            planned = {"name": path.stem, "id": n.id, "path": posix_rel(path, vault.root),
-                       "before_hash": sha256_file(path) if path.exists() else None,
-                       "hash": sha256_bytes(data)}
-            old_body = contract.parse(path).body if path.exists() else ""
-            added = _added_segments(old_body, n.body)
-            if job and job["target"].get("paragraphs") == _added_segments(old_body, n.body, headings=False):
-                # 제목이 단위가 되기 전에 저장한 미완료 저널은 그때 예약한 결속으로 재생한다(#141 리뷰).
-                added = job["target"]["paragraphs"]
-            # 더한 단위가 없으면(삭제만 한 쓰기) 파일 전체에 결속한다. 이 판 이전에 시작한
-            # 작업은 그 작업의 형식(파일 전체)을 그대로 잇는다.
-            if added and (job is None or "paragraphs" in job["target"]):
-                planned["paragraphs"] = added
-            if job:
-                if job["target"] != planned:
-                    raise write.WriteError("prepared target changed; pending")
-            else:
-                job = {"version": 2, "key": key, "binding": binding,
-                       "sources": sources, "hub": hub, "target": planned,
-                       "identity": {"id": n.id, "created": n.meta["created"]},
-                       "stamp": n.meta["updated"]}
-                _check_sources(vault, job, graph.Index(vault))
-                _save(vault, job)  # identity and exact expected bytes BEFORE graph write
-
+            sources, hub, selected_hash = _new_selection(vault, operation, distill, request, idx)
+        run = _Distilling(vault, operation, key, binding, job, idx, sources, hub, selected_hash)
         try:
-            if job:
-                _check_sources(vault, job, idx)
-                target = job["target"]
-                path = resolve_in_root(vault, target["path"])
-                current = sha256_file(path) if path and path.is_file() else None
-                if current not in (target["before_hash"], target["hash"]):
-                    raise write.WriteError("target changed concurrently; pending")
-                already_written = current == target["hash"]
-            else:
-                already_written = False
-            if not already_written:
-                # 노드 출처는 엔진이 derived-from에 단다. 인용 라운드는 무엇을 보였는지 아는
-                # 호출자가 근거 절에 줄로 적고, `prepare`가 그 줄을 확인한다(헌법 제8조 5·6항).
-                nodes = [s["ref"] for s in sources if s.get("id")]
-                if nodes:
-                    edge_arg = "edges" if operation == "create" else "add_edges"
-                    edges = dict(request.get(edge_arg) or {})
-                    edges["derived-from"] = contract.as_list(edges.get("derived-from", [])) + nodes
-                    request[edge_arg] = edges
-                # v1 reserved wiki-form raw edges. Replay those exact bytes;
-                # never replace the journal's expected hash to permit a retry.
-                legacy_raw = bool(job and job["version"] == 1)
-                if operation == "create":
-                    result = write.create_node_locked(vault,
-                        **request, _before_write=prepare, _legacy_raw=legacy_raw,
-                        _identity=job["identity"] if job else None)
-                else:
-                    result = write.update_node_locked(vault,
-                        **request, _before_write=prepare, _legacy_raw=legacy_raw,
-                        _stamp=job["stamp"] if job else None, _seen=_seen)
-                if job is None:
-                    raise write.WriteError("no retained body was written")
-            else:
-                result = {"ok": True, "name": target["name"], "id": target["id"],
-                          "path": target["path"], "new_hash": target["hash"], "resumed": True}
-            receipt = _wire_hub(vault, job)
+            result, receipt = run.write(request, _seen)
         except Exception as e:      # 격리: 작업이 서 있으면 실패를 영수증에 적는다 — 저장됐는지는 아래에서 파일로 다시 본다
-            if job is None:
+            if run.job is None:
                 raise
-            receipt = _verify(vault, job)
-            if receipt["status"] != "complete":
-                receipt["reason"] = str(e)
-            p = resolve_in_root(vault, job["target"]["path"])
-            saved = bool(p and p.is_file() and sha256_file(p) == job["target"]["hash"])
-            result = {"ok": saved, "name": job["target"]["name"], "id": job["target"]["id"],
-                      "path": job["target"]["path"], "node_preserved": saved,
-                      "new_hash": job["target"]["hash"] if saved else None}
+            result, receipt = run.failed(e)
         result["distillation"] = receipt
         if filtered:
             result["filtered"] = sorted(filtered)
