@@ -66,8 +66,8 @@ BOUNDARIES = {
     "mcp_server": {"_guard", "overview", "_hook_sections"},
     # 데몬 루프 — 한 주기의 실패가 다음 주기를 막지 않는다.
     "sync_daemon": {"main"},
-    # 명령의 진입점 — `status`는 읽히는 구획을 다 보인다.
-    "osk.cli": {"main"},
+    # 현황 명령 — `status`는 읽히는 구획을 다 보인다. 구획 하나가 깨져도 나머지를 낸다.
+    "osk.cli": {"_status_cmd"},
     # 검증기는 어떤 입력에도 죽지 않는다(시행령 §11). 검사 하나의 실패는 그 검사의 실패로 보고된다.
     "osk.validate": {"run"},
 }
