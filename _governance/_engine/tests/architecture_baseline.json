@@ -14,8 +14,8 @@
   "broad_except": 0,
   "boundary_excepts": 43,
   "isolated_excepts": 44,
-  "oversize_functions": 117,
-  "excess_lines": 2383,
+  "oversize_functions": 116,
+  "excess_lines": 2247,
   "excess_branches": 1548,
   "late_loads": 1
  },
@@ -198,10 +198,6 @@
   "osk.graph:Index.resolve": [
    51,
    18
-  ],
-  "osk.growth:prompt": [
-   196,
-   5
   ],
   "osk.growth:run": [
    199,
