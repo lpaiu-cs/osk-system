@@ -289,6 +289,111 @@ def _progress(planned: dict, outcomes: dict, scope: dict, organization: dict, ev
     return {"made": made, "none": [k for k in keys if k not in made]}
 
 
+def _caught_up(vault: Vault, scope_job: dict | None, wanted: set, limit: int, scope_rounds: int, capture: bool,
+               exclude: set, scope_bundle: int) -> dict:
+    """이번 실행이 볼 대화 검토 작업 — 대화에서 갈라진 실행은 제 대화 하나, 정기 실행은 밀린 대화들."""
+    # A response-triggered fork owns one frozen conversation snapshot.
+    # Daily runs retain their existing cross-conversation/Domain queue.
+    if scope_job is not None:
+        catchup = {"ok": not bool(scope_job.get("capture_error")), "jobs": [scope_job], "remaining": 0}
+    elif "scope_jobs" in wanted:
+        catchup = integration.catchup(vault, limit=min(100, limit), max_rounds=scope_rounds,
+                                      tried=growth_plan.scope_tried(growth_ledger.ledger_records(vault)), capture_new=capture,
+                                      exclude=exclude, bundle=scope_bundle)
+    else:
+        catchup = {"ok": True, "jobs": [], "remaining": 0}
+    return catchup
+
+
+def _fork_scope(vault: Vault, scope_job: dict, planned: dict, limit: int) -> None:
+    """대화에서 갈라진 실행이 제 scope에서 함께 맡는 것을 계획에 적는다 — 조직 검토 하나와, 정기 실행이 없을
+    때의 재검토."""
+    from . import write
+    # 일회성 작업 폴더의 대화는 그 키의 결속을 따르지 않는다(Mechanism §6-2 6항)
+    # 결속 scope는 주된 scope부터, 없으면 결속 순서대로(§9-3 1항)
+    scopes = ([] if (scope_job.get("workspace") or {}).get("one_off")
+              else write.bound_scopes(vault, scope_job["session"]))
+    scope = scopes[0] if scopes else None
+    planned["work_context"] = "stop:" + (scope or scope_job["session"])
+    # 거듭 진척 없던 작업은 빼고 그 뒤의 후보로 채운다(#259). 자른 뒤에 빼면 뺀 작업이
+    # 시도 기록을 남기지 않아 계속 앞에 서고, 뒤의 작업이 영영 뽑히지 않는다.
+    rows = growth_ledger.ledger_records(vault)
+    stalled = growth_plan.stalled(rows)
+    planned["organization_jobs"] = growth_plan.skip_stalled(
+        organization.pending(vault, scopes, limit=min(len(scopes), 20)) if scopes else [],
+        stalled, 1, planned)
+    # 정기 실행이 없으면 이 scope의 재검토를 fork가 맡는다.
+    idx = growth_plan.node_index(vault)
+    planned["recheck_jobs"] = growth_plan.skip_stalled(
+        growth_plan.pick_rechecks(vault, idx, limit + len(stalled), scope, rows) if scope and not growth_ledger.daily_active(vault) else [],
+        stalled, limit, planned)
+
+
+def _launch(vault: Vault, command: list[str], text: str, env: dict, cwd: Path | None, timeout: int,
+            directory: Path) -> tuple:
+    """작업자를 띄워 지시문을 건네고 끝나기를 기다린다 — `(오류, 종료 코드, 정리하다 난 오류)`."""
+    error, returncode, cleanup_error = None, None, None
+    with (directory / "stdout.txt").open("wb") as stdout, (directory / "stderr.txt").open("wb") as stderr:
+        try:
+            proc = subprocess.Popen(command, stdin=subprocess.PIPE,
+                                    stdout=stdout, stderr=stderr,
+                                    cwd=vault.root if cwd is None else cwd, env=env, shell=False,
+                                    start_new_session=os.name != "nt",
+                                    creationflags=0x08000200 if os.name == "nt" else 0)
+            try:
+                proc.communicate(text.encode("utf-8"), timeout=timeout)
+            except subprocess.TimeoutExpired as exc:
+                error = str(exc)
+                cleanup_error = worker_process.stop_tree(proc)
+            except BaseException:
+                worker_process.stop_tree(proc)
+                raise
+            returncode = proc.returncode
+        except OSError as exc:
+            error = str(exc)
+    return error, returncode, cleanup_error
+
+
+def _observe(vault: Vault, planned: dict, manifest: dict) -> tuple:
+    """작업마다 저장소에 남은 결과를 본다 — Domain 후보의 영수증과 그 결과, 그리고 큐 넷의 상태."""
+    rows, idx = growth_ledger.ledger_records(vault), growth_plan.node_index(vault)
+    par = core.effective_parents(rows)
+    receipts = {c["key"]: growth_plan.completed(vault, c["key"], rows, idx, par)
+                for c in planned["candidates"]}
+    outcomes = {}
+    for key, receipt in receipts.items():
+        last = growth_ledger.latest_report(rows, key, "key", par)
+        outcomes[key] = receipt["outcome"] if receipt else (
+            "deferred" if last and last.get("manifest") == manifest["rid"]
+            and last.get("outcome") == "deferred" else "pending")
+    scope_outcomes = {job["key"]: conversation_review.review_status_locked(vault,
+        job["harness"], job["conversation_id"], job["through"])
+        for job in planned["scope_jobs"]}
+    organization_outcomes = {job["key"]: organization.status(vault, job, idx)
+                             for job in planned["organization_jobs"]}
+    eviction_outcomes = {job["key"]: growth_plan.eviction_status(vault, job, idx)
+                         for job in planned["eviction_jobs"]}
+    recheck_outcomes = {job["key"]: growth_plan.recheck_status(vault, job, idx)
+                        for job in planned["recheck_jobs"]}
+    return receipts, outcomes, scope_outcomes, organization_outcomes, eviction_outcomes, recheck_outcomes
+
+
+def _complete(returncode, error, planned: dict, final_reviews: dict, receipts: dict, scope_outcomes: dict,
+              organization_outcomes: dict, eviction_outcomes: dict, recheck_outcomes: dict) -> bool:
+    """이 실행이 고른 것을 다 닫았는가."""
+    # Catch-up includes unrelated conversations. Their failures remain visible
+    # in capture; only selected conversations can block this bounded run.
+    return (returncode == 0 and error is None
+            and all(j.get("ok", True) and not j.get("capture_error")
+                    for j in planned["scope_jobs"])
+            and not final_reviews["errors"]
+            and all(receipts.values())
+            and all(s["status"] == "complete" for s in scope_outcomes.values())
+            and all(s["status"] == "complete" for s in organization_outcomes.values())
+            and all(s["status"] == "complete" for s in eviction_outcomes.values())
+            and all(s["status"] == "complete" for s in recheck_outcomes.values()))
+
+
 def run(vault: Vault, command: list[str], limit: int = 3, timeout: int = 600, *,
          scope_job: dict | None = None, cwd: Path | None = None,
          worker_env: dict | None = None, invocation: str = "unknown",
@@ -329,16 +434,7 @@ def run(vault: Vault, command: list[str], limit: int = 3, timeout: int = 600, *,
             return {"ok": False, "state": "busy"}
         try:
             wanted, exclude = set(growth_ledger.QUEUES if queues is None else queues), set(exclude)
-            # A response-triggered fork owns one frozen conversation snapshot.
-            # Daily runs retain their existing cross-conversation/Domain queue.
-            if scope_job is not None:
-                catchup = {"ok": not bool(scope_job.get("capture_error")), "jobs": [scope_job], "remaining": 0}
-            elif "scope_jobs" in wanted:
-                catchup = integration.catchup(vault, limit=min(100, limit), max_rounds=scope_rounds,
-                                              tried=growth_plan.scope_tried(growth_ledger.ledger_records(vault)), capture_new=capture,
-                                              exclude=exclude, bundle=scope_bundle)
-            else:
-                catchup = {"ok": True, "jobs": [], "remaining": 0}
+            catchup = _caught_up(vault, scope_job, wanted, limit, scope_rounds, capture, exclude, scope_bundle)
             with core.mutation_lock(vault):
                 try:
                     rechecks.ensure_baseline(vault, carry=True)
@@ -361,25 +457,7 @@ def run(vault: Vault, command: list[str], limit: int = 3, timeout: int = 600, *,
                 planned["invocation"] = invocation
                 planned["engine_rev"] = core.epoch.loaded()
                 if scope_job is not None and scope_job.get("session"):
-                    from . import write
-                    # 일회성 작업 폴더의 대화는 그 키의 결속을 따르지 않는다(Mechanism §6-2 6항)
-                    # 결속 scope는 주된 scope부터, 없으면 결속 순서대로(§9-3 1항)
-                    scopes = ([] if (scope_job.get("workspace") or {}).get("one_off")
-                              else write.bound_scopes(vault, scope_job["session"]))
-                    scope = scopes[0] if scopes else None
-                    planned["work_context"] = "stop:" + (scope or scope_job["session"])
-                    # 거듭 진척 없던 작업은 빼고 그 뒤의 후보로 채운다(#259). 자른 뒤에 빼면 뺀 작업이
-                    # 시도 기록을 남기지 않아 계속 앞에 서고, 뒤의 작업이 영영 뽑히지 않는다.
-                    rows = growth_ledger.ledger_records(vault)
-                    stalled = growth_plan.stalled(rows)
-                    planned["organization_jobs"] = growth_plan.skip_stalled(
-                        organization.pending(vault, scopes, limit=min(len(scopes), 20)) if scopes else [],
-                        stalled, 1, planned)
-                    # 정기 실행이 없으면 이 scope의 재검토를 fork가 맡는다.
-                    idx = growth_plan.node_index(vault)
-                    planned["recheck_jobs"] = growth_plan.skip_stalled(
-                        growth_plan.pick_rechecks(vault, idx, limit + len(stalled), scope, rows) if scope and not growth_ledger.daily_active(vault) else [],
-                        stalled, limit, planned)
+                    _fork_scope(vault, scope_job, planned, limit)
                 planned["scope_jobs"] = catchup["jobs"] if scope_bundle else catchup["jobs"][:limit]
                 planned["scope_remaining"] = catchup.get("remaining", 0)
                 # A Stop fork may organize only its own Scope. It reuses this one
@@ -416,25 +494,7 @@ def run(vault: Vault, command: list[str], limit: int = 3, timeout: int = 600, *,
             env = dict(os.environ if worker_env is None else worker_env, OSK_VAULT_ROOT=str(vault.root),
                        PYTHONPATH=str(Path(__file__).resolve().parent.parent),
                        OSK_GROWTH_WORKER="1")
-            error, returncode, cleanup_error = None, None, None
-            with (directory / "stdout.txt").open("wb") as stdout, (directory / "stderr.txt").open("wb") as stderr:
-                try:
-                    proc = subprocess.Popen(command, stdin=subprocess.PIPE,
-                                            stdout=stdout, stderr=stderr,
-                                            cwd=vault.root if cwd is None else cwd, env=env, shell=False,
-                                            start_new_session=os.name != "nt",
-                                            creationflags=0x08000200 if os.name == "nt" else 0)
-                    try:
-                        proc.communicate(text.encode("utf-8"), timeout=timeout)
-                    except subprocess.TimeoutExpired as exc:
-                        error = str(exc)
-                        cleanup_error = worker_process.stop_tree(proc)
-                    except BaseException:
-                        worker_process.stop_tree(proc)
-                        raise
-                    returncode = proc.returncode
-                except OSError as exc:
-                    error = str(exc)
+            error, returncode, cleanup_error = _launch(vault, command, text, env, cwd, timeout, directory)
             with core.mutation_lock(vault):
                 needs_review = growth_reviews.needs_review(vault, planned, growth_ledger.ledger_records(vault), growth_plan.node_index(vault))
             final_reviews = {"state": "not_needed", "errors": []}
@@ -449,36 +509,10 @@ def run(vault: Vault, command: list[str], limit: int = 3, timeout: int = 600, *,
                 "rejected", "not_applied"}) and worker_usage.limited(vault, stdout_path, command)
             usage = worker_usage.usage(stdout_path, command, cold_first=scope_job is None)
             with core.mutation_lock(vault):
-                rows, idx = growth_ledger.ledger_records(vault), growth_plan.node_index(vault)
-                par = core.effective_parents(rows)
-                receipts = {c["key"]: growth_plan.completed(vault, c["key"], rows, idx, par)
-                            for c in planned["candidates"]}
-                outcomes = {}
-                for key, receipt in receipts.items():
-                    last = growth_ledger.latest_report(rows, key, "key", par)
-                    outcomes[key] = receipt["outcome"] if receipt else (
-                        "deferred" if last and last.get("manifest") == manifest["rid"]
-                        and last.get("outcome") == "deferred" else "pending")
-                scope_outcomes = {job["key"]: conversation_review.review_status_locked(vault,
-                    job["harness"], job["conversation_id"], job["through"])
-                    for job in planned["scope_jobs"]}
-                organization_outcomes = {job["key"]: organization.status(vault, job, idx)
-                                         for job in planned["organization_jobs"]}
-                eviction_outcomes = {job["key"]: growth_plan.eviction_status(vault, job, idx)
-                                     for job in planned["eviction_jobs"]}
-                recheck_outcomes = {job["key"]: growth_plan.recheck_status(vault, job, idx)
-                                    for job in planned["recheck_jobs"]}
-                # Catch-up includes unrelated conversations. Their failures remain visible
-                # in capture; only selected conversations can block this bounded run.
-                complete = (returncode == 0 and error is None
-                            and all(j.get("ok", True) and not j.get("capture_error")
-                                    for j in planned["scope_jobs"])
-                            and not final_reviews["errors"]
-                            and all(receipts.values())
-                            and all(s["status"] == "complete" for s in scope_outcomes.values())
-                            and all(s["status"] == "complete" for s in organization_outcomes.values())
-                            and all(s["status"] == "complete" for s in eviction_outcomes.values())
-                            and all(s["status"] == "complete" for s in recheck_outcomes.values()))
+                (receipts, outcomes, scope_outcomes, organization_outcomes, eviction_outcomes,
+                 recheck_outcomes) = _observe(vault, planned, manifest)
+                complete = _complete(returncode, error, planned, final_reviews, receipts, scope_outcomes,
+                                     organization_outcomes, eviction_outcomes, recheck_outcomes)
                 result = {"kind": "run", "manifest": manifest["rid"],
                           "ok": complete, "state": "complete" if complete else "limited" if limited else "incomplete",
                           "provider": worker_usage.provider(command), "usage": usage,
