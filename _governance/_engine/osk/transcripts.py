@@ -785,54 +785,73 @@ def _claude(rows: list, sid: str, *, dialogue: bool = False, rules: dict | None 
     return turns.result()
 
 
-def _codex(rows: list, sid: str, *, dialogue: bool = False) -> dict:
-    identities = {r.get("payload", {}).get("id") for _, r in rows if r.get("type") == "session_meta"}
-    if identities != {sid}:
-        raise ValueError("Codex transcript session_meta.id does not match this conversation")
-    rounds, diagnostics, users, trace, seen, calls = [], [], [], [], set(), {}
-    turn = None
-    user_formats = []
-    resumable, final_seen = None, False
-    evidence, has_native_trace, compaction_seen = [], False, False
+def _mirror_text(value: dict, origin: str) -> str | None:
+    """같은 말을 두 봉투가 실어 올 때 둘을 짝짓는 열쇠. 글만 든 것만 짝짓는다 — 다른 것이 든 내용은
+    짐작으로 지우지 않고 그대로 둔다."""
+    if origin == "legacy":
+        if isinstance(value.get("message"), str) and not any(
+                v for k, v in value.items() if k != "message"):
+            return value["message"]
+        return None
+    content = value["content"]
+    if (set(value) <= {"id", "content"} and len(content) == 1
+            and isinstance(content[0], dict) and content[0].get("type") == "text"
+            and isinstance(content[0].get("text"), str)
+            and not any(v for k, v in content[0].items() if k not in {"type", "text"})):
+        return content[0]["text"]
+    return None
 
-    def finish(completion, line, terminal=None):
-        nonlocal resumable
-        inputs = users or ([_dump({"native_trigger": "inputless_after_terminal", **resumable})]
-                           if resumable else [])
+
+class _CodexTurns:
+    """Codex 전사의 행을 차례로 받아 턴을 라운드로 닫는다. 열린 턴에 대해 아는 것이 여기 있다.
+
+    턴은 `task_started`로 열리고 `task_complete`(`completed`)나 `turn_aborted`(`aborted`)로 닫힌다. 닫히지
+    않은 채 다음 턴이 열리면 끊긴 것이다(`started`)."""
+
+    def __init__(self, sid: str, dialogue: bool):
+        self.sid, self.dialogue = sid, dialogue
+        self.rounds, self.diagnostics, self.users, self.trace, self.seen, self.calls = [], [], [], [], set(), {}
+        self.turn = None
+        self.user_formats = []
+        self.resumable, self.final_seen = None, False
+        self.evidence, self.has_native_trace, self.compaction_seen = [], False, False
+
+    def open(self, turn) -> None:
+        """턴 하나의 것을 비운다. `turn`은 새로 열린 턴이거나, 닫힌 뒤의 None이다."""
+        self.turn, self.users, self.trace = turn, [], []
+        self.evidence, self.has_native_trace, self.compaction_seen = [], False, False
+        self.user_formats.clear()
+
+    def has_trace(self):
+        return self.has_native_trace if self.dialogue else self.trace
+
+    def finish(self, completion, line, terminal=None) -> bool:
+        inputs = self.users or ([_dump({"native_trigger": "inputless_after_terminal", **self.resumable})]
+                                if self.resumable else [])
         if not inputs:
             return False
-        if turn not in seen:
-            rounds.append({"id": turn, "user": "\n\n".join(inputs),
-                           "agent": "\n\n".join(trace + _tool_evidence(evidence, f"codex:{sid}:{turn}")
-                                                 + ([_dump(_terminal(terminal) if dialogue else terminal)] if terminal else [])),
-                           "end_line": line, "completion": completion})
-            seen.add(turn)
+        if self.turn not in self.seen:
+            self.rounds.append({
+                "id": self.turn, "user": "\n\n".join(inputs),
+                "agent": "\n\n".join(self.trace + _tool_evidence(self.evidence, f"codex:{self.sid}:{self.turn}")
+                                      + ([_dump(_terminal(terminal) if self.dialogue else terminal)] if terminal else [])),
+                "end_line": line, "completion": completion})
+            self.seen.add(self.turn)
         if completion in ("failed", "aborted", "interrupted"):
-            if users:
+            if self.users:
                 # Prior input is context, not proof that this is the same task.
-                resumable = {"previous_input_turn": turn, "previous_input": users[:]}
+                self.resumable = {"previous_input_turn": self.turn, "previous_input": self.users[:]}
         else:
-            resumable = None
+            self.resumable = None
         return True
 
-    def add_user(value, origin):
+    def add_user(self, value: dict, origin: str) -> None:
         # Some harness versions emit both envelopes. Pair only plain-text
         # mirrors, one for one; preserve the legacy bytes for captured prefixes.
         # Rich or unrecognized content stays intact rather than being guessed away.
-        key = None
-        if origin == "legacy":
-            if isinstance(value.get("message"), str) and not any(
-                    v for k, v in value.items() if k != "message"):
-                key = value["message"]
-        else:
-            content = value["content"]
-            if (set(value) <= {"id", "content"} and len(content) == 1
-                    and isinstance(content[0], dict) and content[0].get("type") == "text"
-                    and isinstance(content[0].get("text"), str)
-                    and not any(v for k, v in content[0].items() if k not in {"type", "text"})):
-                key = content[0]["text"]
-        if dialogue:
-            locator = f"codex:{sid}:{turn}:user"
+        key = _mirror_text(value, origin)
+        if self.dialogue:
+            locator = f"codex:{self.sid}:{self.turn}:user"
             content = _dialogue_content(value.get("content", value.get("message", "")), locator)
             attachments = [v for k in ("images", "local_images") for v in value.get(k, [])]
             if attachments:
@@ -843,122 +862,168 @@ def _codex(rows: list, sid: str, *, dialogue: bool = False) -> dict:
             rendered = _dump(value)
         other = "native" if origin == "legacy" else "legacy"
         if key is not None:
-            for i, (previous, previous_key) in enumerate(user_formats):
+            for i, (previous, previous_key) in enumerate(self.user_formats):
                 if previous == other and previous_key == key:
                     if origin == "legacy":
-                        users[i] = rendered
-                    user_formats[i] = ("paired", key)
+                        self.users[i] = rendered
+                    self.user_formats[i] = ("paired", key)
                     return
-        users.append(rendered)
-        user_formats.append((origin, key))
+        self.users.append(rendered)
+        self.user_formats.append((origin, key))
 
-    for line, row in rows:
+    def row(self, line: int, row: dict) -> None:
         typ, p = row.get("type"), row.get("payload", {})
         if not isinstance(p, dict):
             raise ValueError(f"unsupported Codex payload at line {line}")
         event = p.get("type")
-        if typ == "event_msg" and event == "task_started":
-            if turn and (users or (has_native_trace if dialogue else trace)):
-                if not finish("interrupted", line - 1, {
-                        "type": "superseded", "turn_id": turn, "next_turn_id": p.get("turn_id")}):
-                    diagnostics.append(f"unfinished Codex turn {turn}")
-            turn, users, trace = p.get("turn_id"), [], []
-            evidence, has_native_trace, compaction_seen = [], False, False
-            final_seen = False
-            user_formats.clear()
-        elif typ == "turn_context" and not turn:
-            turn = p.get("turn_id")
-        elif typ == "compacted" and turn:
-            compaction_seen = True
-        elif typ == "event_msg" and event == "user_message" and turn:
-            add_user({k: v for k, v in p.items() if k != "type"}, "legacy")
-        elif (typ == "event_msg" and event == "item_completed" and turn
+        if typ == "event_msg":
+            self.event(line, p, event)
+        elif typ == "turn_context" and not self.turn:
+            self.turn = p.get("turn_id")
+        elif typ == "compacted" and self.turn:
+            self.compaction_seen = True
+        elif typ == "response_item" and self.turn:
+            self.response(line, p, event)
+
+    def event(self, line: int, p: dict, event) -> None:
+        if event == "task_started":
+            self.started(line, p)
+        elif event == "user_message" and self.turn:
+            self.add_user({k: v for k, v in p.items() if k != "type"}, "legacy")
+        elif (event == "item_completed" and self.turn
               and isinstance(p.get("item"), dict) and p["item"].get("type") == "UserMessage"):
-            if p.get("turn_id") != turn or p.get("thread_id") != sid:
-                raise ValueError(f"Codex user item identity mismatch at line {line}")
-            item = p["item"]
-            if isinstance(item.get("content"), list) and item["content"]:
-                add_user({k: v for k, v in item.items() if k != "type"}, "native")
-        elif typ == "response_item" and turn:
-            meta = p.get("internal_chat_message_metadata_passthrough") or {}
-            if meta.get("turn_id") not in (None, turn):
-                raise ValueError(f"Codex response identity mismatch at line {line}")
-            goal = (event == "message" and p.get("role") == "user"
-                    and meta.get("content_item_kinds") == ["goal.internal_context"])
-            delivered = (event == "function_call_output" and not p.get("call_id")
-                         and p.get("namespace") == "codex_app"
-                         and p.get("name") in {"automation_update", "send_message_to_thread"}
-                         and meta.get("turn_id") == turn
-                         and (p["name"] != "send_message_to_thread" or not users and not resumable))
-            if goal or delivered:
-                # These are native execution triggers, not new human requests. A turn
-                # that already had input or resumable context reads as before, so its
-                # tracked hash holds; only the formerly untrackable turn is new.
-                trigger = ({"content": _dialogue_content(p.get("content", p.get("output", "")),
-                                                        f"codex:{sid}:{turn}:trigger")} if dialogue else {"item": p})
-                kind = "goal" if goal else "heartbeat" if p["name"] == "automation_update" else "thread_message"
-                users.append(_dump({"native_trigger": kind, **trigger}))
-                user_formats.append(("trigger", None))
-                continue
-            if event == "message" and p.get("role") == "assistant" and p.get("phase") == "final_answer":
-                final_seen = True  # A quiet heartbeat may intentionally finish with empty text.
-            if dialogue:
-                has_native_trace = has_native_trace or event != "message" or p.get("role") == "assistant"
-                entry = _dialogue_event(p, f"codex:{sid}:{turn}:{p.get('call_id') or p.get('id') or 'assistant'}")
-                if entry is not None:
-                    if entry["type"] in {"tool_call_ref", "tool_result_ref"}:
-                        evidence.append(entry)
-                    else:
-                        trace.append(_dump(entry))
-                continue
-            # event_msg user/agent text mirrors response_item. Keep native tool
-            # items and assistant responses once; never mistake tool output for
-            # the human's next prompt. No truncation of content or tool results.
-            if event in ("function_call", "custom_tool_call"):
-                arguments = p.get("arguments", p.get("input"))
-                try:
-                    arguments = json.loads(arguments) if isinstance(arguments, str) else arguments
-                except ValueError:
-                    pass
-                calls[p.get("call_id")] = {"name": p.get("name", ""), "input": arguments}
-            elif event in ("function_call_output", "custom_tool_call_output"):
-                p = {**p, "output": _result_content(calls.get(p.get("call_id")), p.get("output"),
-                                                    f"codex:{sid}:{turn}:{p.get('call_id')}")}
-            if event != "message" or p.get("role") == "assistant":
-                trace.append(_dump(p))
-        elif typ == "event_msg" and event == "task_complete":
-            if not turn or p.get("turn_id") != turn:
-                raise ValueError(f"Codex completion turn_id mismatch at line {line}")
-            if dialogue and not trace and str(p.get("last_agent_message") or "").strip():
-                trace.append(_dump({"type": "message", "role": "assistant", "phase": "final_answer",
-                                    "content": p["last_agent_message"]}))
-            # task_complete is authoritative; final_answer alone never commits.
-            if (compaction_seen and not users and not trace and not has_native_trace
-                    and not p.get("error") and not p.get("last_agent_message")):
-                pass  # Native maintenance completion has no dialogue to capture.
-            elif p.get("error"):
-                if not finish("failed", line, p):
-                    diagnostics.append(f"missing input for failed Codex turn {turn}")
-            elif (users or resumable) and (has_native_trace if dialogue else trace) and (
-                    str(p.get("last_agent_message") or "").strip() or final_seen):
-                finish("completed", line, p if not p.get("last_agent_message") else None)
+            self.user_item(line, p)
+        elif event == "task_complete":
+            self.completed(line, p)
+        elif event == "turn_aborted" and self.turn:
+            self.aborted(line, p)
+
+    def started(self, line: int, p: dict) -> None:
+        if self.turn and (self.users or self.has_trace()):
+            if not self.finish("interrupted", line - 1, {
+                    "type": "superseded", "turn_id": self.turn, "next_turn_id": p.get("turn_id")}):
+                self.diagnostics.append(f"unfinished Codex turn {self.turn}")
+        self.open(p.get("turn_id"))
+        self.final_seen = False
+
+    def user_item(self, line: int, p: dict) -> None:
+        if p.get("turn_id") != self.turn or p.get("thread_id") != self.sid:
+            raise ValueError(f"Codex user item identity mismatch at line {line}")
+        item = p["item"]
+        if isinstance(item.get("content"), list) and item["content"]:
+            self.add_user({k: v for k, v in item.items() if k != "type"}, "native")
+
+    def trigger(self, p: dict, event, meta: dict) -> str | None:
+        """이 항목이 사람의 말이 아니라 턴을 일으킨 것이면 그 종류."""
+        if (event == "message" and p.get("role") == "user"
+                and meta.get("content_item_kinds") == ["goal.internal_context"]):
+            return "goal"
+        if (event == "function_call_output" and not p.get("call_id")
+                and p.get("namespace") == "codex_app"
+                and p.get("name") in {"automation_update", "send_message_to_thread"}
+                and meta.get("turn_id") == self.turn
+                and (p["name"] != "send_message_to_thread" or not self.users and not self.resumable)):
+            return "heartbeat" if p["name"] == "automation_update" else "thread_message"
+        return None
+
+    def response(self, line: int, p: dict, event) -> None:
+        meta = p.get("internal_chat_message_metadata_passthrough") or {}
+        if meta.get("turn_id") not in (None, self.turn):
+            raise ValueError(f"Codex response identity mismatch at line {line}")
+        kind = self.trigger(p, event, meta)
+        if kind:
+            # These are native execution triggers, not new human requests. A turn
+            # that already had input or resumable context reads as before, so its
+            # tracked hash holds; only the formerly untrackable turn is new.
+            trigger = ({"content": _dialogue_content(p.get("content", p.get("output", "")),
+                                                    f"codex:{self.sid}:{self.turn}:trigger")}
+                       if self.dialogue else {"item": p})
+            self.users.append(_dump({"native_trigger": kind, **trigger}))
+            self.user_formats.append(("trigger", None))
+            return
+        if event == "message" and p.get("role") == "assistant" and p.get("phase") == "final_answer":
+            self.final_seen = True  # A quiet heartbeat may intentionally finish with empty text.
+        if self.dialogue:
+            self.dialogue_item(p, event)
+        else:
+            self.traced_item(p, event)
+
+    def dialogue_item(self, p: dict, event) -> None:
+        self.has_native_trace = self.has_native_trace or event != "message" or p.get("role") == "assistant"
+        entry = _dialogue_event(p, f"codex:{self.sid}:{self.turn}:{p.get('call_id') or p.get('id') or 'assistant'}")
+        if entry is not None:
+            if entry["type"] in {"tool_call_ref", "tool_result_ref"}:
+                self.evidence.append(entry)
             else:
-                diagnostics.append(f"incomplete content for completed Codex turn {turn}")
-            turn, users, trace = None, [], []
-            evidence, has_native_trace, compaction_seen = [], False, False
-            user_formats.clear()
-        elif typ == "event_msg" and event == "turn_aborted" and turn:
-            if p.get("turn_id") and p["turn_id"] != turn:
-                raise ValueError(f"Codex abort turn_id mismatch at line {line}")
-            # Native abort is a terminal record, not successful work.
-            if not finish("aborted", line, p) and (has_native_trace if dialogue else trace):
-                diagnostics.append(f"missing input for aborted Codex turn {turn}")
-            turn, users, trace = None, [], []
-            evidence, has_native_trace, compaction_seen = [], False, False
-            user_formats.clear()
-    return {"rounds": rounds, "pending_tail": bool(users) or bool(turn) or bool(diagnostics),
-            "diagnostics": diagnostics,
-            "tail": {"id": turn, "user": "\n\n".join(users)} if turn and users else None}
+                self.trace.append(_dump(entry))
+
+    def traced_item(self, p: dict, event) -> None:
+        # event_msg user/agent text mirrors response_item. Keep native tool
+        # items and assistant responses once; never mistake tool output for
+        # the human's next prompt. No truncation of content or tool results.
+        if event in ("function_call", "custom_tool_call"):
+            arguments = p.get("arguments", p.get("input"))
+            try:
+                arguments = json.loads(arguments) if isinstance(arguments, str) else arguments
+            except ValueError:
+                pass
+            self.calls[p.get("call_id")] = {"name": p.get("name", ""), "input": arguments}
+        elif event in ("function_call_output", "custom_tool_call_output"):
+            p = {**p, "output": _result_content(self.calls.get(p.get("call_id")), p.get("output"),
+                                                f"codex:{self.sid}:{self.turn}:{p.get('call_id')}")}
+        if event != "message" or p.get("role") == "assistant":
+            self.trace.append(_dump(p))
+
+    def maintenance(self, p: dict) -> bool:
+        """Native maintenance completion has no dialogue to capture."""
+        return bool(self.compaction_seen and not self.users and not self.trace and not self.has_native_trace
+                    and not p.get("error") and not p.get("last_agent_message"))
+
+    def answered(self, p: dict) -> bool:
+        return bool((self.users or self.resumable) and self.has_trace() and (
+            str(p.get("last_agent_message") or "").strip() or self.final_seen))
+
+    def completed(self, line: int, p: dict) -> None:
+        if not self.turn or p.get("turn_id") != self.turn:
+            raise ValueError(f"Codex completion turn_id mismatch at line {line}")
+        if self.dialogue and not self.trace and str(p.get("last_agent_message") or "").strip():
+            self.trace.append(_dump({"type": "message", "role": "assistant", "phase": "final_answer",
+                                     "content": p["last_agent_message"]}))
+        # task_complete is authoritative; final_answer alone never commits.
+        if self.maintenance(p):
+            pass
+        elif p.get("error"):
+            if not self.finish("failed", line, p):
+                self.diagnostics.append(f"missing input for failed Codex turn {self.turn}")
+        elif self.answered(p):
+            self.finish("completed", line, p if not p.get("last_agent_message") else None)
+        else:
+            self.diagnostics.append(f"incomplete content for completed Codex turn {self.turn}")
+        self.open(None)
+
+    def aborted(self, line: int, p: dict) -> None:
+        if p.get("turn_id") and p["turn_id"] != self.turn:
+            raise ValueError(f"Codex abort turn_id mismatch at line {line}")
+        # Native abort is a terminal record, not successful work.
+        if not self.finish("aborted", line, p) and self.has_trace():
+            self.diagnostics.append(f"missing input for aborted Codex turn {self.turn}")
+        self.open(None)
+
+    def result(self) -> dict:
+        return {"rounds": self.rounds,
+                "pending_tail": bool(self.users) or bool(self.turn) or bool(self.diagnostics),
+                "diagnostics": self.diagnostics,
+                "tail": {"id": self.turn, "user": "\n\n".join(self.users)} if self.turn and self.users else None}
+
+
+def _codex(rows: list, sid: str, *, dialogue: bool = False) -> dict:
+    identities = {r.get("payload", {}).get("id") for _, r in rows if r.get("type") == "session_meta"}
+    if identities != {sid}:
+        raise ValueError("Codex transcript session_meta.id does not match this conversation")
+    turns = _CodexTurns(sid, dialogue)
+    for line, row in rows:
+        turns.row(line, row)
+    return turns.result()
 
 
 # Kiro `turn_end.stopReason` → completion. Only end_turn is success; the rest keep their

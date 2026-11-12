@@ -14,9 +14,9 @@
   "broad_except": 0,
   "boundary_excepts": 43,
   "isolated_excepts": 44,
-  "oversize_functions": 113,
-  "excess_lines": 1828,
-  "excess_branches": 1285,
+  "oversize_functions": 111,
+  "excess_lines": 1715,
+  "excess_branches": 1196,
   "late_loads": 1
  },
  "upward_imports": {},
@@ -410,14 +410,6 @@
   "osk.transcripts:_antigravity": [
    54,
    22
-  ],
-  "osk.transcripts:_codex": [
-   173,
-   99
-  ],
-  "osk.transcripts:_codex.add_user": [
-   32,
-   20
   ],
   "osk.transcripts:_codex_history": [
    31,
