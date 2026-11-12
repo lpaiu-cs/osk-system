@@ -161,79 +161,94 @@ def _entry_id(queue: str, entry) -> str | None:
     return ":".join(entry[f] for f in fields)
 
 
-def _check_entry(queue: str, entry, planned: dict, notes: list) -> dict:
-    """한 항목의 계약. 맞으면 (군더더기를 뗀) 항목을 돌려주고, 아니면 ValueError."""
-    ident = _entry_id(queue, entry)
-    if queue in ("domain", "scope"):
-        allowed = ({c["key"] for c in planned["candidates"]} if queue == "domain" else
-                   {":".join((j["harness"], j["conversation_id"], j["through"])) for j in planned["scope_jobs"]})
-        required = ({"key", "outcome", "reason"} if queue == "domain" else
-                    {"harness", "conversation_id", "through", "outcome", "reason"})
-        optional = {"target"} if queue == "domain" else {"targets"}
-        if not isinstance(entry, dict) or not required <= set(entry) <= required | optional:
-            raise ValueError(f"invalid {queue} review fields")
-        if any(not isinstance(entry[k], str) or not entry[k].strip() for k in required):
-            raise ValueError(f"{queue} review fields must be nonempty strings")
-        if ident not in allowed:
-            raise ValueError(f"unselected {queue} review")
-        if entry["outcome"] not in {"preserved", "no_value", "deferred"} | ({"summary"} if queue == "scope" else set()):
-            raise ValueError(f"invalid {queue} review outcome")
-        entry = dict(entry)
-        if queue == "domain":
-            if "target" in entry and entry["outcome"] != "preserved":
-                entry.pop("target")
-                notes.append(f"domain review {ident}: only a preserved decision names a target; the target was dropped")
-            elif "target" in entry and (not isinstance(entry["target"], str) or not entry["target"].strip()):
-                raise ValueError("a preserved Domain review names its target title")
-        elif entry["outcome"] in {"preserved", "summary"}:
-            field = "key" if entry["outcome"] == "preserved" else "text"
-            targets = entry.get("targets")
-            if not isinstance(targets, list) or not targets or not all(
-                    isinstance(t, dict) and set(t) == {field}
-                    and isinstance(t[field], str) and t[field].strip() for t in targets):
-                raise ValueError("Scope review needs exact target keys or saved summary excerpts")
-        elif "targets" in entry:
-            entry.pop("targets")
-            notes.append(f"scope review {ident}: no_value and deferred close no target; the targets were dropped")
-        return entry
-    if queue == "organization":
-        jobs = {j["key"]: j for j in planned.get("organization_jobs", [])}
-        fields = {"key", "scope", "outcome", "reason"}
-        if not isinstance(entry, dict) or not fields <= set(entry) <= fields | {"after", "intentional", "checked"}:
-            raise ValueError("invalid organization review fields")
-        if any(not isinstance(entry[k], str) or not entry[k].strip() for k in fields):
-            raise ValueError("organization review fields must be nonempty strings")
-        if entry["key"] not in jobs or jobs[entry["key"]]["scope"] != entry["scope"]:
-            raise ValueError("unselected organization review")
-        if entry["outcome"] not in {"complete", "deferred"}:
-            raise ValueError("invalid organization outcome")
-        checked = entry.get("checked", [])
-        if not isinstance(checked, list) or any(not isinstance(i, dict) or not isinstance(i.get("unit"), str)
-                                                for i in checked):
-            raise ValueError("organization checked units must be objects with a unit")
-        units = {u["unit"] for u in jobs[entry["key"]].get("review_units", [])}
-        kept = [i for i in checked if i["unit"] in units]
-        if len(kept) != len(checked):
-            notes.append(f"organization review {ident}: {len(checked) - len(kept)} checked unit(s) outside "
-                         "this manifest were dropped")
-        return {**entry, "checked": kept} if "checked" in entry else entry
-    if queue == "eviction":
-        fields = {"of", "outcome", "reason"}
-        if (not isinstance(entry, dict) or not fields <= set(entry) <= fields | {"target"}
-                or any(not isinstance(entry[k], str) or not entry[k].strip() for k in fields)):
-            raise ValueError("invalid eviction review fields")
-        if entry["of"] not in {j["of"] for j in planned.get("eviction_jobs", [])}:
-            raise ValueError("unselected eviction review")
-        if entry["outcome"] not in {"node", "merged", "discarded", "deferred"}:
-            raise ValueError("invalid eviction outcome")
-        if entry["outcome"] in {"node", "merged"}:
-            if not isinstance(entry.get("target"), str) or not entry["target"].strip():
-                raise ValueError("preserved eviction requires a target title")
-        elif "target" in entry:
-            entry = {k: v for k, v in entry.items() if k != "target"}
-            notes.append(f"eviction review {ident}: discarded and deferred name no target; the target was dropped")
-        return entry
-    if not isinstance(entry, dict) or entry.get("outcome") not in {"escalated", "deferred"}:
+_DECISIONS = {"preserved", "no_value", "deferred"}
+
+
+def _fields(queue: str, entry, required: set, optional: set) -> None:
+    """항목의 필드 — 있어야 할 것이 다 있고, 모르는 것이 없고, 있어야 할 것은 빈 글이 아니다."""
+    if not isinstance(entry, dict) or not required <= set(entry) <= required | optional:
+        raise ValueError(f"invalid {queue} review fields")
+    if any(not isinstance(entry[k], str) or not entry[k].strip() for k in required):
+        raise ValueError(f"{queue} review fields must be nonempty strings")
+
+
+def _check_domain(entry, planned: dict, notes: list, ident) -> dict:
+    allowed = {c["key"] for c in planned["candidates"]}
+    _fields("domain", entry, {"key", "outcome", "reason"}, {"target"})
+    if ident not in allowed:
+        raise ValueError("unselected domain review")
+    if entry["outcome"] not in _DECISIONS:
+        raise ValueError("invalid domain review outcome")
+    entry = dict(entry)
+    if "target" in entry and entry["outcome"] != "preserved":
+        entry.pop("target")
+        notes.append(f"domain review {ident}: only a preserved decision names a target; the target was dropped")
+    elif "target" in entry and (not isinstance(entry["target"], str) or not entry["target"].strip()):
+        raise ValueError("a preserved Domain review names its target title")
+    return entry
+
+
+def _check_scope(entry, planned: dict, notes: list, ident) -> dict:
+    allowed = {":".join((j["harness"], j["conversation_id"], j["through"])) for j in planned["scope_jobs"]}
+    _fields("scope", entry, {"harness", "conversation_id", "through", "outcome", "reason"}, {"targets"})
+    if ident not in allowed:
+        raise ValueError("unselected scope review")
+    if entry["outcome"] not in _DECISIONS | {"summary"}:
+        raise ValueError("invalid scope review outcome")
+    entry = dict(entry)
+    if entry["outcome"] in {"preserved", "summary"}:
+        field = "key" if entry["outcome"] == "preserved" else "text"
+        targets = entry.get("targets")
+        if not isinstance(targets, list) or not targets or not all(
+                isinstance(t, dict) and set(t) == {field}
+                and isinstance(t[field], str) and t[field].strip() for t in targets):
+            raise ValueError("Scope review needs exact target keys or saved summary excerpts")
+    elif "targets" in entry:
+        entry.pop("targets")
+        notes.append(f"scope review {ident}: no_value and deferred close no target; the targets were dropped")
+    return entry
+
+
+def _check_organization(entry, planned: dict, notes: list, ident) -> dict:
+    jobs = {j["key"]: j for j in planned.get("organization_jobs", [])}
+    _fields("organization", entry, {"key", "scope", "outcome", "reason"}, {"after", "intentional", "checked"})
+    if entry["key"] not in jobs or jobs[entry["key"]]["scope"] != entry["scope"]:
+        raise ValueError("unselected organization review")
+    if entry["outcome"] not in {"complete", "deferred"}:
+        raise ValueError("invalid organization outcome")
+    checked = entry.get("checked", [])
+    if not isinstance(checked, list) or any(not isinstance(i, dict) or not isinstance(i.get("unit"), str)
+                                            for i in checked):
+        raise ValueError("organization checked units must be objects with a unit")
+    units = {u["unit"] for u in jobs[entry["key"]].get("review_units", [])}
+    kept = [i for i in checked if i["unit"] in units]
+    if len(kept) != len(checked):
+        notes.append(f"organization review {ident}: {len(checked) - len(kept)} checked unit(s) outside "
+                     "this manifest were dropped")
+    return {**entry, "checked": kept} if "checked" in entry else entry
+
+
+def _check_eviction(entry, planned: dict, notes: list, ident) -> dict:
+    fields = {"of", "outcome", "reason"}
+    if (not isinstance(entry, dict) or not fields <= set(entry) <= fields | {"target"}
+            or any(not isinstance(entry[k], str) or not entry[k].strip() for k in fields)):
+        raise ValueError("invalid eviction review fields")
+    if entry["of"] not in {j["of"] for j in planned.get("eviction_jobs", [])}:
+        raise ValueError("unselected eviction review")
+    if entry["outcome"] not in {"node", "merged", "discarded", "deferred"}:
+        raise ValueError("invalid eviction outcome")
+    if entry["outcome"] in {"node", "merged"}:
+        if not isinstance(entry.get("target"), str) or not entry["target"].strip():
+            raise ValueError("preserved eviction requires a target title")
+    elif "target" in entry:
+        entry = {k: v for k, v in entry.items() if k != "target"}
+        notes.append(f"eviction review {ident}: discarded and deferred name no target; the target was dropped")
+    return entry
+
+
+def _check_recheck(entry, planned: dict, notes: list, ident) -> dict:
+    # 튜플과 견준다 — 집합과 견주면 `outcome`이 목록·객체일 때 `TypeError`가 계약(ValueError)보다 먼저 난다
+    if not isinstance(entry, dict) or entry.get("outcome") not in ("escalated", "deferred"):
         raise ValueError("a recheck review only escalates or defers; a check closes through update_node")
     fields = {"key", "outcome", "reason"} | ({"proposal"} if entry["outcome"] == "escalated" else set())
     if entry["outcome"] == "deferred" and "proposal" in entry:
@@ -244,6 +259,15 @@ def _check_entry(queue: str, entry, planned: dict, notes: list) -> dict:
     if entry["key"] not in {j["key"] for j in planned.get("recheck_jobs", [])}:
         raise ValueError("unselected recheck review")
     return entry
+
+
+_ENTRY_CHECKS = {"domain": _check_domain, "scope": _check_scope, "organization": _check_organization,
+                 "eviction": _check_eviction, "recheck": _check_recheck}
+
+
+def _check_entry(queue: str, entry, planned: dict, notes: list) -> dict:
+    """한 항목의 계약. 맞으면 (군더더기를 뗀) 항목을 돌려주고, 아니면 ValueError."""
+    return _ENTRY_CHECKS[queue](entry, planned, notes, _entry_id(queue, entry))
 
 
 def apply_final_reviews(vault: Vault, output: Path, planned: dict) -> dict:
