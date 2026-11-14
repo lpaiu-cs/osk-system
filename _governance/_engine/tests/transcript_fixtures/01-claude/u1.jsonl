@@ -1,0 +1,7 @@
+{"type":"queue-operation","operation":"t1","timestamp":"2001-01-02T00:00:00.000Z","sessionId":"u1","content":"t2"}
+{"type":"queue-operation","operation":"t3","timestamp":"2001-01-02T00:00:01.000Z","sessionId":"u1"}
+{"parentUuid":null,"isSidechain":false,"promptId":"u2","type":"user","message":{"role":"user","content":"<local-command-caveat>t4</local-command-caveat>"},"isMeta":true,"uuid":"u3","timestamp":"2001-01-02T00:00:03.000Z","sessionId":"u1"}
+{"parentUuid":"u3","isSidechain":false,"promptId":"u2","type":"user","message":{"role":"user","content":"t5"},"uuid":"u4","timestamp":"2001-01-02T00:00:02.000Z","sessionId":"u1"}
+{"parentUuid":"u4","isSidechain":false,"type":"t6","content":"<local-command-stdout>t7</local-command-stdout>","timestamp":"2001-01-02T00:00:03.000Z","uuid":"u5","isMeta":false,"sessionId":"u1"}
+{"type":"last-prompt","leafUuid":"u5","sessionId":"u1"}
+{"type":"t8","sessionId":"u1"}
