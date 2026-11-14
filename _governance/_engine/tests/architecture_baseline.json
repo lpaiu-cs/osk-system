@@ -15,8 +15,8 @@
   "boundary_excepts": 43,
   "isolated_excepts": 44,
   "oversize_functions": 108,
-  "excess_lines": 1233,
-  "excess_branches": 1066,
+  "excess_lines": 1185,
+  "excess_branches": 1040,
   "late_loads": 1
  },
  "upward_imports": {},
@@ -200,8 +200,8 @@
    21
   ],
   "osk.growth_daily:daily": [
-   116,
-   55
+   68,
+   29
   ],
   "osk.growth_daily:idle": [
    28,

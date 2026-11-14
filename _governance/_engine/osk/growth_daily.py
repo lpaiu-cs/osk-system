@@ -306,18 +306,19 @@ def _batch(vault: Vault, command: list[str], kind: str, size: int, **args) -> di
     return result
 
 
-def daily(vault: Vault, commands: list[list[str]], *, invocation: str = "scheduled", backlog: bool = False) -> dict:
-    """하루 정기 성장 실행. 명령은 공급자마다 하나다(Codex, 그리고 대신 돌 Claude 워커). `backlog`는 대화
-    검토 적체를 일괄로 돈다 — 주간 조정·하루 한도·벽시계 예산 없이 Scope 묶음만, 대기열이 비거나 작업자
-    이상이 나거나 모든 공급자가 쉴 때까지."""
-    started = time.monotonic()
+def _by_provider(commands: list[list[str]]) -> dict:
+    """공급자마다 명령 하나."""
     by: dict = {}
     for command in commands:
         who = worker_usage.provider(command) or "other"      # 한도도 예산도 모르는 명령
         if who in by:
             raise ValueError(f"two growth commands for one provider ({who})")
         by[who] = command
-    errors = []
+    return by
+
+
+def _capture_first(vault: Vault) -> tuple:
+    """묶음을 돌기 전의 포착 — `(포착의 결과, 그날의 실패로 셀 것)`."""
     # 포착은 모델을 부르지 않는다 — 공급자가 모두 소진인 날에도, 주간 측정보다 먼저 한 번 한다.
     # 실패는 묶음을 막지 않지만 그날의 실패다. 이미 적힌 같은 오류(원본이 지워진 대화 등)는 대화
     # 상태와 `integration status`에 남아 있다 — 날마다 실패로 세면 새 실패가 묻힌다.
@@ -326,11 +327,11 @@ def daily(vault: Vault, commands: list[list[str]], *, invocation: str = "schedul
     except Exception as exc:      # 격리: 포착의 실패는 오류로 적고 하루의 실행은 간다
         captured = {"captures": [], "errors": [{"error": f"{type(exc).__name__}: {exc}"}]}
     failed = captured["errors"] + [c for c in captured["captures"] if c.get("new_error")]
-    if failed:
-        errors.append({"capture": failed})
-    rows = growth_ledger.ledger_records(vault)
-    now = datetime.now(timezone.utc).astimezone()
-    day = now.date().isoformat()
+    return captured, failed
+
+
+def _week_limit(vault: Vault, rows: list[dict], by: dict, now: datetime, backlog: bool, errors: list) -> tuple:
+    """이번 주의 하루 한도 — `(조정, 이번에 새로 정했는가)`. 주가 바뀌었으면 다시 잰다."""
     last = (_adjustments(rows) or [None])[-1]
     # 주는 날짜로 센다. 조정 시각은 포착을 마친 뒤에 적혀 날마다 몇 분씩 달라서, 시각으로 재면 같은
     # 시각의 매일 실행이 7일째에 몇 분 모자라 하루씩 밀린다(#258).
@@ -345,8 +346,11 @@ def daily(vault: Vault, commands: list[list[str]], *, invocation: str = "schedul
             errors.append({"adjustment": f"{type(exc).__name__}: {exc}"})
             fresh = False
     adjustment = adjustment or {"at": now.isoformat(timespec="seconds"), "limit": LIMIT_FLOOR}
-    recorded = fresh                 # 새로 정했으면 첫 묶음의 계획에 판단 근거를 싣는다
-    limit = adjustment["limit"]
+    return adjustment, fresh
+
+
+def _spent_today(rows: list[dict], day: str) -> tuple:
+    """그날 앞선 실행이 쓴 것 — `(다시 고르지 않을 작업, 큐마다 돈 작업 수, 쓴 초)`."""
     plans = {r["rid"]: r for r in rows if r.get("kind") == "plan"}
     today = [(plans[r["manifest"]], r) for r in rows if r.get("kind") == "run" and r.get("manifest") in plans
              and (plans[r["manifest"]].get("daily") or {}).get("day") == day]
@@ -363,6 +367,39 @@ def daily(vault: Vault, commands: list[list[str]], *, invocation: str = "schedul
             done[plan["daily"]["kind"]] += _counted(plan["daily"]["kind"], run)
         if (begun := _at(plan)) and (ended := _at(run)):
             earlier += max(0.0, (ended - begun).total_seconds())
+    return exclude, done, earlier
+
+
+def _note_day(vault: Vault, day: str, stop: str | None, batches: list, backlog: bool, errors: list) -> None:
+    """하루 실행이 멈춘 까닭과 묶음 수를 기기의 기록에 적는다."""
+    try:
+        path = vault.root / DAYS
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps({"day": day, "at": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+                                "state": stop, "batches": len(batches), **({"backlog": True} if backlog else {})},
+                               ensure_ascii=False) + "\n")
+    except OSError as exc:
+        errors.append({"days": f"{type(exc).__name__}: {exc}"})
+
+
+def daily(vault: Vault, commands: list[list[str]], *, invocation: str = "scheduled", backlog: bool = False) -> dict:
+    """하루 정기 성장 실행. 명령은 공급자마다 하나다(Codex, 그리고 대신 돌 Claude 워커). `backlog`는 대화
+    검토 적체를 일괄로 돈다 — 주간 조정·하루 한도·벽시계 예산 없이 Scope 묶음만, 대기열이 비거나 작업자
+    이상이 나거나 모든 공급자가 쉴 때까지."""
+    started = time.monotonic()
+    by = _by_provider(commands)
+    errors = []
+    captured, failed = _capture_first(vault)
+    if failed:
+        errors.append({"capture": failed})
+    rows = growth_ledger.ledger_records(vault)
+    now = datetime.now(timezone.utc).astimezone()
+    day = now.date().isoformat()
+    adjustment, fresh = _week_limit(vault, rows, by, now, backlog, errors)
+    recorded = fresh                 # 새로 정했으면 첫 묶음의 계획에 판단 근거를 싣는다
+    limit = adjustment["limit"]
+    exclude, done, earlier = _spent_today(rows, day)
     left, off, faults = {"scope", "light"}, {}, set()
     batches, stop, skipped = [], None, {}
     while stop is None:
@@ -408,15 +445,7 @@ def daily(vault: Vault, commands: list[list[str]], *, invocation: str = "schedul
                 errors.append({"manifest": result["manifest"], "state": state, "error": result.get("error")})
                 faults.add(kind)
                 left.discard(kind)   # 작업자 이상 — 이 큐만 그날 멈춘다
-    try:
-        path = vault.root / DAYS
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps({"day": day, "at": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
-                                "state": stop, "batches": len(batches), **({"backlog": True} if backlog else {})},
-                               ensure_ascii=False) + "\n")
-    except OSError as exc:
-        errors.append({"days": f"{type(exc).__name__}: {exc}"})
+    _note_day(vault, day, stop, batches, backlog, errors)
     # `done`과 `day_seconds`는 그날 앞선 실행까지 더한 값이다.
     return {"ok": not errors, "state": stop, "day": day, "limit": limit, "done": done,
             "elapsed_seconds": round(time.monotonic() - started),
