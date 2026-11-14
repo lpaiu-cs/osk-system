@@ -469,7 +469,7 @@ def create_node(title: Title, summary: Summary, body: str, drafter: Drafter,
                 session: str | None = None, space: str | None = None,
                 edges: Edges | None = None, settle: str | None = None,
                 distill: dict | None = None) -> dict:
-    """생성. 전역 유일 `title`=파일명=`name`, `body`=본문 전문.
+    """생성. 전역 유일 `title`=파일명=`name`, `body`=본문 전문. `drafter`=모델명(하네스명 금지).
     `space`는 전체 군집 경로(`00_Scope/W1`); 모르면 `overview`.
     `session`=훅이 준 프로젝트 키(대화 id 금지). `space` 생략 시 주된 scope;
     다른 scope도 되며 결속에 더한다. `bound_scope`는 새 결속만 보고한다.
