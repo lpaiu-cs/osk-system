@@ -15,8 +15,8 @@
   "boundary_excepts": 43,
   "isolated_excepts": 44,
   "oversize_functions": 108,
-  "excess_lines": 1328,
-  "excess_branches": 1091,
+  "excess_lines": 1233,
+  "excess_branches": 1066,
   "late_loads": 1
  },
  "upward_imports": {},
@@ -424,8 +424,8 @@
    18
   ],
   "osk.update:_run_locked": [
-   229,
-   49
+   134,
+   24
   ],
   "osk.update:main": [
    45,

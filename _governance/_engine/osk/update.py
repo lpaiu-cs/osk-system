@@ -180,11 +180,133 @@ def _governance_review(vault: Vault, tree: Path, p: dict, side_write: list, ad_w
     return out
 
 
+def _release_tree(cfg: dict, source: str, ref: str | None, bundle: str | None, td: str) -> tuple:
+    """정본의 릴리스를 임시 폴더에 받는다 — `(트리, 요청한 태그)`. 꾸러미에서 받으면 태그는 None이다."""
+    self_tag = None
+    if source == "git":
+        url = cfg.get("url", update_state.DEFAULT_UPSTREAM)
+        pin = ref or cfg.get("pin")
+        if pin is not None:
+            # 명시 ref/pin도 정식 릴리스 태그여야 한다 — 브랜치(`--to main`)로
+            # 태그 경계를 우회하지 못하게, 형식·실재를 함께 확인한다(§1-2 3항).
+            if not re.match(update_state.VERSION_RE, str(pin)):
+                raise update_state.UpdateError(f"명시 ref/pin은 vX.Y.Z 태그여야 한다: {pin}")
+            if not update_source.tag_exists(url, pin):
+                raise update_state.UpdateError(f"정본에 그 릴리스 태그가 없다: {pin}")
+            tag = pin
+        else:
+            tag = update_source.latest_release_tag(url)   # 기본은 최신 정식 태그(HEAD 아님)
+            if tag is None:
+                raise update_state.UpdateError(
+                    "정본에 정식 릴리스 태그(vX.Y.Z)가 없다 — 정본에서 "
+                    "먼저 릴리스하거나 --to로 참조를 지정한다")
+        tree = update_source.fetch_git(url, tag, Path(td))
+        self_tag = tag                       # 증빙 version이 이 태그와 같아야 한다
+    elif source == "bundle":
+        if not bundle:
+            raise update_state.UpdateError("bundle 출처에는 --from <경로>가 필요하다")
+        tree = update_source.fetch_bundle(bundle, Path(td))
+    else:
+        raise update_state.UpdateError(f"미정의 출처: {source} (git·bundle)")
+    return tree, self_tag
+
+
+def _attested(vault: Vault, tree: Path, self_tag: str | None) -> tuple:
+    """받은 릴리스가 제 증빙과 맞고, 같은 버전으로 이미 적용한 것과 같은 릴리스인가 — `(증빙, 그 해시)`."""
+    rel = update_source.load_release(tree)
+    if self_tag is not None and rel["version"] != self_tag:
+        raise update_state.UpdateError(
+            f"요청 태그와 증빙 version이 다르다 — 태그 {self_tag} 의 "
+            f"release.json은 {rel['version']} 이다(태그 위조·오지정 차단)")
+    errs = update_source.verify_attestation(tree, rel)
+    if errs:
+        raise update_state.UpdateError("비준증빙 대조 실패 — 아무것도 쓰지 않았다:\n  "
+                          + "\n  ".join(errs[:10]))
+    # **버전 불변성**: 같은 version이 다른 릴리스 identity로 오면 거부한다.
+    # 태그 이름과 증빙의 version만 맞춰서는, 원격에서 태그를 다른 커밋으로
+    # force-move한 뒤 자기일관적 증빙만 갖추면 그대로 통과한다(엔진까지
+    # 덮인다). 증빙 파일 자체의 해시를 identity로 삼아 저널에 고정한다.
+    attest_id = sha256_file(tree / update_state.ATTESTATION)
+    for r in update_txn.journal_lenient(vault):
+        if (r.get("kind") == "done" and r.get("version") == rel["version"]
+                and r.get("attest") and r["attest"] != attest_id):
+            raise update_state.UpdateError(
+                f"같은 버전인데 릴리스 identity가 다르다 — 중단"
+                f"(태그 force-move·위조 의심): {rel['version']}\n"
+                f"  적용된 증빙: {r['attest']}\n  받은 증빙: {attest_id}")
+    return rel, attest_id
+
+
+def _review_id(vault: Vault, out: dict, _dests: set, side_write: list, ad_write: list, skel: list,
+               adopt: bool) -> str:
+    """확인의 대상을 내용에 묶는 값 — 계획, 건드릴 자리의 지금 내용, 저널."""
+    # Bind consent to content, not mtime or the version label. The second read
+    # under the mutation lock catches changes during the confirmation window.
+    paths = sorted(_dests | {s for _, s in side_write + ad_write}
+                   | {posix_rel(d / ".gitkeep", vault.root) for d in skel})
+    local = [(path, sha256_file(vault.root / path) if (vault.root / path).is_file()
+              else "directory" if (vault.root / path).exists() else None) for path in paths]
+    identity = {"root": str(vault.root), "plan": out, "local": local,
+                "adopt": adopt, "journal": update_txn.journal_lenient(vault)}
+    return sha256_bytes(json.dumps(
+        identity, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode())
+
+
+def _require_journal(vault: Vault) -> None:
+    """갱신 저널이 기록 가능한가 — 아니면 아무것도 쓰기 전에 멈춘다."""
+    # 저널이 **기록 가능한지 먼저 본다.** `update_txn.txn_begin`이 manifest를 남긴
+    # 뒤에 `ledger_append`가 손상으로 죽으면(그 호출은 아래 try 밖이다)
+    # 표식만 남아 데몬이 영원히 `pending-txn`으로 tick을 거부하고, 다음
+    # `--apply`가 같은 자리에서 또 죽으며 표식을 다시 만든다 — 지워도 벗어날
+    # 수 없는 상태다(실측). 손상 위에 이력을 더 쌓지 않는다(Mechanism §3 2항).
+    try:
+        _dmg = ledger_damage(ledger_read(update_state.journal_path(vault)), update_state.journal_path(vault))
+    except (OSError, LedgerDamage) as e:
+        raise update_state.UpdateError(f"갱신 저널을 읽지 못했다 — 아무것도 쓰지 않았다: {e}")
+    if _dmg:
+        raise update_state.UpdateError(
+            "갱신 저널이 손상됐다 — 아무것도 쓰지 않았다 "
+            "(Mechanism §3 8항의 수동 복구가 먼저다):\n  "
+            + "\n  ".join(_dmg[:5]))
+
+
+def _journal_done(vault: Vault, txn: str, v: str, p: dict, applied: list, removed: list, sidecars: list,
+                  attest_id: str) -> None:
+    """파일 조작이 끝난 뒤 적용 상태를 저널에 남긴다. 마지막 `done`이 이 트랜잭션을 확정한다."""
+    # 파일 조작 성공 후에 적용 상태를 저널에 남긴다. 이 기록들은 마지막
+    # `done(txn)`이 append될 때까지 `committed()`가 판정에서 가린다 —
+    # 중간에 죽어도 파일(pre-image 복구)과 판정이 어긋나지 않는다.
+    for dest in applied:
+        ledger_append(update_state.journal_path(vault), {
+            "kind": "apply", "txn": txn, "version": v, "path": dest,
+            "hash": sha256_file(vault.root / dest)})
+    for _src, dest in p["rebaseline"]:        # 내용 동일·기준선만 갱신
+        ledger_append(update_state.journal_path(vault), {
+            "kind": "apply", "txn": txn, "version": v, "path": dest,
+            "hash": sha256_file(vault.root / dest)})
+    for path in removed:
+        ledger_append(update_state.journal_path(vault), {"kind": "remove", "txn": txn,
+                                       "version": v, "path": path})
+    # skip은 conflict **사건**이지 적용 상태 변경이 아니다 — `skipped_path`로
+    # 남겨 baseline/관리 판정(`path` 키)이 이를 보지 않게 한다(P2).
+    for _src, dest in p["conflict"]:
+        ledger_append(update_state.journal_path(vault), {
+            "kind": "skip", "txn": txn, "version": v, "skipped_path": dest,
+            "why": "로컬 수정 — upstream 사본을 옆에 두었다"})
+    for path in p["remove_conflict"]:
+        ledger_append(update_state.journal_path(vault), {
+            "kind": "skip", "txn": txn, "version": v, "skipped_path": path,
+            "why": "upstream 삭제됐으나 로컬 수정 — 보존한다"})
+    ledger_append(update_state.journal_path(vault), {
+        "kind": "done", "txn": txn, "version": v, "attest": attest_id,
+        "applied": len(applied), "removed": len(removed),
+        "conflicts": len(sidecars)})
+
+
 def _run_locked(vault: Vault, source: str | None, ref: str | None, bundle: str | None,
                 apply: bool, adopt: bool, reviewed: str | None = None) -> dict:
     cfg = update_state.load_config(vault).get("upstream", {})
     source = source or ("bundle" if bundle else cfg.get("source", "git"))
-    self_tag = None
     # adopt는 **최초 편입** 전용이다 — 이미 관리 이력이 있으면 거부한다. 안 그러면
     # 정상 관리 인스턴스에서 로컬 수정(엔진 포함)을 아무 때나 덮는 force가 된다.
     if adopt and update_state.has_history(vault):
@@ -192,53 +314,8 @@ def _run_locked(vault: Vault, source: str | None, ref: str | None, bundle: str |
             "이미 갱신 관리 이력이 있다 — adopt는 최초 편입에만 허용된다. "
             "로컬 수정은 정본에서 고치거나 로컬 사본을 정리한 뒤 갱신한다")
     with tempfile.TemporaryDirectory() as td:
-        if source == "git":
-            url = cfg.get("url", update_state.DEFAULT_UPSTREAM)
-            pin = ref or cfg.get("pin")
-            if pin is not None:
-                # 명시 ref/pin도 정식 릴리스 태그여야 한다 — 브랜치(`--to main`)로
-                # 태그 경계를 우회하지 못하게, 형식·실재를 함께 확인한다(§1-2 3항).
-                if not re.match(update_state.VERSION_RE, str(pin)):
-                    raise update_state.UpdateError(f"명시 ref/pin은 vX.Y.Z 태그여야 한다: {pin}")
-                if not update_source.tag_exists(url, pin):
-                    raise update_state.UpdateError(f"정본에 그 릴리스 태그가 없다: {pin}")
-                tag = pin
-            else:
-                tag = update_source.latest_release_tag(url)   # 기본은 최신 정식 태그(HEAD 아님)
-                if tag is None:
-                    raise update_state.UpdateError(
-                        "정본에 정식 릴리스 태그(vX.Y.Z)가 없다 — 정본에서 "
-                        "먼저 릴리스하거나 --to로 참조를 지정한다")
-            tree = update_source.fetch_git(url, tag, Path(td))
-            self_tag = tag                       # 증빙 version이 이 태그와 같아야 한다
-        elif source == "bundle":
-            if not bundle:
-                raise update_state.UpdateError("bundle 출처에는 --from <경로>가 필요하다")
-            tree = update_source.fetch_bundle(bundle, Path(td))
-        else:
-            raise update_state.UpdateError(f"미정의 출처: {source} (git·bundle)")
-
-        rel = update_source.load_release(tree)
-        if self_tag is not None and rel["version"] != self_tag:
-            raise update_state.UpdateError(
-                f"요청 태그와 증빙 version이 다르다 — 태그 {self_tag} 의 "
-                f"release.json은 {rel['version']} 이다(태그 위조·오지정 차단)")
-        errs = update_source.verify_attestation(tree, rel)
-        if errs:
-            raise update_state.UpdateError("비준증빙 대조 실패 — 아무것도 쓰지 않았다:\n  "
-                              + "\n  ".join(errs[:10]))
-        # **버전 불변성**: 같은 version이 다른 릴리스 identity로 오면 거부한다.
-        # 태그 이름과 증빙의 version만 맞춰서는, 원격에서 태그를 다른 커밋으로
-        # force-move한 뒤 자기일관적 증빙만 갖추면 그대로 통과한다(엔진까지
-        # 덮인다). 증빙 파일 자체의 해시를 identity로 삼아 저널에 고정한다.
-        attest_id = sha256_file(tree / update_state.ATTESTATION)
-        for r in update_txn.journal_lenient(vault):
-            if (r.get("kind") == "done" and r.get("version") == rel["version"]
-                    and r.get("attest") and r["attest"] != attest_id):
-                raise update_state.UpdateError(
-                    f"같은 버전인데 릴리스 identity가 다르다 — 중단"
-                    f"(태그 force-move·위조 의심): {rel['version']}\n"
-                    f"  적용된 증빙: {r['attest']}\n  받은 증빙: {attest_id}")
+        tree, self_tag = _release_tree(cfg, source, ref, bundle, td)
+        rel, attest_id = _attested(vault, tree, self_tag)
         targets, skel, skipped = update_plan.apply_set(vault, tree, rel)
         p = update_plan.plan(vault, tree, targets, adopt)
         dests = lambda pairs: [d for _s, d in pairs]
@@ -286,36 +363,14 @@ def _run_locked(vault: Vault, source: str | None, ref: str | None, bundle: str |
         out["restart_required"] = True
         out["attestation"] = attest_id
         out["layout"] = vault.space_roots
-        # Bind consent to content, not mtime or the version label. The second read
-        # under the mutation lock catches changes during the confirmation window.
-        paths = sorted(_dests | {s for _, s in side_write + ad_write}
-                       | {posix_rel(d / ".gitkeep", vault.root) for d in skel})
-        local = [(path, sha256_file(vault.root / path) if (vault.root / path).is_file()
-                  else "directory" if (vault.root / path).exists() else None) for path in paths]
-        identity = {"root": str(vault.root), "plan": out, "local": local,
-                    "adopt": adopt, "journal": update_txn.journal_lenient(vault)}
-        out["review_id"] = sha256_bytes(json.dumps(
-            identity, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode())
+        out["review_id"] = _review_id(vault, out, _dests, side_write, ad_write, skel, adopt)
         if not apply:
             if update_txn.txn_manifest(vault).is_file():
                 out["pending_txn"] = True
             return out
         if reviewed != out["review_id"]:
             return _request_approval(vault, out)
-        # 저널이 **기록 가능한지 먼저 본다.** `update_txn.txn_begin`이 manifest를 남긴
-        # 뒤에 `ledger_append`가 손상으로 죽으면(그 호출은 아래 try 밖이다)
-        # 표식만 남아 데몬이 영원히 `pending-txn`으로 tick을 거부하고, 다음
-        # `--apply`가 같은 자리에서 또 죽으며 표식을 다시 만든다 — 지워도 벗어날
-        # 수 없는 상태다(실측). 손상 위에 이력을 더 쌓지 않는다(Mechanism §3 2항).
-        try:
-            _dmg = ledger_damage(ledger_read(update_state.journal_path(vault)), update_state.journal_path(vault))
-        except (OSError, LedgerDamage) as e:
-            raise update_state.UpdateError(f"갱신 저널을 읽지 못했다 — 아무것도 쓰지 않았다: {e}")
-        if _dmg:
-            raise update_state.UpdateError(
-                "갱신 저널이 손상됐다 — 아무것도 쓰지 않았다 "
-                "(Mechanism §3 8항의 수동 복구가 먼저다):\n  "
-                + "\n  ".join(_dmg[:5]))
+        _require_journal(vault)
         txn = os.urandom(8).hex()                # 파일과 저널을 묶는 트랜잭션 id
         # 이번에 건드릴 파일(canonical 상대)의 pre-image를 영속 백업하고 manifest를
         # 기록한 **뒤에만** target을 건드린다. 이후 크래시는 다음 실행이 판정한다:
@@ -370,34 +425,7 @@ def _run_locked(vault: Vault, source: str | None, ref: str | None, bundle: str |
                            "why": str(e)[:200]})
             raise update_state.UpdateError(f"갱신 적용 중 실패 — 원상복구했다: {e}")
 
-        # 파일 조작 성공 후에 적용 상태를 저널에 남긴다. 이 기록들은 마지막
-        # `done(txn)`이 append될 때까지 `committed()`가 판정에서 가린다 —
-        # 중간에 죽어도 파일(pre-image 복구)과 판정이 어긋나지 않는다.
-        for dest in applied:
-            ledger_append(update_state.journal_path(vault), {
-                "kind": "apply", "txn": txn, "version": v, "path": dest,
-                "hash": sha256_file(vault.root / dest)})
-        for _src, dest in p["rebaseline"]:        # 내용 동일·기준선만 갱신
-            ledger_append(update_state.journal_path(vault), {
-                "kind": "apply", "txn": txn, "version": v, "path": dest,
-                "hash": sha256_file(vault.root / dest)})
-        for path in removed:
-            ledger_append(update_state.journal_path(vault), {"kind": "remove", "txn": txn,
-                                           "version": v, "path": path})
-        # skip은 conflict **사건**이지 적용 상태 변경이 아니다 — `skipped_path`로
-        # 남겨 baseline/관리 판정(`path` 키)이 이를 보지 않게 한다(P2).
-        for _src, dest in p["conflict"]:
-            ledger_append(update_state.journal_path(vault), {
-                "kind": "skip", "txn": txn, "version": v, "skipped_path": dest,
-                "why": "로컬 수정 — upstream 사본을 옆에 두었다"})
-        for path in p["remove_conflict"]:
-            ledger_append(update_state.journal_path(vault), {
-                "kind": "skip", "txn": txn, "version": v, "skipped_path": path,
-                "why": "upstream 삭제됐으나 로컬 수정 — 보존한다"})
-        ledger_append(update_state.journal_path(vault), {
-            "kind": "done", "txn": txn, "version": v, "attest": attest_id,
-            "applied": len(applied), "removed": len(removed),
-            "conflicts": len(sidecars)})
+        _journal_done(vault, txn, v, p, applied, removed, sidecars, attest_id)
         # 커밋 기록의 **디렉터리 엔트리**까지 내구화한 뒤에만 표식을 지운다 —
         # 저널이 이번에 처음 생겼으면 이름이 유실될 수 있고, 그러면 파일은 새
         # 판인데 복구 표식도 없어 baseline이 통째로 사라진다.
