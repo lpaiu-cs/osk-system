@@ -356,7 +356,7 @@ def _flow_depth(text: str) -> int:
 def parse(path: Path | str) -> Node:
     """노드 파일을 판독한다. 올리는 것은 둘뿐이다 — 읽지 못하면 `OSError`, 읽었는데 노드로 해석되지 않으면
     `ValueError`. 노드 파일은 사람이 고치고 동기화로 들어오는 바깥의 입력이다: 무엇이 들었든 이 둘로만 말해야
-    받는 쪽이 그 둘만 받을 수 있다(`tests/test_regression.py`의 `test_node_parse_raises_only_its_kinds`)."""
+    받는 쪽이 그 둘만 받을 수 있다(`tests/regression/prose.py`의 `test_node_parse_raises_only_its_kinds`)."""
     p = Path(path)
     return parse_bytes(p, p.read_bytes())
 
