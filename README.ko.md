@@ -170,7 +170,7 @@ v4가 더는 읽지 않는 배치와 옮기는 법이 있다.
 시작한다(새 태그는 [릴리스 페이지](https://github.com/lpaiu-cs/osk-system/releases)에 있다):
 
 ```bash
-git clone --branch v5.6.0 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
+git clone --branch v6.0.0 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
 cd my-osk-vault
 git switch -c main
 python _governance/_engine/scripts/setup.py --interactive
@@ -331,9 +331,10 @@ v5.4.2는 태그 방어로 띄어 저장된 글도 앵커가 맞추게 하고, s
 [v5.6.0](docs/v5.6-milestones.md)은 지식을 관측을 설명하는 가설로, 중심성을 설명적·의존적 두 축으로 다시
 정하고, 근거 절을 관측 절 `# 관측`으로 바꾸며, 일괄 이행을 `osk doctor --migrate`로 모은다. 정기 성장 실행은
 예산 대신 주간 사용률 0.9에서 쉬고, 에이전트는 새 노드를 쓰기 전에 검색한다.
-v5.7.0은 내지 않는다 — [그 계획](docs/v5.7-milestones.md)의 항목은 v6 계열로 옮겼다. 다음 판 v6.0.0은 기능을
-더하지 않고 엔진의 구조만 다시 짠 판이다([구조 개편](docs/v6.0-refactoring.md)). 그 뒤의 순서 — 계측의 기준선,
-회상, 비용, 줄이기 — 는 [v6 계열 로드맵](docs/v6-roadmap.md)에 있다.
+v5.7.0은 내지 않았다 — [그 계획](docs/v5.7-milestones.md)의 항목은 v6 계열로 옮겼다. v6.0.0은 기능을 더하지
+않고 엔진의 구조만 다시 짠 판이다([구조 개편](docs/v6.0-refactoring.md)). 도구와 명령은 그대로이고, 엔진의 함수를
+직접 부르는 스크립트만 고치면 된다([판 올리기](docs/UPGRADING.ko.md)). 그 뒤의 순서 — 계측의 기준선, 회상, 비용,
+줄이기 — 는 [v6 계열 로드맵](docs/v6-roadmap.md)에 있다.
 
 ## License
 
