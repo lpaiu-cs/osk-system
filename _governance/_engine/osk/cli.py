@@ -409,6 +409,216 @@ def published_tools() -> list[dict]:
     return mcp_server.published_tools()
 
 
+def _validate_cmd(vault: Vault, a) -> None:
+    validate.main(published_tools)
+
+
+def _rechecks_cmd(vault: Vault, a) -> None:
+    from . import rechecks
+    items, pending = rechecks.candidates(vault)
+    _emit({"baseline_pending": pending, "count": len(items), "items": items,
+           "close": rechecks.CLOSE})
+
+
+def _validators_cmd(vault: Vault, a) -> None:
+    # 기록이 없는 규칙은 위반이 0이면 엔진이 켠다. 그 뒤의 해제·재활성화는 사용자
+    # 전속이다(시행령 §11 3항) — 표면(MCP)에는 없다.
+    known = list(validate.RULES)
+    rule = a.activate or a.deactivate
+    if rule:
+        if a.activate and a.deactivate:
+            sys.exit("중단 — --activate와 --deactivate는 함께 줄 수 없다")
+        if rule not in known:
+            sys.exit(f"모르는 규칙: {rule} — 가능한 규칙: {', '.join(known)}")
+        kind = "activate" if a.activate else "deactivate"
+        cur = "활성" if validate.validator_active(vault, rule) else "비활성"
+        print(f"규칙 {rule}: 현재 {cur}")
+        if kind == "activate":
+            _confirm(f"{rule}을(를) 활성화하면 위반이 검증기 verdict에 "
+                     f"산입됩니다(시행령 §11 2항). 활성화합니까? [y/N] ")
+        else:
+            _confirm(f"{rule}을(를) 해제하면 같은 검사가 보고 전용으로 돌아가고, "
+                     f"다시 켤 때까지 자동으로 켜지지 않습니다. 해제합니까? [y/N] ")
+        from .core import ledger_append
+        rec = ledger_append(vault.validators, {
+            "kind": kind, "rule": rule, "reason": a.reason})
+        print("기록 등재:", rec["rid"])
+    else:
+        for r in known:
+            print(f"{r}: "
+                  f"{'활성' if validate.validator_active(vault, r) else '비활성'}")
+
+
+def _status_cmd(vault: Vault, a) -> None:
+    """체계 현황. 읽히는 구획을 다 보인다 — 구획 하나가 깨져도 나머지를 낸다."""
+    idx = graph.Index(vault)
+    regions = approvals.protected_regions(vault)
+    try:
+        # 건너뛴 정돈은 보인다(§9-3 3항) — scope별 미처분·가장 오래된 나이
+        ev = evictions.status(vault)
+    except Exception as e:                  # 대장 손상은 현황을 막지 않는다
+        ev = {"error": str(e)}
+    try:
+        from . import scope_memory
+        recovery = scope_memory.recovery_status(vault)
+    except Exception as e:
+        recovery = {"error": str(e)}
+    try:
+        # 포착이 막힌 대화 — 훅은 막힌 사실을 한 번만 싣는다(§9-3 3항, #192)
+        from . import conversation_state
+        capture = conversation_state.blocked(vault)
+    except Exception as e:
+        capture = {"error": str(e)}
+    try:
+        # 판본과 마지막 릴리스 확인 — 네트워크에 닿지 않는다(`osk.update --check`)
+        from . import update_check
+        release = update_check.report(vault)
+    except Exception as e:
+        release = {"error": str(e)}
+    gw = approvals.governance_warning(vault)
+    print(json.dumps({
+        "nodes": len(idx.nodes),
+        "protected_regions": {r: approvals.state(vault, r) for r in regions},
+        "delegations": [d["title"] for d in authority.enumerate_delegations(vault)
+                        if d["effective"]],
+        "evictions": ev,
+        "scope_recovery": recovery,
+        "capture_blocked": capture,
+        "update": release,
+        **({"warnings": [gw]} if gw else {}),
+        "root": str(vault.root),
+    }, ensure_ascii=False, indent=2))
+
+
+def _search_cmd(vault: Vault, a) -> None:
+    s = search.Searcher(vault)
+    rows = s.work_search(a.query, a.k) if a.cmd == "search"\
+        else s.view_search(a.query, a.k)
+    print(json.dumps(rows, ensure_ascii=False, indent=2))
+
+
+def _check_cmd(vault: Vault, a) -> None:
+    print(json.dumps(authority.check(vault, a.action), ensure_ascii=False, indent=2))
+
+
+def _protect_cmd(vault: Vault, a) -> None:
+    st = approvals.state(vault, a.region)
+    print(f"보호영역 지정: {a.region}\n현재 상태: {st}")
+    _confirm("지정 시점의 작업본이 초기 승인본이 됩니다. 지정합니까? [y/N] ")
+    rec = approval_acts.protect(vault, a.region, a.reason)
+    print("지정 등재:", rec["rid"], "| 승인본:", rec["accepted"])
+
+
+def _unprotect_cmd(vault: Vault, a) -> None:
+    _confirm(f"{a.region} 보호를 해제합니까? (clean 상태에서만) [y/N] ")
+    rec = approval_acts.unprotect(vault, a.region, a.reason)
+    print("해제 등재:", rec["rid"])
+
+
+def _approve_cmd(vault: Vault, a) -> None:
+    st = approvals.state(vault, a.region)
+    if st == "stale":
+        # 봉합 승인 — 승인 기록이 갈렸다(다기기 병합). 사용자가 갈래를 보고
+        # 현재 작업본을 새 승인본으로 삼는다(Mechanism §3 5항).
+        forks = approvals.divergence(vault, a.region)
+        work = region_tree.working_tree_hash(vault, a.region)
+        if not forks or work is None:
+            raise ValueError("갈래 또는 작업본을 판정할 수 없다 — 봉합하지 않았다")
+        print(f"영역이 stale입니다 — 승인 기록이 {len(forks)}갈래로 갈렸습니다.")
+        for f in forks:
+            print(f"  갈래 {f.get('rid')} {f.get('kind')} "
+                  f"base={f.get('base')} accepted={f.get('accepted')} at={f.get('at')}")
+            if f.get("kind") == "unprotect":
+                print("  보호 해제 갈래 — 해제 직전 승인본과 현재 작업본의 차이:")
+            _print_changeset(vault, a.region, record=f, expect_work=work)
+        print(f"현재 작업본: {work}")
+        _confirm("이 작업본을 새 승인본으로 삼아 갈래를 봉합합니까? [y/N] ")
+        # 검토한 갈래 집합을 프롬프트 **전에** 고정해 넘긴다 — 프롬프트
+        # 사이 동기화로 새 갈래가 오면 봉합이 거부된다(본 적 없는 갈래를
+        # 함께 봉합하지 않는다).
+        rec = approval_acts.approve(vault, a.region, None, expect_work=work,
+                                reason=a.reason or "분기 봉합",
+                                seal_heads=[f["rid"] for f in forks])
+        print("봉합 승인 등재:", rec["rid"], "| 새 승인본:", rec["accepted"])
+        return
+    if st != "pending":
+        sys.exit(f"승인할 변경집합이 없다 — 상태: {st}")
+    # 양측 CAS의 두 예상값을 확인 프롬프트 **전에** 고정한다 — 프롬프트
+    # 사이에 작업본이 바뀌면 approve가 거부한다(검토한 것만 승인).
+    base = approvals.approved_hash(vault, a.region)
+    work = region_tree.working_tree_hash(vault, a.region)
+    print(f"승인 대상: {a.region}\n승인본→작업본: {base} → {work}")
+    _print_changeset(vault, a.region, expect_work=work)
+    _confirm("검토한 이 변경집합을 승인본으로 받아들입니까? [y/N] ")
+    rec = approval_acts.approve(vault, a.region, base, expect_work=work, reason=a.reason)
+    print("승인 등재:", rec["rid"], "| 새 승인본:", rec["accepted"])
+
+
+def _revert_cmd(vault: Vault, a) -> None:
+    st = approvals.state(vault, a.region)
+    if st != "pending":
+        sys.exit(f"반려할 변경집합이 없다 — 상태: {st}")
+    # 반려도 파괴적이므로 승인과 **같은 결속**을 쓴다 — 버릴 변경집합
+    # (승인본→작업본)을 프롬프트 **전에** 고정한다. 프롬프트 사이에
+    # 에이전트가 더 쓴 변경이 '사용자가 승인한 반려'에 묶여 사라지지 않게.
+    base = approvals.approved_hash(vault, a.region)
+    work = region_tree.working_tree_hash(vault, a.region)
+    print(f"반려 대상: {a.region} — 작업본을 승인본으로 원상 복원합니다")
+    print(f"버릴 변경집합(작업본→승인본): {work} → {base}")
+    _print_changeset(vault, a.region, expect_work=work)
+    _confirm("에이전트의 변경을 버리고 승인본으로 되돌립니까? [y/N] ")
+    rec = approval_acts.revert(vault, a.region, base, expect_work=work, reason=a.reason)
+    print("반려 등재:", rec["rid"], "| 복원 승인본:", rec["base"])
+
+
+def _store_reconcile_cmd(vault: Vault, a) -> None:
+    # EOL 이행의 저장소 몫. `-text`를 얻은 구획은 어느 쪽을 무조건 택해도
+    # 틀린다(작업 트리를 stage하면 옳던 blob이 깨지고, 통째로 빼면 깨진
+    # blob이 작업 트리를 덮는다) — 내용 주소에는 파일 이름이라는 심판이
+    # 있으므로 그것으로 가른다.
+    import subprocess as _sp
+    _root = str(vault.root)
+
+    def _index_bytes(rel):
+        r = _sp.run(["git", "-C", _root, "cat-file", "blob", ":" + rel],
+                    capture_output=True)
+        return r.stdout if r.returncode == 0 else None
+
+    def _apply(kind, rel):
+        if kind == "stage":
+            _sp.run(["git", "-C", _root, "add", "--", rel], check=True)
+        else:
+            _sp.run(["git", "-C", _root, "checkout", "--", rel], check=True)
+
+    res = region_tree.reconcile_store(vault,
+        _index_bytes, _apply if a.apply else None)
+    print(f"객체 {res['checked']}건 판독 — 색인을 고칠 것 {len(res['stage'])}, "
+          f"작업 트리를 고칠 것 {len(res['restore'])}, "
+          f"판정 불능 {len(res['broken'])}")
+    for rel in res["broken"][:20]:
+        print("  판정 불능(양쪽 다 이름과 다름):", rel)
+    if not res["ok"]:
+        sys.exit("중단 — 어느 쪽도 이름의 digest와 맞지 않는 객체가 있다. "
+                 "추측으로 고르지 않았고 아무것도 바꾸지 않았다. 그 객체를 "
+                 "참조하는 승인본은 해제 후 재지정이 회복 경로다.")
+    if not a.apply:
+        print("판독만 했다 — 이행하려면 --apply")
+    elif res["stage"] or res["restore"]:
+        print("이행했다. 색인 변경은 이어지는 commit에 담긴다.")
+
+
+# 명령마다 하는 일. `update`·`release`는 여기 없다 — 파서 앞에서 위임된다(`cli_parser.DELEGATED`).
+_COMMANDS = {
+    "validate": _validate_cmd, "rechecks": _rechecks_cmd, "validators": _validators_cmd, "status": _status_cmd,
+    "search": _search_cmd, "view": _search_cmd, "check": _check_cmd,
+    "raw": _raw_cmd, "integration": _integration_cmd, "growth": _growth_cmd, "organization": _organization_cmd,
+    "fork": _fork_cmd, "doctor": _doctor_cmd, "sm": _sm_cmd, "routing": _routing_cmd, "roots": _roots_cmd,
+    "evidence": _evidence_cmd, "tidy": _tidy_cmd,
+    "protect": _protect_cmd, "unprotect": _unprotect_cmd, "approve": _approve_cmd, "revert": _revert_cmd,
+    "store-reconcile": _store_reconcile_cmd,
+}
+
+
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
 
@@ -428,204 +638,8 @@ def main(argv=None):
     ap = cli_parser.build_parser()
     a = ap.parse_args(argv)
     vault = Vault.open()
-    if a.cmd == "validate":
-        validate.main(published_tools)
-    elif a.cmd == "rechecks":
-        from . import rechecks
-        items, pending = rechecks.candidates(vault)
-        _emit({"baseline_pending": pending, "count": len(items), "items": items,
-               "close": rechecks.CLOSE})
-    elif a.cmd == "validators":
-        # 기록이 없는 규칙은 위반이 0이면 엔진이 켠다. 그 뒤의 해제·재활성화는 사용자
-        # 전속이다(시행령 §11 3항) — 표면(MCP)에는 없다.
-        known = list(validate.RULES)
-        rule = a.activate or a.deactivate
-        if rule:
-            if a.activate and a.deactivate:
-                sys.exit("중단 — --activate와 --deactivate는 함께 줄 수 없다")
-            if rule not in known:
-                sys.exit(f"모르는 규칙: {rule} — 가능한 규칙: {', '.join(known)}")
-            kind = "activate" if a.activate else "deactivate"
-            cur = "활성" if validate.validator_active(vault, rule) else "비활성"
-            print(f"규칙 {rule}: 현재 {cur}")
-            if kind == "activate":
-                _confirm(f"{rule}을(를) 활성화하면 위반이 검증기 verdict에 "
-                         f"산입됩니다(시행령 §11 2항). 활성화합니까? [y/N] ")
-            else:
-                _confirm(f"{rule}을(를) 해제하면 같은 검사가 보고 전용으로 돌아가고, "
-                         f"다시 켤 때까지 자동으로 켜지지 않습니다. 해제합니까? [y/N] ")
-            from .core import ledger_append
-            rec = ledger_append(vault.validators, {
-                "kind": kind, "rule": rule, "reason": a.reason})
-            print("기록 등재:", rec["rid"])
-        else:
-            for r in known:
-                print(f"{r}: "
-                      f"{'활성' if validate.validator_active(vault, r) else '비활성'}")
-    elif a.cmd == "status":
-        idx = graph.Index(vault)
-        regions = approvals.protected_regions(vault)
-        try:
-            # 건너뛴 정돈은 보인다(§9-3 3항) — scope별 미처분·가장 오래된 나이
-            ev = evictions.status(vault)
-        except Exception as e:                  # 대장 손상은 현황을 막지 않는다
-            ev = {"error": str(e)}
-        try:
-            from . import scope_memory
-            recovery = scope_memory.recovery_status(vault)
-        except Exception as e:
-            recovery = {"error": str(e)}
-        try:
-            # 포착이 막힌 대화 — 훅은 막힌 사실을 한 번만 싣는다(§9-3 3항, #192)
-            from . import conversation_state
-            capture = conversation_state.blocked(vault)
-        except Exception as e:
-            capture = {"error": str(e)}
-        try:
-            # 판본과 마지막 릴리스 확인 — 네트워크에 닿지 않는다(`osk.update --check`)
-            from . import update_check
-            release = update_check.report(vault)
-        except Exception as e:
-            release = {"error": str(e)}
-        gw = approvals.governance_warning(vault)
-        print(json.dumps({
-            "nodes": len(idx.nodes),
-            "protected_regions": {r: approvals.state(vault, r) for r in regions},
-            "delegations": [d["title"] for d in authority.enumerate_delegations(vault)
-                            if d["effective"]],
-            "evictions": ev,
-            "scope_recovery": recovery,
-            "capture_blocked": capture,
-            "update": release,
-            **({"warnings": [gw]} if gw else {}),
-            "root": str(vault.root),
-        }, ensure_ascii=False, indent=2))
-    elif a.cmd in ("search", "view"):
-        s = search.Searcher(vault)
-        rows = s.work_search(a.query, a.k) if a.cmd == "search"\
-            else s.view_search(a.query, a.k)
-        print(json.dumps(rows, ensure_ascii=False, indent=2))
-    elif a.cmd == "check":
-        print(json.dumps(authority.check(vault, a.action), ensure_ascii=False, indent=2))
-    elif a.cmd == "raw":
-        return _raw_cmd(vault, a)
-    elif a.cmd == "integration":
-        return _integration_cmd(vault, a)
-    elif a.cmd == "growth":
-        return _growth_cmd(vault, a)
-    elif a.cmd == "organization":
-        return _organization_cmd(vault, a)
-    elif a.cmd == "fork":
-        return _fork_cmd(vault, a)
-    elif a.cmd == "doctor":
-        return _doctor_cmd(vault, a)
-    elif a.cmd == "sm":
-        return _sm_cmd(vault, a)
-    elif a.cmd == "routing":
-        return _routing_cmd(vault, a)
-    elif a.cmd == "roots":
-        return _roots_cmd(vault, a)
-    elif a.cmd == "evidence":
-        return _evidence_cmd(vault, a)
-    elif a.cmd == "tidy":
-        return _tidy_cmd(vault, a)
-    elif a.cmd == "protect":
-        st = approvals.state(vault, a.region)
-        print(f"보호영역 지정: {a.region}\n현재 상태: {st}")
-        _confirm("지정 시점의 작업본이 초기 승인본이 됩니다. 지정합니까? [y/N] ")
-        rec = approval_acts.protect(vault, a.region, a.reason)
-        print("지정 등재:", rec["rid"], "| 승인본:", rec["accepted"])
-    elif a.cmd == "unprotect":
-        _confirm(f"{a.region} 보호를 해제합니까? (clean 상태에서만) [y/N] ")
-        rec = approval_acts.unprotect(vault, a.region, a.reason)
-        print("해제 등재:", rec["rid"])
-    elif a.cmd == "approve":
-        st = approvals.state(vault, a.region)
-        if st == "stale":
-            # 봉합 승인 — 승인 기록이 갈렸다(다기기 병합). 사용자가 갈래를 보고
-            # 현재 작업본을 새 승인본으로 삼는다(Mechanism §3 5항).
-            forks = approvals.divergence(vault, a.region)
-            work = region_tree.working_tree_hash(vault, a.region)
-            if not forks or work is None:
-                raise ValueError("갈래 또는 작업본을 판정할 수 없다 — 봉합하지 않았다")
-            print(f"영역이 stale입니다 — 승인 기록이 {len(forks)}갈래로 갈렸습니다.")
-            for f in forks:
-                print(f"  갈래 {f.get('rid')} {f.get('kind')} "
-                      f"base={f.get('base')} accepted={f.get('accepted')} at={f.get('at')}")
-                if f.get("kind") == "unprotect":
-                    print("  보호 해제 갈래 — 해제 직전 승인본과 현재 작업본의 차이:")
-                _print_changeset(vault, a.region, record=f, expect_work=work)
-            print(f"현재 작업본: {work}")
-            _confirm("이 작업본을 새 승인본으로 삼아 갈래를 봉합합니까? [y/N] ")
-            # 검토한 갈래 집합을 프롬프트 **전에** 고정해 넘긴다 — 프롬프트
-            # 사이 동기화로 새 갈래가 오면 봉합이 거부된다(본 적 없는 갈래를
-            # 함께 봉합하지 않는다).
-            rec = approval_acts.approve(vault, a.region, None, expect_work=work,
-                                    reason=a.reason or "분기 봉합",
-                                    seal_heads=[f["rid"] for f in forks])
-            print("봉합 승인 등재:", rec["rid"], "| 새 승인본:", rec["accepted"])
-            return
-        if st != "pending":
-            sys.exit(f"승인할 변경집합이 없다 — 상태: {st}")
-        # 양측 CAS의 두 예상값을 확인 프롬프트 **전에** 고정한다 — 프롬프트
-        # 사이에 작업본이 바뀌면 approve가 거부한다(검토한 것만 승인).
-        base = approvals.approved_hash(vault, a.region)
-        work = region_tree.working_tree_hash(vault, a.region)
-        print(f"승인 대상: {a.region}\n승인본→작업본: {base} → {work}")
-        _print_changeset(vault, a.region, expect_work=work)
-        _confirm("검토한 이 변경집합을 승인본으로 받아들입니까? [y/N] ")
-        rec = approval_acts.approve(vault, a.region, base, expect_work=work, reason=a.reason)
-        print("승인 등재:", rec["rid"], "| 새 승인본:", rec["accepted"])
-    elif a.cmd == "revert":
-        st = approvals.state(vault, a.region)
-        if st != "pending":
-            sys.exit(f"반려할 변경집합이 없다 — 상태: {st}")
-        # 반려도 파괴적이므로 승인과 **같은 결속**을 쓴다 — 버릴 변경집합
-        # (승인본→작업본)을 프롬프트 **전에** 고정한다. 프롬프트 사이에
-        # 에이전트가 더 쓴 변경이 '사용자가 승인한 반려'에 묶여 사라지지 않게.
-        base = approvals.approved_hash(vault, a.region)
-        work = region_tree.working_tree_hash(vault, a.region)
-        print(f"반려 대상: {a.region} — 작업본을 승인본으로 원상 복원합니다")
-        print(f"버릴 변경집합(작업본→승인본): {work} → {base}")
-        _print_changeset(vault, a.region, expect_work=work)
-        _confirm("에이전트의 변경을 버리고 승인본으로 되돌립니까? [y/N] ")
-        rec = approval_acts.revert(vault, a.region, base, expect_work=work, reason=a.reason)
-        print("반려 등재:", rec["rid"], "| 복원 승인본:", rec["base"])
-    elif a.cmd == "store-reconcile":
-        # EOL 이행의 저장소 몫. `-text`를 얻은 구획은 어느 쪽을 무조건 택해도
-        # 틀린다(작업 트리를 stage하면 옳던 blob이 깨지고, 통째로 빼면 깨진
-        # blob이 작업 트리를 덮는다) — 내용 주소에는 파일 이름이라는 심판이
-        # 있으므로 그것으로 가른다.
-        import subprocess as _sp
-        _root = str(vault.root)
-
-        def _index_bytes(rel):
-            r = _sp.run(["git", "-C", _root, "cat-file", "blob", ":" + rel],
-                        capture_output=True)
-            return r.stdout if r.returncode == 0 else None
-
-        def _apply(kind, rel):
-            if kind == "stage":
-                _sp.run(["git", "-C", _root, "add", "--", rel], check=True)
-            else:
-                _sp.run(["git", "-C", _root, "checkout", "--", rel], check=True)
-
-        res = region_tree.reconcile_store(vault,
-            _index_bytes, _apply if a.apply else None)
-        print(f"객체 {res['checked']}건 판독 — 색인을 고칠 것 {len(res['stage'])}, "
-              f"작업 트리를 고칠 것 {len(res['restore'])}, "
-              f"판정 불능 {len(res['broken'])}")
-        for rel in res["broken"][:20]:
-            print("  판정 불능(양쪽 다 이름과 다름):", rel)
-        if not res["ok"]:
-            sys.exit("중단 — 어느 쪽도 이름의 digest와 맞지 않는 객체가 있다. "
-                     "추측으로 고르지 않았고 아무것도 바꾸지 않았다. 그 객체를 "
-                     "참조하는 승인본은 해제 후 재지정이 회복 경로다.")
-        if not a.apply:
-            print("판독만 했다 — 이행하려면 --apply")
-        elif res["stage"] or res["restore"]:
-            print("이행했다. 색인 변경은 이어지는 commit에 담긴다.")
-    # update·release는 파서 앞에서 위임된다 — 여기에 분기를 두면 죽은 코드다.
+    command = _COMMANDS.get(a.cmd)
+    return command(vault, a) if command else None
 
 
 if __name__ == "__main__":

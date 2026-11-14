@@ -14,9 +14,9 @@
   "broad_except": 0,
   "boundary_excepts": 43,
   "isolated_excepts": 44,
-  "oversize_functions": 108,
-  "excess_lines": 1114,
-  "excess_branches": 1012,
+  "oversize_functions": 107,
+  "excess_lines": 959,
+  "excess_branches": 970,
   "late_loads": 1
  },
  "upward_imports": {},
@@ -102,10 +102,6 @@
   "osk.cli:_growth_cmd": [
    41,
    18
-  ],
-  "osk.cli:main": [
-   215,
-   57
   ],
   "osk.contract:md_lines": [
    67,
