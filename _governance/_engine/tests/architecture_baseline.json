@@ -14,9 +14,9 @@
   "broad_except": 0,
   "boundary_excepts": 43,
   "isolated_excepts": 44,
-  "oversize_functions": 109,
-  "excess_lines": 1487,
-  "excess_branches": 1124,
+  "oversize_functions": 108,
+  "excess_lines": 1328,
+  "excess_branches": 1091,
   "late_loads": 1
  },
  "upward_imports": {},
@@ -346,10 +346,6 @@
   "osk.routing:bindings": [
    37,
    18
-  ],
-  "osk.scope_memory:replace": [
-   219,
-   48
   ],
   "osk.services:plan": [
    30,
