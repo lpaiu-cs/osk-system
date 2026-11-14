@@ -374,7 +374,7 @@ def evidence_section_report(vault: Vault, idx: "graph.Index", external=None, rec
             continue
         try:
             n = idx.node(path)
-        except Exception:
+        except (OSError, ValueError):
             continue
         errs = evidence_errors(vault, n.body, n.meta.get("derived-from"), idx, records, external)
         if errs:

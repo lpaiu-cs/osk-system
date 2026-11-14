@@ -168,7 +168,7 @@ def target(ref: str, idx, cache: dict | None = None) -> tuple[str, str | None] |
         try:
             data = _read_bytes(path)
             key = idx.node(path).id
-        except Exception:
+        except (OSError, ValueError):
             data = key = None
         if key:
             if not heading:
@@ -200,7 +200,7 @@ def _citing(idx, cache: dict):
         try:
             n = idx.node(path)
             data = _read_bytes(path)
-        except Exception:
+        except (OSError, ValueError):
             continue
         if n.id in idx.dup_ids:
             continue

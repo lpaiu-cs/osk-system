@@ -266,7 +266,7 @@ def read_node(name: str, view: str | None = None) -> dict:
     try:
         raw = hit[0].read_bytes()
         n = contract.parse_bytes(hit[0], raw)
-    except Exception as e:
+    except (OSError, ValueError) as e:
         return {"error": f"파싱 실패 — 수동 확인 필요: {name} ({e})"}
     # 경로는 POSIX 표기로 낸다 — 도구마다 구분자가 갈리면 ref를 손으로
     # 조립하는 호출자가 혼선을 겪는다(감사 지적). 규칙·ref 표기도 전부 슬래시다.

@@ -95,7 +95,7 @@ def validate_render(vault: Vault, path: Path, meta: dict, body: str,
             f.write(data)
         try:
             back = contract.parse(Path(tmp))
-        except Exception as e:
+        except (OSError, ValueError) as e:
             return data, [f"직렬화 왕복 실패 — 쓰지 않았다: {e}"]
         # 되읽은 노드에 **목적지 경로**를 씌운다 — contract.validate가 stem을 보므로
         # 임시 파일명을 그대로 두면 stem에 걸린 규칙이 통째로 무력화된다(7차 계열)

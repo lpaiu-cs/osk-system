@@ -63,7 +63,7 @@ class Searcher:
         for stem, (p, kind) in self.idx.nodes.items():
             try:
                 n = self.idx.node(p)
-            except Exception as e:
+            except (OSError, ValueError) as e:
                 self.broken[stem] = str(e)
                 continue
             parsed.append((stem, p, kind, n))
@@ -142,7 +142,7 @@ class Searcher:
                 return m.group(0)
             try:
                 s = str(self.idx.node(hit[0]).meta.get("summary", "")).strip()
-            except Exception:
+            except (OSError, ValueError):
                 return m.group(0)   # 파싱 실패 대상은 확장하지 않는다(표시는 파생)
             return f"{m.group(0)}(: {s})" if s else m.group(0)
         return re.sub(r"\[\[([^\]#|]+)\]\]", rep, text)

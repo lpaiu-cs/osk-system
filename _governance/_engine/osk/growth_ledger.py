@@ -23,18 +23,22 @@ WAITS = {"busy", "limited"}
 
 
 def ledger_records(vault: Vault) -> list[dict]:
+    """성장 기록부의 행. 올리는 것은 둘뿐이다 — 읽지 못하면 `OSError`, 기록부로 해석되지 않으면 `LedgerDamage`.
+
+    종류와 결과는 튜플과 견준다. 행의 값은 JSON이 담을 수 있는 무엇이든 될 수 있고, 목록이나 객체를 집합과
+    견주면 손상을 말하기 전에 `TypeError`가 난다."""
     rows = core.ledger_read(ledger_path(vault))
     errors = core.ledger_damage(rows, ledger_path(vault))
     for row in rows:
-        if row.get("kind") not in {"plan", "review", "run", "eviction_review", "recheck_review"}:
+        if row.get("kind") not in ("plan", "review", "run", "eviction_review", "recheck_review"):
             errors.append("unknown growth record kind")
-        if row.get("kind") == "recheck_review" and row.get("outcome") not in {"escalated", "deferred"}:
+        if row.get("kind") == "recheck_review" and row.get("outcome") not in ("escalated", "deferred"):
             errors.append("unknown recheck review outcome")
-        if row.get("kind") == "review" and row.get("outcome") not in {
-                "preserved", "no_value", "deferred"}:
+        if row.get("kind") == "review" and row.get("outcome") not in (
+                "preserved", "no_value", "deferred"):
             errors.append("unknown growth review outcome")
-        if row.get("kind") == "eviction_review" and row.get("outcome") not in {
-                "node", "merged", "discarded", "deferred"}:
+        if row.get("kind") == "eviction_review" and row.get("outcome") not in (
+                "node", "merged", "discarded", "deferred"):
             errors.append("unknown eviction review outcome")
     if errors:
         raise LedgerDamage("growth ledger damaged: " + "; ".join(errors[:5]))

@@ -550,7 +550,9 @@ def _parse_lines(text: str, path: Path) -> list[dict]:
             continue
         try:
             rec = json.loads(line)
-        except (json.JSONDecodeError, RecursionError) as e:    # 깊이 겹친 행은 해석기가 RecursionError를 낸다
+        # 해석기가 내는 것을 다 받는다 — 문법 오류(`JSONDecodeError`)만이 아니라 자릿수 상한을 넘는 정수도
+        # `ValueError`이고, 깊이 겹친 행은 `RecursionError`다.
+        except (ValueError, RecursionError) as e:
             raise LedgerDamage(
                 f"대장 손상(부분 행) {path}:{i+1} — 수동 복구 절차 필요") from e
         if not isinstance(rec, dict):
