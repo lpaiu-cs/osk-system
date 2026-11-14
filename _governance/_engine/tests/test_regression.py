@@ -12805,6 +12805,25 @@ def test_node_parse_raises_only_its_kinds():
         bad.unlink(missing_ok=True)
 
 
+def test_review_packet_sets_aside_a_mistyped_entry():
+    """결과 묶음의 항목 하나가 틀리면 그 항목만 받지 않는다(`growth_reviews._validate_packet`). 형이 틀린 값도
+    같다 — 재검토 항목의 `outcome`이 목록·객체이면 `TypeError`가 나서 같은 묶음의 다른 판정까지 버려졌다."""
+    from osk import growth_reviews
+    planned = {"manifest": "m", "candidates": [{"key": "c-1"}], "scope_jobs": [],
+               "recheck_jobs": [{"key": "r-1"}, {"key": "r-2"}]}
+    packet = {"osk_reviews": {"manifest": "m", "scope": [],
+                              "domain": [{"key": "c-1", "outcome": "no_value", "reason": "남길 것이 없다"}],
+                              "recheck": [{"key": "r-1", "outcome": ["escalated"], "reason": "r"},
+                                          {"key": "r-2", "outcome": {}, "reason": "r"}]}}
+    try:
+        out = growth_reviews._validate_packet(packet, planned)
+    except Exception as e:
+        out = {"domain": [], "errors": [repr(e)]}
+    check("형이 틀린 항목은 그 항목만 받지 않는다",
+          len(out["domain"]) == 1 and out.get("recheck") == [] and len(out["errors"]) == 2
+          and all("only escalates or defers" in e for e in out["errors"]), out)
+
+
 def test_validate_suite_survives_a_crashing_check():
     """검사가 예외를 올려도 수트는 죽지 않는다(시행령 §11). 그 검사의 실패로 적고 다음 검사로 간다 — 받는 자리는
     등록부(`validate.CHECKS`)를 도는 한 곳이다. 승인 기록부를 읽다 죽으면, 그 행에 기대는 검사는 빈 행을 검사한
@@ -13145,6 +13164,7 @@ if __name__ == "__main__":
                test_validate_at_uses_snapshot_engine, test_publish_preserves_mapped_dot_directories,
                test_ledger_damage_is_a_kind, test_node_parse_raises_only_its_kinds,
                test_validate_at_reads_only_a_report, test_validate_suite_survives_a_crashing_check,
+               test_review_packet_sets_aside_a_mistyped_entry,
                 test_write_edge_coordinates, test_node_heading_edge_coordinates,
                 test_derived_from_once_per_round,
                test_write_pin_subtree_and_fork,

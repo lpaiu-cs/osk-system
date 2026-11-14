@@ -14,9 +14,9 @@
   "broad_except": 0,
   "boundary_excepts": 43,
   "isolated_excepts": 44,
-  "oversize_functions": 114,
-  "excess_lines": 1987,
-  "excess_branches": 1447,
+  "oversize_functions": 113,
+  "excess_lines": 1966,
+  "excess_branches": 1400,
   "late_loads": 1
  },
  "upward_imports": {},
@@ -234,10 +234,6 @@
   "osk.growth_reviews:_apply_reviews": [
    97,
    29
-  ],
-  "osk.growth_reviews:_check_entry": [
-   81,
-   62
   ],
   "osk.growth_reviews:_final_packet": [
    36,
