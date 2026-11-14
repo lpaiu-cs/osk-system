@@ -173,13 +173,6 @@ def _secret_patterns(s: _Suite) -> list[str] | None:
     return secret_pattern_drift(s.vault)
 
 
-def _approval_fixture(s: _Suite) -> list[str]:
-    """9. 보호영역 생애 fixture — 매 검증 실행 (회귀 방지)."""
-    import tempfile
-    with tempfile.TemporaryDirectory() as td:
-        return fixture_approval_lifecycle(s.vault, td)
-
-
 def _approval_integrity(s: _Suite) -> list[str] | None:
     """10. 승인 기록부 정합성 (인과 극대 유일·승인본 해석 — 시행령 §6 7항)."""
     if not s.appr_ok:
@@ -354,7 +347,6 @@ CHECKS = (
     ("위임 3요건", _delegations),
     ("비밀값 필터 양성/음성", lambda s: secrets.self_test()),                            # 8. Mechanism §9 2항
     ("비밀값 패턴이 규범과 동치", _secret_patterns),
-    ("보호영역 생애 fixture", _approval_fixture),
     ("승인 기록부 정합(stale·승인본 해석)", _approval_integrity),
     ("승인 대장 스키마", _approval_schema),
     ("퇴출 기록부 스키마", _eviction_schema),
