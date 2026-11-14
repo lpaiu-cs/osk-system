@@ -277,80 +277,82 @@ def catchup(vault: Vault, limit: int = 20, *, max_rounds: int = conversation_sta
             "awaiting_native": awaiting_native}
 
 
-def prompt(vault: Vault, harness: str, conversation_id: str, *, include_organization: bool = True,
-           max_rounds: int = conversation_state.MAX_REVIEW_ROUNDS, organization_in_text: bool = True,
-           offline: bool = False) -> dict:
-    if isinstance(max_rounds, bool) or not isinstance(max_rounds, int) or not 1 <= max_rounds <= conversation_state.MAX_REVIEW_ROUNDS:
-        raise ValueError(f"max_rounds must be between 1 and {conversation_state.MAX_REVIEW_ROUNDS}")
-    with conversation_state.state_lock(vault, harness, conversation_id) as p:
-        s = conversation_state.load_state(vault, p, harness, conversation_id)
-        st = conversation_capture.current_view(vault, s, p)
-        count = min(len(s["rounds"]), s["reviewed_count"] + max_rounds)
-        if offline:
-            # A worker without this conversation takes stored rounds, and original turns
-            # only once the conversation has ended on this device (Mechanism §9-4 3항).
-            ended = conversation_capture.ended_source(vault, s)
-            stored = s["reviewed_count"]
-            while stored < count and (ended or not raw.is_native(s["rounds"][stored]["ref"])):
-                stored += 1
-            count = stored
-        if s.get("repair_pending"):
-            token = min(s["repair_pending"], key=lambda t: (s["snapshots"][t]["count"], t))
-            repair = s["repair_pending"][token]
-            if len(repair["refs"]) > max_rounds:
-                # Split the obligation itself, not just its displayed refs. Each
-                # part needs its own explicit ACK; the parent verifies all parts.
-                parts = []
-                for start in range(0, len(repair["refs"]), max_rounds):
-                    refs = repair["refs"][start:start + max_rounds]
-                    child = "sha256:" + hashlib.sha256(json.dumps(
-                        [token, repair["review_count"], refs], sort_keys=True).encode()).hexdigest()
-                    s["snapshots"][child] = {k: s["snapshots"][token][k]
-                                              for k in ("count", "prompt_count")}
-                    s["snapshots"][child]["repair_refs"] = refs
-                    s["repair_pending"][child] = {**repair, "refs": refs}
-                    parts.append(child)
-                s["snapshots"][token]["repair_parts"] = parts
-                del s["repair_pending"][token]
-                token = parts[0]
-                conversation_state.save_state(p, s)
-            st["through"] = token
-            st["pending_refs"] = s["repair_pending"][token]["refs"]
-            st["remaining_rounds"] = (len(s["rounds"]) - s["reviewed_count"]
-                                      + sum(len(r["refs"]) for t, r in s["repair_pending"].items()
-                                            if t != token))
-            st["repair"] = s["repair_pending"][token]
-        elif count > s["reviewed_count"]:
-            selected = {**s, "rounds": s["rounds"][:count]}
-            token = conversation_state.snapshot(selected)
-            # A bounded review may end inside the initial catch-up batch. Its
-            # prompt counter does not claim newer unreviewed prompts as done.
-            s["snapshots"].setdefault(token, {"count": count, "prompt_count": min(
-                s["prompt_count"], s["reviewed_prompt_count"] + count - s["reviewed_count"])})
-            conversation_state.save_state(p, s)
-            st["through"] = token
-            st["pending_refs"] = [r["ref"] for r in s["rounds"][s["reviewed_count"]:count]]
-            st["remaining_rounds"] = len(s["rounds"]) - count
-        else:
-            st["pending_refs"] = []  # an offline range that begins at an original turn is empty
-        selected_refs = set(st["pending_refs"])
-        st["raw_review"] = {"state": "none", "rounds": len(selected_refs), "error": None}
-        if selected_refs:
-            try:
-                with core.mutation_lock(vault):
-                    selected_rounds = [r for r in s["rounds"] if r["ref"] in selected_refs]
-                    if {r["ref"] for r in selected_rounds} != selected_refs:
-                        raise ValueError("selected raw coordinates are missing from the saved cursor")
-                    conversation_review.verify_raw(vault, selected_rounds)
-                st["raw_review"]["state"] = ("native" if all(raw.is_native(ref) for ref in selected_refs)
-                                             else "verified")
-            except (ValueError, OSError, write.WriteError) as exc:
-                st["raw_review"].update(state="unavailable", error=str(exc))
-    # One snapshot identity for ordinary hooks and dedicated workers alike.
-    # A later snapshot must not collide with an immutable distillation request.
-    st["key"] = "scope-review-" + st["through"].removeprefix("sha256:") if st["pending_refs"] else None
-    if st.get("repair"):
-        st["key"] += f"-repair-{st['repair']['review_count']}"
+def _select_repair(s: dict, p, st: dict, max_rounds: int) -> None:
+    """정정으로 다시 열린 검토 가운데 가장 이른 것을 이번 범위로 삼는다."""
+    token = min(s["repair_pending"], key=lambda t: (s["snapshots"][t]["count"], t))
+    repair = s["repair_pending"][token]
+    if len(repair["refs"]) > max_rounds:
+        # Split the obligation itself, not just its displayed refs. Each
+        # part needs its own explicit ACK; the parent verifies all parts.
+        parts = []
+        for start in range(0, len(repair["refs"]), max_rounds):
+            refs = repair["refs"][start:start + max_rounds]
+            child = "sha256:" + hashlib.sha256(json.dumps(
+                [token, repair["review_count"], refs], sort_keys=True).encode()).hexdigest()
+            s["snapshots"][child] = {k: s["snapshots"][token][k]
+                                      for k in ("count", "prompt_count")}
+            s["snapshots"][child]["repair_refs"] = refs
+            s["repair_pending"][child] = {**repair, "refs": refs}
+            parts.append(child)
+        s["snapshots"][token]["repair_parts"] = parts
+        del s["repair_pending"][token]
+        token = parts[0]
+        conversation_state.save_state(p, s)
+    st["through"] = token
+    st["pending_refs"] = s["repair_pending"][token]["refs"]
+    st["remaining_rounds"] = (len(s["rounds"]) - s["reviewed_count"]
+                              + sum(len(r["refs"]) for t, r in s["repair_pending"].items()
+                                    if t != token))
+    st["repair"] = s["repair_pending"][token]
+
+
+def _select_range(vault: Vault, s: dict, p, st: dict, max_rounds: int, offline: bool) -> None:
+    """이번 검토가 볼 범위를 고르고 그 snapshot을 상태에 적는다 — `through`·`pending_refs`·`remaining_rounds`."""
+    count = min(len(s["rounds"]), s["reviewed_count"] + max_rounds)
+    if offline:
+        # A worker without this conversation takes stored rounds, and original turns
+        # only once the conversation has ended on this device (Mechanism §9-4 3항).
+        ended = conversation_capture.ended_source(vault, s)
+        stored = s["reviewed_count"]
+        while stored < count and (ended or not raw.is_native(s["rounds"][stored]["ref"])):
+            stored += 1
+        count = stored
+    if s.get("repair_pending"):
+        _select_repair(s, p, st, max_rounds)
+    elif count > s["reviewed_count"]:
+        selected = {**s, "rounds": s["rounds"][:count]}
+        token = conversation_state.snapshot(selected)
+        # A bounded review may end inside the initial catch-up batch. Its
+        # prompt counter does not claim newer unreviewed prompts as done.
+        s["snapshots"].setdefault(token, {"count": count, "prompt_count": min(
+            s["prompt_count"], s["reviewed_prompt_count"] + count - s["reviewed_count"])})
+        conversation_state.save_state(p, s)
+        st["through"] = token
+        st["pending_refs"] = [r["ref"] for r in s["rounds"][s["reviewed_count"]:count]]
+        st["remaining_rounds"] = len(s["rounds"]) - count
+    else:
+        st["pending_refs"] = []  # an offline range that begins at an original turn is empty
+
+
+def _raw_review(vault: Vault, s: dict, pending_refs: list) -> dict:
+    """고른 범위의 저장된 좌표와 해시가 맞는가 — 맞지 않으면 그 범위의 증류와 ACK가 보류된다."""
+    selected_refs = set(pending_refs)
+    review = {"state": "none", "rounds": len(selected_refs), "error": None}
+    if selected_refs:
+        try:
+            with core.mutation_lock(vault):
+                selected_rounds = [r for r in s["rounds"] if r["ref"] in selected_refs]
+                if {r["ref"] for r in selected_rounds} != selected_refs:
+                    raise ValueError("selected raw coordinates are missing from the saved cursor")
+                conversation_review.verify_raw(vault, selected_rounds)
+            review["state"] = "native" if all(raw.is_native(ref) for ref in selected_refs) else "verified"
+        except (ValueError, OSError, write.WriteError) as exc:
+            review.update(state="unavailable", error=str(exc))
+    return review
+
+
+def _capture_notes(st: dict, s: dict, harness: str, conversation_id: str, offline: bool) -> str:
+    """지시문의 머리 — 이 대화의 포착과 원본이 어떤 상태인가. 범위를 자리로 말할 수 있으면 `st["range"]`에 적는다."""
     text = (f"[osk 대화별 통합 대기 — {harness}/{conversation_id}]\n"
             f"공유 scope 기억 session={json.dumps(st['session'], ensure_ascii=False)}와 "
             "이 대화의 검토 상태는 별개다. 공유 기억이 비어 있어도 검토한다.\n")
@@ -388,6 +390,12 @@ def prompt(vault: Vault, harness: str, conversation_id: str, *, include_organiza
     if (st.get("coverage") or {}).get("ancestor_pending_tails"):
         text += ("fork 부모의 선언된 history 범위에 미완료 꼬리가 있다. 자식의 종료로 부모 턴을 "
                  "완료하거나 ACK하지 않는다. 부모 원본·검토 대기를 별도로 확인한다.\n")
+    return text
+
+
+def _repair_notes(st: dict) -> str:
+    """정정으로 다시 열린 검토라면 무엇이 정정됐고 무엇을 다시 봐야 하는가."""
+    text = ""
     if st.get("repair"):
         text += ("이 snapshot은 이미 검토했지만, 그 뒤 저장 라운드가 정정되어 다시 열렸다(복구 대기). "
                  "새 대화의 완료 커서는 되감지 않았다. 정정된 라운드를 다시 읽고, 이전 증류가 정정 전 "
@@ -401,7 +409,11 @@ def prompt(vault: Vault, harness: str, conversation_id: str, *, include_organiza
         if st["repair"].get("targets"):
             text += ("그 라운드를 출처로 쓴 노드(정정본에 비추어 다시 판단한다): "
                      + ", ".join(t.get("name") or t["id"] for t in st["repair"]["targets"]) + "\n")
-    jobs = []
+    return text
+
+
+def _review_scopes(vault: Vault, s: dict, st: dict) -> list:
+    """검토 문맥의 scope들 — 맨 앞이 허브 트리를 싣는 scope다."""
     # 대화에 고정한 착지(capture의 space)가 검토 문맥의 scope다 — 프로젝트의 주된 scope와 다를 수
     # 있다(시행령 §3 9항). 고정이 없을 때만 결속 scope를 주된 scope부터, 없으면 결속 순서대로 본다(§9-3 1항).
     pinned = raw.scope_of_space(vault, s["space"]) if s.get("space") else None
@@ -411,22 +423,12 @@ def prompt(vault: Vault, harness: str, conversation_id: str, *, include_organiza
         scopes = []
     if pinned and scopes:
         scopes = [pinned, *[x for x in scopes if x != pinned]]
-    scope = scopes[0] if scopes else None       # 허브 트리의 scope — 고정한 착지, 없으면 주된 scope
-    try:
-        with core.mutation_lock(vault):
-            jobs = (organization.pending(vault, scopes, limit=1, record=True)
-                    if scopes and include_organization else [])
-    except (OSError, ValueError, write.WriteError) as exc:
-        text += f"참조·조직 검토는 대기 중이다: {exc}. 아래 대화 통합은 계속한다.\n"
-    st["organization_jobs"] = jobs
-    organization_text = organization.prompt(vault, jobs)
-    if not organization_in_text:
-        organization_text = ""  # the hook budgets organization_jobs as its own block (`osk.hook_text`)
-    if not st["pending_refs"]:
-        return {**st, "text": text + "검토할 완료 라운드가 아직 없다. 종료 꼬리는 같은 대화 재개 또는 명시 capture로 따라잡는다." + organization_text}
-    command = core.cli_command(vault, "integration", "review", "--harness", harness,
-                               "--conversation", conversation_id)
+    return scopes
 
+
+def _distillation_notes(vault: Vault, harness: str, conversation_id: str, s: dict, st: dict) -> str:
+    """이 범위에서 이미 저장된 증류의 증거와 이번 snapshot의 작업 키. 찾은 것은 `st`에 적는다."""
+    text = ""
     def since():
         # The earliest pending turn's time bounds the receipt scan (#227); read only if needed.
         try:
@@ -460,7 +462,12 @@ def prompt(vault: Vault, harness: str, conversation_id: str, *, include_organiza
              "내용을 더 증류하면 접미사 뒤에 -2·-3을 붙인다. 여러 대상에 같은 key를 쓰지 않는다. "
              "새 snapshot은 새 작업 키를 쓴다. ACK만 유실됐다면 위 complete 증거의 "
              "기존 key를 targets에 재사용하며, 같은 본문을 새 key로 다시 쓰지 않는다.\n")
-    stored = [ref for ref in st["pending_refs"] if not raw.is_native(ref)]
+    return text
+
+
+def _binding_notes(vault: Vault, s: dict, st: dict) -> str:
+    """작업 폴더의 판별과 이 프로젝트의 결속 — 노드의 착지를 고르게 한다."""
+    text = ""
     workspace = s.get("workspace") or {}
     if workspace.get("warning"):
         text += f"작업 폴더 판별: {workspace['warning']}\n"
@@ -476,13 +483,22 @@ def prompt(vault: Vault, harness: str, conversation_id: str, *, include_organiza
                         " · 주된 scope 없음 — 노드를 쓸 때마다 space를 준다")
                      + ". 다른 scope의 활동이면 create_node의 space에 그 scope를 준다(결속에 더해진다). "
                        "이 프로젝트 자체의 활동이 속한 scope를 확인했으면 review의 primary_scope로 지정한다.\n")
-    # 시행령 §3 8항(2026-11-10 사용자 결정, #273 질문 3): 대화 검토는 결속 scope의 허브 트리만 싣는다. 다른
-    # scope와 Domain의 주장은 주제 검색으로만 에이전트 앞에 놓이므로, 새 노드를 쓰기 전의 검색을 지시로 강제한다.
-    text += ("노드를 새로 쓰기 전에 반드시 그 주제로 search를 먼저 불러 비슷한 기존 노드를 찾는다 — 결과에는 이 "
-             "scope 밖의 다른 scope와 Domain 노드도 든다(시행령 §3 8항). 주장이 같으면 그 노드를 갱신하고, 새 노드가 "
-             "찾은 노드의 주장에 실제로 기대면 derived-from으로 건다. 주제만 겹치면 걸지 않는다. search를 한 번도 "
-             "부르지 않은 세션의 create_node는 거부된다(Mechanism §6-2 10항). "
-             + node_checks.CLAIM_GUIDANCE + "오래 쓸 지식만 Scope 노드로 옮긴다. ")
+    return text
+
+
+# 시행령 §3 8항(2026-11-10 사용자 결정, #273 질문 3): 대화 검토는 결속 scope의 허브 트리만 싣는다. 다른
+# scope와 Domain의 주장은 주제 검색으로만 에이전트 앞에 놓이므로, 새 노드를 쓰기 전의 검색을 지시로 강제한다.
+_SEARCH_FIRST = (
+    "노드를 새로 쓰기 전에 반드시 그 주제로 search를 먼저 불러 비슷한 기존 노드를 찾는다 — 결과에는 이 "
+    "scope 밖의 다른 scope와 Domain 노드도 든다(시행령 §3 8항). 주장이 같으면 그 노드를 갱신하고, 새 노드가 "
+    "찾은 노드의 주장에 실제로 기대면 derived-from으로 건다. 주제만 겹치면 걸지 않는다. search를 한 번도 "
+    "부르지 않은 세션의 create_node는 거부된다(Mechanism §6-2 10항). "
+)
+
+
+def _landing_notes(vault: Vault, s: dict, st: dict, scope: str | None) -> str:
+    """노드가 놓일 자리 — 검토 문맥의 scope와 그 허브 트리를 `st`에 적고, 자리를 정하는 법을 말한다."""
+    text = ""
     # 세션이 아직 결속되지 않았으면(첫 노드 쓰기 전) 이 대화가 착지한 scope로 본다
     tree_scope = scope or (raw.scope_of_space(vault, s["space"]) if s.get("space") else None)
     st["review_scope"] = tree_scope
@@ -501,17 +517,27 @@ def prompt(vault: Vault, harness: str, conversation_id: str, *, include_organiza
                  "create_node의 space에는 그 군집 경로를, distill.hub에는 그 허브의 이름(경로의 마지막 마디)을 쓴다. "
                  "허브의 분화는 조직 검토가 맡으므로 하위 군집을 열지 않는다. 분화가 필요해 보이면 그 제안을 reason에 "
                  "남긴다. 이 scope의 허브 트리:\n" + tree + "\n")
-    # 2026-10-05 사용자 결정(#136 M5 정보 회귀 금지, M3 `## 근거` 절). 작업자 지시(growth.prompt)와 같은 규칙.
-    # 2026-11-07(#273): 본문을 고치지 않고 줄만 다는 것은 지지에 한한다 — 조건·반례는 본문도 고칠 수 있다.
-    text += ("검토하는 턴이 현행 노드보다 오래됐을 수 있다. 옛 사실은 날짜를 붙인 이력으로만 더하고, "
-             "현행 주장을 옛 내용으로 바꾸거나 약화·재배열하지 않는다. 선후가 불분명하면 보류한다. "
-             "distill.sources에 준 라운드는 노드 끝 `# 관측` 절에 `- 날짜 · 좌표 · 지지|조건|반례 — 그 턴이 "
-             "보인 것(50자 안팎)` 한 줄씩 단다 — derived-from은 노드만 받고, 엔진은 출처를 이 줄로 확인한다. "
-             "노드 끝에 관측 절(`# 관측`, v5.6 전의 `## 근거`)이 이미 있으면 새로 열지 않고 거기에 잇는다. "
-             "그 턴을 노드의 말로 해석했으면 해석을 같은 줄에 적는다. "
-             "이미 노드에 있는 주장을 받치기만 하는 턴은 본문을 고쳐 쓰지 않고 그 줄만 단다. "
-             "좌표는 링크가 아니라 코드 글자로, 회상·인용 결과의 coordinate를 쓴다(`42cf0fc0#1`, "
-             "이어진 라운드는 `42cf0fc0#41–42`). ")
+    return text
+
+
+# 2026-10-05 사용자 결정(#136 M5 정보 회귀 금지, M3 `## 근거` 절). 작업자 지시(growth.prompt)와 같은 규칙.
+# 2026-11-07(#273): 본문을 고치지 않고 줄만 다는 것은 지지에 한한다 — 조건·반례는 본문도 고칠 수 있다.
+_OBSERVATION_RULES = (
+    "검토하는 턴이 현행 노드보다 오래됐을 수 있다. 옛 사실은 날짜를 붙인 이력으로만 더하고, "
+    "현행 주장을 옛 내용으로 바꾸거나 약화·재배열하지 않는다. 선후가 불분명하면 보류한다. "
+    "distill.sources에 준 라운드는 노드 끝 `# 관측` 절에 `- 날짜 · 좌표 · 지지|조건|반례 — 그 턴이 "
+    "보인 것(50자 안팎)` 한 줄씩 단다 — derived-from은 노드만 받고, 엔진은 출처를 이 줄로 확인한다. "
+    "노드 끝에 관측 절(`# 관측`, v5.6 전의 `## 근거`)이 이미 있으면 새로 열지 않고 거기에 잇는다. "
+    "그 턴을 노드의 말로 해석했으면 해석을 같은 줄에 적는다. "
+    "이미 노드에 있는 주장을 받치기만 하는 턴은 본문을 고쳐 쓰지 않고 그 줄만 단다. "
+    "좌표는 링크가 아니라 코드 글자로, 회상·인용 결과의 coordinate를 쓴다(`42cf0fc0#1`, "
+    "이어진 라운드는 `42cf0fc0#41–42`). "
+)
+
+
+def _turn_notes(st: dict, stored: list, offline: bool, harness: str, conversation_id: str) -> str:
+    """범위 안의 원본 턴을 어떻게 읽고 인용하는가 — 그 턴이 검토자의 문맥에 있는지에 따라 다르다."""
+    text = ""
     turns = len(st["pending_refs"]) - len(stored)
     if turns and offline and st.get("repair"):
         # Only stored and cited rounds are corrected; the original turns in the range were not.
@@ -538,6 +564,12 @@ def prompt(vault: Vault, harness: str, conversation_id: str, *, include_organiza
                  f"턴만 cite_round(conversation=\"{harness}/{conversation_id}\", quote=그 턴 사용자 발화의 "
                  "짧은 일부 또는 turn=read_cited가 준 short)로 인용하고, 받은 round_ref를 distill.sources로, "
                  "coordinate를 관측 줄로 써 출처와 허브 Link를 완성한다. 범위 안에 남길 지식이 없으면 no_value로 닫는다.\n")
+    return text
+
+
+def _stored_notes(stored: list) -> str:
+    """저장된 기록을 읽는 법과 그 좌표들."""
+    text = ""
     if stored:
         text += ("저장된 기록은 현재 scope_memory와 함께 read_cited(view=review) 선별본으로 본다. "
                  "보존할 주장이나 모순을 확인할 때만 query로 필요한 원료 근거를 좁혀 읽고, 원본 hash를 "
@@ -546,7 +578,14 @@ def prompt(vault: Vault, harness: str, conversation_id: str, *, include_organiza
                  "안 보인다는 이유로 보류하지 않는다. 진술되지 않은 것은 지어내지 않는다. "
                  "max_chars 증가·기록 전량 이어읽기·전사 전체 shell 출력으로 우회하지 않는다. "
                  "선택한 기록 출처와 허브 Link를 distill로 완성한다.\n" + "\n".join(stored) + "\n")
-    text += "남길 지식이 없는 라운드까지 노드에 억지로 넣지 않는다.\n"
+    return text
+
+
+def _ack_notes(vault: Vault, harness: str, conversation_id: str, st: dict) -> str:
+    """판정을 적어 내는 명령과 그 꼴."""
+    command = core.cli_command(vault, "integration", "review", "--harness", harness,
+                               "--conversation", conversation_id)
+    text = "남길 지식이 없는 라운드까지 노드에 억지로 넣지 않는다.\n"
     text += (f"실행 명령({ 'PowerShell' if os.name == 'nt' else 'shell' }):\n{command}\n위 명령에 UTF-8 JSON을 stdin으로 전달하라: "
              + json.dumps({"through": st["through"], "outcome": "preserved|summary|no_value|deferred",
                            "reason": "검토 범위와 선택/생략 이유", "targets": [{"key": "완료한 distill key"}]}, ensure_ascii=False)
@@ -554,4 +593,45 @@ def prompt(vault: Vault, harness: str, conversation_id: str, *, include_organiza
              "정확한 발췌를 targets=[{text:...}]로 제출하며 노드 보존 성공으로 세지 않는다. "
              "no_value도 사유를 남기고, deferred는 대기를 유지한다. 기억 hash 변화만으로 완료되지 않는다. "
              "기계 검사는 저장·배선만 확인하며 의미 타당성은 원문과 따로 대조한다.")
+    return text
+
+
+def prompt(vault: Vault, harness: str, conversation_id: str, *, include_organization: bool = True,
+           max_rounds: int = conversation_state.MAX_REVIEW_ROUNDS, organization_in_text: bool = True,
+           offline: bool = False) -> dict:
+    if isinstance(max_rounds, bool) or not isinstance(max_rounds, int) or not 1 <= max_rounds <= conversation_state.MAX_REVIEW_ROUNDS:
+        raise ValueError(f"max_rounds must be between 1 and {conversation_state.MAX_REVIEW_ROUNDS}")
+    with conversation_state.state_lock(vault, harness, conversation_id) as p:
+        s = conversation_state.load_state(vault, p, harness, conversation_id)
+        st = conversation_capture.current_view(vault, s, p)
+        _select_range(vault, s, p, st, max_rounds, offline)
+        st["raw_review"] = _raw_review(vault, s, st["pending_refs"])
+    # One snapshot identity for ordinary hooks and dedicated workers alike.
+    # A later snapshot must not collide with an immutable distillation request.
+    st["key"] = "scope-review-" + st["through"].removeprefix("sha256:") if st["pending_refs"] else None
+    if st.get("repair"):
+        st["key"] += f"-repair-{st['repair']['review_count']}"
+    text = _capture_notes(st, s, harness, conversation_id, offline) + _repair_notes(st)
+    scopes = _review_scopes(vault, s, st)
+    jobs = []
+    try:
+        with core.mutation_lock(vault):
+            jobs = (organization.pending(vault, scopes, limit=1, record=True)
+                    if scopes and include_organization else [])
+    except (OSError, ValueError, write.WriteError) as exc:
+        text += f"참조·조직 검토는 대기 중이다: {exc}. 아래 대화 통합은 계속한다.\n"
+    st["organization_jobs"] = jobs
+    organization_text = organization.prompt(vault, jobs)
+    if not organization_in_text:
+        organization_text = ""  # the hook budgets organization_jobs as its own block (`osk.hook_text`)
+    if not st["pending_refs"]:
+        return {**st, "text": text + "검토할 완료 라운드가 아직 없다. 종료 꼬리는 같은 대화 재개 또는 명시 capture로 따라잡는다." + organization_text}
+    text += _distillation_notes(vault, harness, conversation_id, s, st)
+    stored = [ref for ref in st["pending_refs"] if not raw.is_native(ref)]
+    text += (_binding_notes(vault, s, st) + _SEARCH_FIRST + node_checks.CLAIM_GUIDANCE
+             + "오래 쓸 지식만 Scope 노드로 옮긴다. ")
+    # 허브 트리의 scope — 고정한 착지, 없으면 주된 scope
+    text += _landing_notes(vault, s, st, scopes[0] if scopes else None)
+    text += (_OBSERVATION_RULES + _turn_notes(st, stored, offline, harness, conversation_id) + _stored_notes(stored)
+             + _ack_notes(vault, harness, conversation_id, st))
     return {**st, "text": text + organization_text}

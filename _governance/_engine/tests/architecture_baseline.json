@@ -14,9 +14,9 @@
   "broad_except": 0,
   "boundary_excepts": 43,
   "isolated_excepts": 44,
-  "oversize_functions": 116,
-  "excess_lines": 2247,
-  "excess_branches": 1548,
+  "oversize_functions": 115,
+  "excess_lines": 2032,
+  "excess_branches": 1488,
   "late_loads": 1
  },
  "upward_imports": {},
@@ -258,10 +258,6 @@
   "osk.integration:catchup": [
    35,
    22
-  ],
-  "osk.integration:prompt": [
-   275,
-   75
   ],
   "osk.native_cli:resolve": [
    52,
