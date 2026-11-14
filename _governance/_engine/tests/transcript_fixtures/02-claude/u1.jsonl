@@ -1,0 +1,9 @@
+{"type":"queue-operation","operation":"t1","timestamp":"2001-01-02T00:00:00.000Z","sessionId":"u1","content":"t2"}
+{"type":"queue-operation","operation":"t3","timestamp":"2001-01-02T00:00:01.000Z","sessionId":"u1"}
+{"parentUuid":null,"isSidechain":false,"promptId":"u2","type":"user","message":{"role":"user","content":"t2"},"uuid":"u3","timestamp":"2001-01-02T00:00:03.000Z","sessionId":"u1"}
+{"parentUuid":"u3","isSidechain":false,"attachment":{"type":"t4"},"type":"attachment","uuid":"u4","timestamp":"2001-01-02T00:00:02.000Z","sessionId":"u1"}
+{"parentUuid":"u4","isSidechain":false,"attachment":{"type":"t5"},"type":"attachment","uuid":"u5","timestamp":"2001-01-02T00:00:02.000Z","sessionId":"u1"}
+{"parentUuid":"u5","isSidechain":false,"attachment":{"type":"t6","content":"t7"},"type":"attachment","uuid":"u6","timestamp":"2001-01-02T00:00:02.000Z","sessionId":"u1"}
+{"parentUuid":"u6","isSidechain":false,"attachment":{"type":"t8","text":"t9"},"type":"attachment","uuid":"u7","timestamp":"2001-01-02T00:00:02.000Z","sessionId":"u1"}
+{"type":"t10","sessionId":"u1"}
+{"parentUuid":"u7","isSidechain":false,"type":"assistant","uuid":"u8","timestamp":"2001-01-02T00:00:04.000Z","message":{"id":"u9","role":"assistant","stop_reason":"stop_sequence","type":"message","content":[{"type":"text","text":"t11"}]},"error":"t12","sessionId":"u1"}
