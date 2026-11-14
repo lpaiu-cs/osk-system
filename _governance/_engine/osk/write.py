@@ -373,44 +373,8 @@ def _as_links(vault: Vault, pred: str, targets, *, legacy_raw: bool = False) -> 
     return out[0] if len(out) == 1 else out
 
 
-def update_node(vault: Vault, name: str, body: str | None = None,
-                expect_hash: str | None = None, summary: str | None = None,
-                add_edges: dict | None = None, remove_edges: dict | None = None,
-                old_text: str | None = None, new_text: str | None = None,
-                settle: str | None = None, rechecked: list | None = None, *,
-                _seen: dict | None = None) -> dict:
-    """Apply an ordinary node update under the shared mutation lock.
-
-    `rechecked` names the `derived-from` targets whose recheck this call completes.
-    `_seen` is the surface's record of the bodies its caller read (node id →
-    `rechecks.state`); a recorded read must still match for a recheck to close
-    (Mechanism §4-1)."""
-    with mutation_lock(vault):
-        return update_node_locked(vault, name, body, expect_hash, summary, add_edges,
-                                   remove_edges, old_text, new_text, settle, rechecked,
-                                   _seen=_seen)
-
-
-def update_node_locked(vault: Vault, name: str, body: str | None = None,
-                expect_hash: str | None = None, summary: str | None = None,
-                add_edges: dict | None = None,
-                remove_edges: dict | None = None,
-                old_text: str | None = None,
-                new_text: str | None = None, settle: str | None = None,
-                rechecked: list | None = None, *, _before_write=None,
-                _stamp=None, _legacy_raw=False, _seen=None, _idx=None) -> dict:
-    """본문·summary·엣지 수정. 엣지는 **델타**이므로 서버가 잠금 안에서 현재
-    상태에 적용한다 — 낡은 읽기가 앞선 갱신을 덮는 일이 구조적으로 없다.
-
-    `old_text`/`new_text`는 본문의 **앵커 편집**이며 같은 규율을 본문으로
-    넓힌 것이다. 앵커는 "고칠 자리를 봤다"는 증거이므로 "전체를 봤다"는
-    증거(`expect_hash`)를 요구하지 않는다 — §6-2 4항이 부분 변경을 그렇게
-    갈라 둔다. 전문 치환(`body`)은 그대로 해시를 요구한다.
-
-    실측이 이 경로를 부른 이유: 본문을 실은 `update_node` 78건이 그 도구
-    발화 비용의 85%를 썼는데 연속 재작성 간 유사도 중앙값이 0.84였다 —
-    국소 편집에 전문을 다시 뱉고 있었다. 하네스 `Edit`의 실측 대조에서
-    부분 편집은 전문 치환의 0.119배이고 실패율은 오히려 낮다(2.2%)."""
+def _anchor_args(body: str | None, old_text: str | None, new_text: str | None) -> tuple:
+    """앵커 편집의 인자 검사 — 줄바꿈을 접은 `(old_text, new_text)`를 돌려준다."""
     # 인자 검사는 잠금 **밖**에서 — 형태가 틀린 요청이 잠금을 잡을 이유가 없다.
     if (old_text is None) != (new_text is None):
         raise WriteError(
@@ -437,6 +401,13 @@ def update_node_locked(vault: Vault, name: str, body: str | None = None,
             raise WriteError(
                 "`old_text`와 `new_text`가 같다 — 쓰지 않았다",
                 ["바뀌는 것이 없다. 고칠 내용을 `new_text`에 담아라."])
+    return old_text, new_text
+
+
+def _node_for_update(vault: Vault, name: str, body: str | None, expect_hash: str | None,
+                     add_edges: dict | None, remove_edges: dict | None, settle: str | None, _idx) -> tuple:
+    """고칠 노드를 찾아 읽는다 — `(색인, 경로, 노드)`. 고쳐도 되는 노드가 아니면 `WriteError`다:
+    엣지의 계약, 노드의 실재, 통치 구획, 파손, 읽은 판과 지금 판의 일치(`expect_hash`)."""
     # 이 쓰기가 쓰는 색인은 하나다. 같은 잠금 안의 허브 배선은 앞 쓰기의 색인을 넘긴다.
     idx = graph.Index(vault) if _idx is None else _idx
     nodefile.require_complete(idx)
@@ -458,6 +429,12 @@ def update_node_locked(vault: Vault, name: str, body: str | None = None,
         raise WriteError(f"파손된 노드다 — 수동 확인이 먼저다: {name} ({e})")
 
     node_checks.cas(path, expect_hash, body is not None)   # 위반 시 raise
+    return idx, path, n
+
+
+def _recheck_claims(vault: Vault, idx, path: Path, n, rechecked) -> tuple:
+    """근거 재검토(Mechanism §4-1)의 쓰기 전 상태 — `(쌍, 읽었어야 할 본문의 상태, 이미 끝난 쌍, 이 호출이
+    닫는 쌍, 닫을 쌍이 없는 항목의 알림)`."""
     # 근거 재검토(Mechanism §4-1) — 쓰기 전의 쌍과 완료 상태, 이 호출이 `rechecked`에 적은 근거.
     # 잴 수 있는 쌍이 아닌 항목은 쓰기를 막지 않고 응답에 비춘다(헌법 1조 3항).
     _baseline(vault, idx)
@@ -473,39 +450,43 @@ def update_node_locked(vault: Vault, name: str, body: str | None = None,
             rc_stray.append(str(ref))
     rc_note = {"recheck_unmatched": {"targets": rc_stray, "why": (
         "이 노드의 derived-from에 상태를 잴 수 있는 근거로 없다 — 닫을 쌍이 없다")}} if rc_stray else {}
-    if old_text is not None:
-        # **유일성이 안전 계약의 전부다.** 여러 곳에 맞으면 어디를 고칠지
-        # 호출자가 정한 바가 없고, 아무 곳이나 고르는 것은 조용히 틀린
-        # 자리를 고치는 길이다. 하네스 `Edit` 실측에서 유일성 위반은
-        # 5,454건 중 5건(0.09%)이라 이 계약은 실무에서 거의 공짜다.
-        hits, windows = nodefile.anchor_windows(n.body, old_text)
-        if hits == 0 and (spaced := space_numeric_tags(old_text)) != old_text:
-            # 저장본은 태그 방어로 `#숫자` 뒤를 띄웠다(`norm_body`). 호출자가 방금 쓴 글 그대로의
-            # 앵커도 같은 변환으로 맞춘다(#292). 원문부터 보는 것은 조각이 코드 구획 한가운데서
-            # 시작하면 변환의 구획 판정이 틀릴 수 있어서다.
-            old_text = spaced
-            hits, windows = nodefile.anchor_windows(n.body, spaced)
-        if hits != 1:
-            raise WriteError(
-                ("앵커가 본문에 없다 — 쓰지 않았다" if hits == 0 else
-                 f"앵커가 본문에 {hits}곳 맞는다 — 쓰지 않았다"),
-                ([f"`old_text`가 `{name}`의 본문에 나오지 않는다. 노드가 "
-                  f"그 사이 바뀌었을 수 있다 — `read_node`로 지금 본문을 "
-                  f"보고 그대로 복사해 넣어라. 공백·줄바꿈까지 일치해야 한다. "
-                  f"큰 노드는 `read_node(view=고칠 문장)`이 그 자리를 앞뒤 문단째 준다."]
-                 if hits == 0 else
-                 [f"어느 자리를 고칠지 정해지지 않는다. 앞뒤 줄을 함께 "
-                  f"넣어 앵커를 **유일하게** 만들어라. 맞는 자리의 앞뒤 문단은 "
-                  f"`views`를 `read_node(view=…)`로 읽는다."]),
-                **({"views": [f"{a}:{b}" for a, b in windows]} if hits else {}))
-        body = n.body.replace(old_text, new_text, 1)
-    meta = dict(n.meta)
-    replaced_summary = None
+    return rc_before, rc_pre, rc_prior, rc_again, rc_note
+
+
+def _anchored_body(n, name: str, old_text: str, new_text: str) -> str:
+    """앵커 편집을 적용한 본문. 앵커는 본문에 꼭 한 곳 맞아야 한다."""
+    # **유일성이 안전 계약의 전부다.** 여러 곳에 맞으면 어디를 고칠지
+    # 호출자가 정한 바가 없고, 아무 곳이나 고르는 것은 조용히 틀린
+    # 자리를 고치는 길이다. 하네스 `Edit` 실측에서 유일성 위반은
+    # 5,454건 중 5건(0.09%)이라 이 계약은 실무에서 거의 공짜다.
+    hits, windows = nodefile.anchor_windows(n.body, old_text)
+    if hits == 0 and (spaced := space_numeric_tags(old_text)) != old_text:
+        # 저장본은 태그 방어로 `#숫자` 뒤를 띄웠다(`norm_body`). 호출자가 방금 쓴 글 그대로의
+        # 앵커도 같은 변환으로 맞춘다(#292). 원문부터 보는 것은 조각이 코드 구획 한가운데서
+        # 시작하면 변환의 구획 판정이 틀릴 수 있어서다.
+        old_text = spaced
+        hits, windows = nodefile.anchor_windows(n.body, spaced)
+    if hits != 1:
+        raise WriteError(
+            ("앵커가 본문에 없다 — 쓰지 않았다" if hits == 0 else
+             f"앵커가 본문에 {hits}곳 맞는다 — 쓰지 않았다"),
+            ([f"`old_text`가 `{name}`의 본문에 나오지 않는다. 노드가 "
+              f"그 사이 바뀌었을 수 있다 — `read_node`로 지금 본문을 "
+              f"보고 그대로 복사해 넣어라. 공백·줄바꿈까지 일치해야 한다. "
+              f"큰 노드는 `read_node(view=고칠 문장)`이 그 자리를 앞뒤 문단째 준다."]
+             if hits == 0 else
+             [f"어느 자리를 고칠지 정해지지 않는다. 앞뒤 줄을 함께 "
+              f"넣어 앵커를 **유일하게** 만들어라. 맞는 자리의 앞뒤 문단은 "
+              f"`views`를 `read_node(view=…)`로 읽는다."]),
+            **({"views": [f"{a}:{b}" for a, b in windows]} if hits else {}))
+    body = n.body.replace(old_text, new_text, 1)
+    return body
+
+
+def _edit_edges(vault: Vault, meta: dict, add_edges: dict | None, remove_edges: dict | None, idx,
+                _legacy_raw: bool) -> bool:
+    """엣지의 제거와 추가를 `meta`에 적용한다. 저장할 것이 달라졌으면 True."""
     changed = False
-    if summary is not None and str(meta.get("summary")) != summary:
-        replaced_summary = str(meta.get("summary"))
-        meta["summary"] = summary
-        changed = True
     # 두 루프 모두 **누적된 `meta`**에서 현재값을 읽는다. 구판은 각자
     # `n.edges(pred)`로 **원본**을 다시 읽었고, 그래서 같은 술어에 add와
     # remove를 함께 주면 remove가 "add가 없었던 것처럼" 계산한 값으로
@@ -544,6 +525,61 @@ def update_node_locked(vault: Vault, name: str, body: str | None = None,
         cur = stored_edges(meta.get(pred))
         if len(set(cur)) != len(cur):
             meta[pred] = list(dict.fromkeys(cur))
+    return changed
+
+
+def update_node(vault: Vault, name: str, body: str | None = None,
+                expect_hash: str | None = None, summary: str | None = None,
+                add_edges: dict | None = None, remove_edges: dict | None = None,
+                old_text: str | None = None, new_text: str | None = None,
+                settle: str | None = None, rechecked: list | None = None, *,
+                _seen: dict | None = None) -> dict:
+    """Apply an ordinary node update under the shared mutation lock.
+
+    `rechecked` names the `derived-from` targets whose recheck this call completes.
+    `_seen` is the surface's record of the bodies its caller read (node id →
+    `rechecks.state`); a recorded read must still match for a recheck to close
+    (Mechanism §4-1)."""
+    with mutation_lock(vault):
+        return update_node_locked(vault, name, body, expect_hash, summary, add_edges,
+                                   remove_edges, old_text, new_text, settle, rechecked,
+                                   _seen=_seen)
+
+
+def update_node_locked(vault: Vault, name: str, body: str | None = None,
+                expect_hash: str | None = None, summary: str | None = None,
+                add_edges: dict | None = None,
+                remove_edges: dict | None = None,
+                old_text: str | None = None,
+                new_text: str | None = None, settle: str | None = None,
+                rechecked: list | None = None, *, _before_write=None,
+                _stamp=None, _legacy_raw=False, _seen=None, _idx=None) -> dict:
+    """본문·summary·엣지 수정. 엣지는 **델타**이므로 서버가 잠금 안에서 현재
+    상태에 적용한다 — 낡은 읽기가 앞선 갱신을 덮는 일이 구조적으로 없다.
+
+    `old_text`/`new_text`는 본문의 **앵커 편집**이며 같은 규율을 본문으로
+    넓힌 것이다. 앵커는 "고칠 자리를 봤다"는 증거이므로 "전체를 봤다"는
+    증거(`expect_hash`)를 요구하지 않는다 — §6-2 4항이 부분 변경을 그렇게
+    갈라 둔다. 전문 치환(`body`)은 그대로 해시를 요구한다.
+
+    실측이 이 경로를 부른 이유: 본문을 실은 `update_node` 78건이 그 도구
+    발화 비용의 85%를 썼는데 연속 재작성 간 유사도 중앙값이 0.84였다 —
+    국소 편집에 전문을 다시 뱉고 있었다. 하네스 `Edit`의 실측 대조에서
+    부분 편집은 전문 치환의 0.119배이고 실패율은 오히려 낮다(2.2%)."""
+    old_text, new_text = _anchor_args(body, old_text, new_text)
+    idx, path, n = _node_for_update(vault, name, body, expect_hash, add_edges, remove_edges, settle, _idx)
+    rc_before, rc_pre, rc_prior, rc_again, rc_note = _recheck_claims(vault, idx, path, n, rechecked)
+    if old_text is not None:
+        body = _anchored_body(n, name, old_text, new_text)
+    meta = dict(n.meta)
+    replaced_summary = None
+    changed = False
+    if summary is not None and str(meta.get("summary")) != summary:
+        replaced_summary = str(meta.get("summary"))
+        meta["summary"] = summary
+        changed = True
+    if _edit_edges(vault, meta, add_edges, remove_edges, idx, _legacy_raw):
+        changed = True
     new_body = n.body if body is None else body
     if body is not None and norm_body(body) != norm_body(n.body):
         changed = True
