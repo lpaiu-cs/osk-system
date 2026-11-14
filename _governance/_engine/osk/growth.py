@@ -378,9 +378,8 @@ def _observe(vault: Vault, planned: dict, manifest: dict) -> tuple:
     return receipts, outcomes, scope_outcomes, organization_outcomes, eviction_outcomes, recheck_outcomes
 
 
-def _complete(returncode, error, planned: dict, final_reviews: dict, receipts: dict, scope_outcomes: dict,
-              organization_outcomes: dict, eviction_outcomes: dict, recheck_outcomes: dict) -> bool:
-    """이 실행이 고른 것을 다 닫았는가."""
+def _complete(returncode, error, planned: dict, final_reviews: dict, receipts: dict, queue_outcomes: tuple) -> bool:
+    """이 실행이 고른 것을 다 닫았는가. `queue_outcomes`는 큐마다의 작업 상태다(scope, 조직, 퇴출, 재검토)."""
     # Catch-up includes unrelated conversations. Their failures remain visible
     # in capture; only selected conversations can block this bounded run.
     return (returncode == 0 and error is None
@@ -388,10 +387,7 @@ def _complete(returncode, error, planned: dict, final_reviews: dict, receipts: d
                     for j in planned["scope_jobs"])
             and not final_reviews["errors"]
             and all(receipts.values())
-            and all(s["status"] == "complete" for s in scope_outcomes.values())
-            and all(s["status"] == "complete" for s in organization_outcomes.values())
-            and all(s["status"] == "complete" for s in eviction_outcomes.values())
-            and all(s["status"] == "complete" for s in recheck_outcomes.values()))
+            and all(s["status"] == "complete" for outcomes in queue_outcomes for s in outcomes.values()))
 
 
 def run(vault: Vault, command: list[str], limit: int = 3, timeout: int = 600, *,
@@ -511,8 +507,8 @@ def run(vault: Vault, command: list[str], limit: int = 3, timeout: int = 600, *,
             with core.mutation_lock(vault):
                 (receipts, outcomes, scope_outcomes, organization_outcomes, eviction_outcomes,
                  recheck_outcomes) = _observe(vault, planned, manifest)
-                complete = _complete(returncode, error, planned, final_reviews, receipts, scope_outcomes,
-                                     organization_outcomes, eviction_outcomes, recheck_outcomes)
+                complete = _complete(returncode, error, planned, final_reviews, receipts, (
+                    scope_outcomes, organization_outcomes, eviction_outcomes, recheck_outcomes))
                 result = {"kind": "run", "manifest": manifest["rid"],
                           "ok": complete, "state": "complete" if complete else "limited" if limited else "incomplete",
                           "provider": worker_usage.provider(command), "usage": usage,

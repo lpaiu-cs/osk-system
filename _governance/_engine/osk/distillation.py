@@ -430,10 +430,10 @@ class _Distilling:
     저널이 선 뒤의 실패는 영수증에 적는다(`failed`)."""
 
     def __init__(self, vault: Vault, operation: str, key: str, binding: str, job: dict | None, idx,
-                 sources: list, hub: dict, selected_hash: str | None):
+                 selection: tuple):
         self.vault, self.operation, self.key, self.binding = vault, operation, key, binding
         self.job, self.idx = job, idx
-        self.sources, self.hub, self.selected_hash = sources, hub, selected_hash
+        self.sources, self.hub, self.selected_hash = selection      # `(출처, 허브, 쓰기 전 대상의 해시)`
 
     def admit(self, path, n) -> None:
         """쓰려는 것이 증류의 조건을 채우는가 — 아니면 `WriteError`."""
@@ -574,10 +574,10 @@ def _execute(vault: Vault, operation: str, distill: dict, request: dict, *,
         if job and _verify(vault, job).get("preservation", {}).get("status") == "complete":
             return _completed_before(vault, job, idx)
         if job:
-            sources, hub, selected_hash = job["sources"], job["hub"], job["target"]["before_hash"]
+            selection = job["sources"], job["hub"], job["target"]["before_hash"]
         else:
-            sources, hub, selected_hash = _new_selection(vault, operation, distill, request, idx)
-        run = _Distilling(vault, operation, key, binding, job, idx, sources, hub, selected_hash)
+            selection = _new_selection(vault, operation, distill, request, idx)
+        run = _Distilling(vault, operation, key, binding, job, idx, selection)
         try:
             result, receipt = run.write(request, _seen)
         except Exception as e:      # 격리: 작업이 서 있으면 실패를 영수증에 적는다 — 저장됐는지는 아래에서 파일로 다시 본다
