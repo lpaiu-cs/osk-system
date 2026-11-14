@@ -14,8 +14,8 @@
   "broad_except": 0,
   "boundary_excepts": 43,
   "isolated_excepts": 44,
-  "oversize_functions": 118,
-  "excess_lines": 2491,
+  "oversize_functions": 117,
+  "excess_lines": 2383,
   "excess_branches": 1548,
   "late_loads": 1
  },
@@ -106,10 +106,6 @@
   "osk.cli:main": [
    215,
    57
-  ],
-  "osk.cli_parser:build_parser": [
-   168,
-   9
   ],
   "osk.contract:md_lines": [
    67,
