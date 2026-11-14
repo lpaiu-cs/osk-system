@@ -192,7 +192,7 @@ release tag rather than `main` (newer tags are on the
 [releases page](https://github.com/lpaiu-cs/osk-system/releases)):
 
 ```bash
-git clone --branch v5.6.0 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
+git clone --branch v6.0.0 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
 cd my-osk-vault
 git switch -c main
 python _governance/_engine/scripts/setup.py --interactive
@@ -386,10 +386,11 @@ and reads Claude transcript copies, harness notices and rewinds correctly.
 centrality as two axes (explanatory and dependency), renames the evidence section to the observation
 section `# 관측`, gathers bulk migrations under `osk doctor --migrate`, lets the scheduled growth run
 rest at 90% weekly use instead of keeping a budget, and has an agent search before it writes a new node.
-v5.7.0 will not be released: the items of [its plan](docs/v5.7-milestones.md) moved to the v6 line.
-The next release, v6.0.0, adds no feature — it restructures the engine
-([plan and record](docs/v6.0-refactoring.md)). What comes after — a measurement baseline, recall, cost,
-then simplification — is in the [v6 roadmap](docs/v6-roadmap.md) (in Korean).
+v5.7.0 was not released: the items of [its plan](docs/v5.7-milestones.md) moved to the v6 line.
+v6.0.0 adds no feature — it restructures the engine ([plan and record](docs/v6.0-refactoring.md)).
+The tools and commands are unchanged; only scripts that call engine functions directly need a fix
+([upgrading](docs/UPGRADING.md)). What comes after — a measurement baseline, recall, cost, then
+simplification — is in the [v6 roadmap](docs/v6-roadmap.md) (in Korean).
 
 ## License
 
