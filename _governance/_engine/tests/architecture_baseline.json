@@ -15,8 +15,8 @@
   "boundary_excepts": 43,
   "isolated_excepts": 44,
   "oversize_functions": 108,
-  "excess_lines": 1185,
-  "excess_branches": 1040,
+  "excess_lines": 1114,
+  "excess_branches": 1012,
   "late_loads": 1
  },
  "upward_imports": {},
@@ -192,8 +192,8 @@
    18
   ],
   "osk.growth:run": [
-   199,
-   74
+   128,
+   46
   ],
   "osk.growth_daily:_scan": [
    23,
