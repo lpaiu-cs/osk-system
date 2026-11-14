@@ -1,0 +1,8 @@
+{"timestamp":"2001-01-02T00:00:24.000Z","type":"session_meta","payload":{"id":"u12","forked_from_id":"u1","timestamp":"2001-01-02T00:00:23.000Z","originator":"codex_exec","history_base":{"thread_id":"u1","end_byte_offset":4254}}}
+{"timestamp":"2001-01-02T00:00:24.000Z","type":"event_msg","payload":{"type":"t17","thread_id":"u12"}}
+{"timestamp":"2001-01-02T00:00:25.000Z","type":"event_msg","payload":{"type":"t17","thread_id":"u12"}}
+{"timestamp":"2001-01-02T00:00:26.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"u13"}}
+{"timestamp":"2001-01-02T00:00:27.000Z","type":"turn_context","payload":{"turn_id":"u13"}}
+{"timestamp":"2001-01-02T00:00:28.000Z","type":"response_item","payload":{"type":"message","id":"u14","role":"user","content":[{"type":"input_text","text":"t28"}],"internal_chat_message_metadata_passthrough":{"turn_id":"u13","content_item_kinds":["t19"]}}}
+{"timestamp":"2001-01-02T00:00:29.000Z","type":"event_msg","payload":{"type":"item_completed","thread_id":"u12","turn_id":"u13","item":{"type":"UserMessage","id":"u15","content":[{"type":"text","text":"t28"}]}}}
+{"timestamp":"2001-01-02T00:00:30.000Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"u13","last_agent_message":null,"error":{"message":"t29"}}}
