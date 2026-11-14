@@ -12706,6 +12706,29 @@ def test_publish_preserves_mapped_dot_directories():
                   error is not None and "비밀값" in error and before == after)
 
 
+def test_validate_at_reads_only_a_report():
+    """발행과 릴리스의 검증은 자식 프로세스의 마지막 줄을 보고로 읽는다. 보고가 아닌 줄은 무엇이든 "출력 파싱
+    실패"라는 거부가 된다 — 릴리스는 이 함수를 관문 없이 부르므로, 여기서 새는 예외는 릴리스를 죽인다."""
+    for label, emits in (("JSON이 아닌 줄", "print('not a report')"),
+                         ("깊이 겹친 줄", "print('[' * 100000)"),
+                         ("자릿수 상한을 넘는 정수", "print('9' * 5000)")):
+        with tempfile.TemporaryDirectory(prefix="osk-validation-output-") as td:
+            package = Path(td) / "_governance/_engine/osk"
+            package.mkdir(parents=True)
+            (package / "__init__.py").write_text("", encoding="utf-8")
+            (package / "vault.py").write_text(
+                "class Vault:\n    @classmethod\n    def open(cls):\n        return cls()\n", encoding="utf-8")
+            (package / "cli.py").write_text("def published_tools():\n    return []\n", encoding="utf-8")
+            (package / "validate.py").write_text(
+                "import sys\n\ndef run(vault, read_tools):\n    " + emits + "\n    sys.exit(0)\n", encoding="utf-8")
+            try:
+                errors = publish.validate_at(Path(td))
+            except Exception as e:
+                errors = [f"올랐다: {type(e).__name__}"]
+        check(f"보고가 아닌 출력은 거부다 — {label}",
+              len(errors) == 1 and errors[0].startswith("검증기 출력 파싱 실패"), errors)
+
+
 def test_node_parse_raises_only_its_kinds():
     """노드 파일의 판독이 올리는 것은 둘뿐이다 — 읽지 못하면 `OSError`, 노드로 해석되지 않으면 `ValueError`.
     받는 쪽은 그 둘만 받는다(코드 규범 7항). 다른 형이 새면 사람이 고치거나 동기화로 들어온 파일 하나가 색인을
@@ -12725,6 +12748,13 @@ def test_node_parse_raises_only_its_kinds():
         "병합 키 오용": b"---\n<<: 1\n---\n",
         "평문 스칼라의 탭": b"---\na:\tb\n---\n",
         "NUL": b"---\na: \x00\n---\n",
+        # 로더는 YAMLError가 아닌 것도 낸다 — 키가 될 수 없는 값은 중복 키 검사에서 TypeError, 태그에 맞지 않는
+        # 값은 로더 안에서 AttributeError·KeyError다. 형을 세어 받으면 끝이 없다.
+        "목록을 키로": b"---\n? [a, b]\n: v\n---\n",
+        "매핑을 키로": b"---\n? {a: b}\n: v\n---\n",
+        "제 자신을 담은 키": b"---\n? &k [*k]\n: v\n---\n",
+        "날짜가 아닌 timestamp": b"---\na: !!timestamp not-a-date\n---\n",
+        "참거짓이 아닌 bool": b"---\na: !!bool maybe\n---\n",
     }
     for label, data in hostile.items():
         try:
@@ -12752,6 +12782,27 @@ def test_node_parse_raises_only_its_kinds():
         except Exception as e:
             header, kind = None, type(e).__name__
         check("깊이 겹친 사건 머리는 읽지 못한 머리다", kind == "returned" and header is None, kind)
+        case.write_text("status: !!bool maybe\n\n본문\n", encoding="utf-8")
+        try:
+            header = S.parse_case(case)
+            kind = "returned"
+        except Exception as e:
+            header, kind = None, type(e).__name__
+        check("태그에 맞지 않는 값이 든 사건 머리도 읽지 못한 머리다", kind == "returned" and header is None, kind)
+    # 그런 파일 하나는 깨진 파일로 따로 서고, 색인은 선다.
+    bad = ROOT / "00_Scope/W1/regr-key-list.md"
+    try:
+        bad.write_text("---\n? [a, b]\n: v\n---\n본문\n", encoding="utf-8")
+        try:
+            index = graph.Index(VAULT)
+            broken, others = "regr-key-list" in index.broken, len(index.nodes)
+            kind = "built"
+        except Exception as e:
+            broken, others, kind = False, 0, type(e).__name__
+        check("키가 될 수 없는 값이 든 노드 하나가 색인을 죽이지 않는다", kind == "built" and broken and others > 0,
+              (kind, broken, others))
+    finally:
+        bad.unlink(missing_ok=True)
 
 
 def test_ledger_damage_is_a_kind():
@@ -13069,6 +13120,7 @@ if __name__ == "__main__":
                test_publish_validator_uses_snapshot, test_publish_external_engine_preserves_manifest,
                test_validate_at_uses_snapshot_engine, test_publish_preserves_mapped_dot_directories,
                test_ledger_damage_is_a_kind, test_node_parse_raises_only_its_kinds,
+               test_validate_at_reads_only_a_report,
                 test_write_edge_coordinates, test_node_heading_edge_coordinates,
                 test_derived_from_once_per_round,
                test_write_pin_subtree_and_fork,

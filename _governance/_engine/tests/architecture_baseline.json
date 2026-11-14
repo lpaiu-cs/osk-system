@@ -11,8 +11,9 @@
   "private_access": 0,
   "vault_fixed_names": 0,
   "vault_unthreaded": 0,
-  "broad_except": 40,
+  "broad_except": 0,
   "boundary_excepts": 52,
+  "isolated_excepts": 40,
   "oversize_functions": 119,
   "excess_lines": 2725,
   "excess_branches": 1605,
@@ -39,28 +40,7 @@
  "private_access": {},
  "vault_fixed_names": {},
  "vault_unthreaded": {},
- "broad_except": {
-  "osk.conversation_capture": 4,
-  "osk.distillation": 2,
-  "osk.doctor": 3,
-  "osk.evictions": 1,
-  "osk.growth": 1,
-  "osk.growth_daily": 1,
-  "osk.hook_text": 1,
-  "osk.integration": 2,
-  "osk.publish": 2,
-  "osk.rechecks": 1,
-  "osk.response_growth": 2,
-  "osk.routing": 3,
-  "osk.scope_memory": 1,
-  "osk.update": 1,
-  "osk.update_check": 1,
-  "osk.validate": 6,
-  "osk.write": 1,
-  "scripts.osk_turn_ledger": 1,
-  "scripts.recover": 1,
-  "vault_sync": 5
- },
+ "broad_except": {},
  "boundary_excepts": {
   "mcp_server": 5,
   "osk.cli": 4,
@@ -69,6 +49,30 @@
   "scripts.hooks.claude_prompt_submit": 2,
   "scripts.hooks.claude_session_start": 25,
   "sync_daemon": 3
+ },
+ "isolated_excepts": {
+  "osk.contract": 1,
+  "osk.conversation_capture": 4,
+  "osk.distillation": 2,
+  "osk.doctor": 3,
+  "osk.evictions": 1,
+  "osk.growth": 1,
+  "osk.growth_daily": 1,
+  "osk.hook_text": 1,
+  "osk.integration": 2,
+  "osk.publish": 1,
+  "osk.rechecks": 1,
+  "osk.response_growth": 2,
+  "osk.routing": 3,
+  "osk.scope_memory": 1,
+  "osk.signatures": 1,
+  "osk.update": 1,
+  "osk.update_check": 1,
+  "osk.validate": 5,
+  "osk.write": 1,
+  "scripts.osk_turn_ledger": 1,
+  "scripts.recover": 1,
+  "vault_sync": 5
  },
  "oversize_functions": {
   "mcp_server:_node_view": [
@@ -96,7 +100,7 @@
    34
   ],
   "osk.cli:_growth_cmd": [
-   42,
+   41,
    18
   ],
   "osk.cli:main": [

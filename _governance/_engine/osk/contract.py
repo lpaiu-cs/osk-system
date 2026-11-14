@@ -410,7 +410,7 @@ def parse_bytes(path: Path | str, data: bytes) -> Node:
     loader = pure if "\t" in fm_text else strict
     try:
         meta = yaml.load(fm_text, Loader=loader) or {}
-    except (yaml.YAMLError, RecursionError) as e:
+    except Exception as e:      # 격리: 로더가 무엇을 내든 해석되지 않는 노드다 — 받는 쪽은 ValueError만 받는다
         raise ValueError(f"frontmatter 파싱 실패: {p} — {e}") from e
     if not isinstance(meta, dict):
         raise ValueError(f"frontmatter가 매핑이 아님: {p}")

@@ -83,7 +83,7 @@ def run(vault: Vault, source: str | None = None, ref: str | None = None,
                 ledger_append(update_state.journal_path(vault),
                               {"kind": "rollback",
                                "why": "미완료 트랜잭션 크래시 복구"})
-            except Exception:
+            except Exception:      # 격리: 저널에 못 적어도 파일 복구는 유효하다(아래)
                 pass                    # 저널이 손상돼 기록을 못 남겨도 **파일
                                         # 복구는 유효하다**. 손상 자체는 아래
                                         # 정상 경로의 엄격 판독이 보고한다.

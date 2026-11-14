@@ -165,7 +165,7 @@ def validate_at(root: Path) -> list[str]:
         return [f"검증기 실행 실패: {r.stderr.strip()[-300:]}"]
     try:
         rep = json.loads(r.stdout.strip().splitlines()[-1])
-    except Exception:
+    except (ValueError, RecursionError):      # 자식의 마지막 줄이 JSON으로 해석되지 않는다
         return [f"검증기 출력 파싱 실패: {r.stdout[-200:]!r}"]
     return [] if rep["v"] == "PASS" else [f"검증기 {rep['v']}: {'; '.join(rep['f'])}"]
 
@@ -174,7 +174,7 @@ def guard_vault(root: Path) -> list[str]:
     """깨진 vault에서 발행하지 않는다 — 내보낼 트리(`root`)를 그 트리의 엔진으로 검증한다."""
     try:
         return validate_at(root)
-    except Exception as e:
+    except Exception as e:      # 격리: 검증을 끝내지 못하면 발행하지 않는다 — 어떤 실패든 거부로 바꾼다
         return [f"검증기 실행 실패: {e}"]
 
 

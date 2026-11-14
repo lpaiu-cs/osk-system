@@ -358,7 +358,7 @@ def resume(vault: Vault, key: str, *, name: str | None = None) -> dict:
             raise write.WriteError("resume name does not match the journaled target")
         try:
             receipt = _wire_hub(vault, job)
-        except Exception as exc:
+        except Exception as exc:      # 격리: 노드는 저장됐다 — 허브 배선의 실패는 영수증에 적고 다음 resume이 잇는다
             receipt = _receipt(job, str(exc))
         try:
             path = _retained_target(vault, target, graph.Index(vault))   # 영수증과 같은 보존 판정
@@ -527,7 +527,7 @@ def _execute(vault: Vault, operation: str, distill: dict, request: dict, *,
                 result = {"ok": True, "name": target["name"], "id": target["id"],
                           "path": target["path"], "new_hash": target["hash"], "resumed": True}
             receipt = _wire_hub(vault, job)
-        except Exception as e:
+        except Exception as e:      # 격리: 작업이 서 있으면 실패를 영수증에 적는다 — 저장됐는지는 아래에서 파일로 다시 본다
             if job is None:
                 raise
             receipt = _verify(vault, job)

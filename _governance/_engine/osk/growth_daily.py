@@ -323,7 +323,7 @@ def daily(vault: Vault, commands: list[list[str]], *, invocation: str = "schedul
     # 상태와 `integration status`에 남아 있다 — 날마다 실패로 세면 새 실패가 묻힌다.
     try:
         captured = integration.capture_known(vault)
-    except Exception as exc:
+    except Exception as exc:      # 격리: 포착의 실패는 오류로 적고 하루의 실행은 간다
         captured = {"captures": [], "errors": [{"error": f"{type(exc).__name__}: {exc}"}]}
     failed = captured["errors"] + [c for c in captured["captures"] if c.get("new_error")]
     if failed:

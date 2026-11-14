@@ -183,7 +183,7 @@ def after_node_write(vault: Vault, result: dict, of: str | None, outcome: str, t
         try:
             row = _record_settle(vault, of, outcome, target)
             receipt.update(state="recorded", rid=row["rid"])
-        except Exception as e:
+        except Exception as e:      # 격리: 노드는 저장됐다 — 처분 기록의 실패를 저장의 실패로 만들지 않는다
             receipt.update(state="unconfirmed", error=str(e), note=(
                 "노드 저장은 성공했다. 처분 기록은 확인하지 못했다. 노드를 다시 쓰지 말고 "
                 "CLI tidy list/status로 확인한 뒤 필요하면 tidy settle로 기록하라."))

@@ -72,6 +72,6 @@ def assemble(blocks: list[Block], budget: int | None, *,
         if b.on_shown:
             try:
                 b.on_shown()
-            except Exception:
-                pass    # 기록을 못 하면 다음 검토 턴이 전문을 다시 실을 뿐이다
+            except Exception:      # 격리: 기록을 못 하면 다음 검토 턴이 전문을 다시 실을 뿐이다
+                pass
     return text, {b.name for b in folded}

@@ -87,6 +87,6 @@ def parse_case(case_path: Path) -> dict | None:
     import yaml
     try:
         data = yaml.load(head, Loader=_strict_loader())
-    except (yaml.YAMLError, TypeError, RecursionError):      # 깊이 겹친 머리는 순수 로더가 RecursionError를 낸다
+    except Exception:      # 격리: 로더가 무엇을 내든 읽지 못한 머리다
         return None
     return data if isinstance(data, dict) else None

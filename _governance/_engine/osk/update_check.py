@@ -213,7 +213,7 @@ def ack(vault: Vault, version: str) -> dict:
     try:
         with core.mutation_lock(vault):
             core.ledger_append(acks_path(vault), {"kind": "ack", "version": version})
-    except Exception as e:
+    except Exception as e:      # 격리: 이 기기에는 적었다 — 대장에 못 적은 것은 synced=False로 알린다
         out.update(synced=False, error=f"{type(e).__name__}: {e}"[:300])
     return out
 

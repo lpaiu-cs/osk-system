@@ -599,7 +599,7 @@ def surface_lint(vault: Vault, read_tools) -> list[str]:
     errs = []
     try:
         tools = [SimpleNamespace(**tool) for tool in read_tools()]
-    except Exception as e:
+    except Exception as e:      # 격리: 표면이 건넨 읽는 함수는 무엇이든 낼 수 있다 — 그 실패는 이 검사의 실패다
         return [f"표면 판독 실패: {e}"]
     blob = _json.dumps([{"name": t.name, "description": t.description,
                          "inputSchema": t.inputSchema} for t in tools],
@@ -658,14 +658,14 @@ def surface_lint(vault: Vault, read_tools) -> list[str]:
                 errs.append('search 결과 계약 누락: "updated"')
             if 'r["signed"]' in src or '"signed":' in src:
                 errs.append('search 결과에 폐지된 signed 필드 잔존')
-        except Exception as e:
+        except Exception as e:      # 격리: 검증기는 죽지 않는다 — 이 대조의 실패는 오류로 적는다
             errs.append(f"search 계약 판독 실패: {e}")
     # ⓔ 군집 거부가 유효 목록을 싣는가
     try:
         import osk.cluster_gate as _g
         if "cluster_names(vault)" not in Path(_g.__file__).read_text(encoding="utf-8"):
             errs.append("군집 거부 문구가 유효 목록을 싣지 않는다")
-    except Exception as e:
+    except Exception as e:      # 격리: 검증기는 죽지 않는다 — 이 대조의 실패는 오류로 적는다
         errs.append(f"거부 문구 판독 실패: {e}")
     # ⓕ 설명에 박힌 수치는 낡는다 — working_memory 설명의 상한 수치는 계수
     #    (wm.LIMIT)와 같아야 한다. 계수를 개정하면 이 검사가 설명의 낡음을 잡는다.
@@ -675,7 +675,7 @@ def surface_lint(vault: Vault, read_tools) -> list[str]:
             wmt = next(t for t in tools if t.name == "scope_memory")
             if str(_sm.LIMIT) not in (wmt.description or ""):
                 errs.append(f"scope_memory 설명의 상한 수치가 계수({_sm.LIMIT}자)와 다르다")
-        except Exception as e:
+        except Exception as e:      # 격리: 검증기는 죽지 않는다 — 이 대조의 실패는 오류로 적는다
             errs.append(f"상한 수치 대조 실패: {e}")
     return errs
 
@@ -867,7 +867,7 @@ def setup_doc_drift(vault: Vault) -> list[str]:
     #    위 도구 목록 갈래가 '문단을 찾지 못했다'를 오류로 내는 것과 같게 둔다.
     try:
         allc, leaves = cli_commands()
-    except Exception as e:
+    except Exception as e:      # 격리: 파서가 서지 않으면 이 검사는 성립하지 않는다 — 까닭을 오류로 적는다
         errs.append(f"CLI 명령을 파서에서 만들지 못했다 — 검사 불성립: {e}")
         allc, leaves = set(), set()
     if leaves:
@@ -1027,7 +1027,7 @@ def fixture_approval_lifecycle(vault: Vault, tmp_root) -> list[str]:
         return [f"fixture 프로세스 실패: {r.stderr.strip()[-400:]}"]
     try:
         return _json.loads(r.stdout.strip().splitlines()[-1])
-    except Exception:
+    except (ValueError, IndexError, RecursionError):      # 출력이 없거나 JSON으로 해석되지 않는다
         return [f"fixture 출력 파싱 실패: {r.stdout[-200:]!r}"]
 
 
