@@ -386,9 +386,10 @@ and reads Claude transcript copies, harness notices and rewinds correctly.
 centrality as two axes (explanatory and dependency), renames the evidence section to the observation
 section `# 관측`, gathers bulk migrations under `osk doctor --migrate`, lets the scheduled growth run
 rest at 90% weekly use instead of keeping a budget, and has an agent search before it writes a new node.
-[v5.7.0](docs/v5.7-milestones.md) takes the designs deferred from v5.1, the recheck thesis gate and the
-evaluations that need a longer operating window. [v6.0.0](docs/v6.0-milestones.md)
-extends the memory model on that base.
+v5.7.0 will not be released: the items of [its plan](docs/v5.7-milestones.md) moved to the v6 line.
+The next release, v6.0.0, adds no feature — it restructures the engine
+([plan and record](docs/v6.0-refactoring.md)). What comes after — a measurement baseline, recall, cost,
+then simplification — is in the [v6 roadmap](docs/v6-roadmap.md) (in Korean).
 
 ## License
 
