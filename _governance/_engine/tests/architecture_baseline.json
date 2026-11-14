@@ -14,9 +14,9 @@
   "broad_except": 0,
   "boundary_excepts": 43,
   "isolated_excepts": 44,
-  "oversize_functions": 115,
-  "excess_lines": 2032,
-  "excess_branches": 1488,
+  "oversize_functions": 114,
+  "excess_lines": 1987,
+  "excess_branches": 1447,
   "late_loads": 1
  },
  "upward_imports": {},
@@ -322,10 +322,6 @@
   "osk.raw:read_round": [
    62,
    20
-  ],
-  "osk.raw_view:project": [
-   105,
-   56
   ],
   "osk.rechecks:_carry": [
    31,
