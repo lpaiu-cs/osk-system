@@ -1,0 +1,10 @@
+{"timestamp":"2001-01-02T00:00:01.000Z","type":"session_meta","payload":{"id":"u2","timestamp":"2001-01-02T00:00:00.000Z","originator":"t1","history_base":{"thread_id":"u3","end_byte_offset":2}}}
+{"timestamp":"2001-01-02T00:00:02.000Z","type":"event_msg","payload":{"type":"t2","thread_id":"u2"}}
+{"timestamp":"2001-01-02T00:00:03.000Z","type":"event_msg","payload":{"type":"t2","thread_id":"u2"}}
+{"timestamp":"2001-01-02T00:00:04.000Z","type":"event_msg","payload":{"type":"t2","thread_id":"u2"}}
+{"timestamp":"2001-01-02T00:00:05.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"u4"}}
+{"timestamp":"2001-01-02T00:00:06.000Z","type":"turn_context","payload":{"turn_id":"u4"}}
+{"timestamp":"2001-01-02T00:00:07.000Z","type":"response_item","payload":{"type":"message","id":"u5","role":"t3","content":[{"type":"input_text","text":"t4"}],"internal_chat_message_metadata_passthrough":{"turn_id":"u4","content_item_kinds":["t5"]}}}
+{"timestamp":"2001-01-02T00:00:07.000Z","type":"response_item","payload":{"type":"message","id":"u6","role":"t3","content":[{"type":"input_text","text":"t6"}],"internal_chat_message_metadata_passthrough":{"turn_id":"u4","content_item_kinds":["t5"]}}}
+{"timestamp":"2001-01-02T00:00:08.000Z","type":"response_item","payload":{"type":"message","id":"u7","role":"t3","content":[{"type":"input_text","text":"<turn_aborted>t7</turn_aborted>"}],"internal_chat_message_metadata_passthrough":{"turn_id":"u4","content_item_kinds":["t8"]}}}
+{"timestamp":"2001-01-02T00:00:09.000Z","type":"event_msg","payload":{"type":"turn_aborted","turn_id":"u4","reason":"t9"}}

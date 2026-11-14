@@ -27,7 +27,7 @@ except ModuleNotFoundError:          # Windows
     import msvcrt
     _WINDOWS = True
 
-# 아래 잠금·fsync·경로 규율은 엔진(osk/_portalock.py·osk/core.py·osk/update.py)과 **의도적으로
+# 아래 잠금·fsync·경로 규율은 엔진(osk/_portalock.py·osk/core.py·osk/update_txn.py·osk/daemon_control.py)과 **의도적으로
 # 중복**된다. 이 스크립트의 존재 이유가 "엔진이 반쯤 교체돼 import가 깨져도 복구가
 # 성립한다"이므로, 엔진을 import해 규율을 공유할 수 없다.
 
@@ -60,7 +60,7 @@ def _lock_path(root: Path, name: str) -> Path:
                 d = root / d
             if d.is_dir():
                 return d / name
-    except Exception:                # noqa: BLE001
+    except Exception:  # noqa: BLE001 — 격리: git에 묻지 못하면 아래의 대체 자리를 쓴다
         pass
     key = hashlib.sha256(str(root).encode("utf-8")).hexdigest()[:16]
     return Path(tempfile.gettempdir()) / f"{name.rsplit('.', 1)[0]}-{key}.lock"
@@ -123,7 +123,7 @@ def _mkdirs_durable(d: Path) -> None:
 def _fsync_file(p: Path) -> None:
     """파일 메타데이터 내구화 — chmod 결과가 유실되지 않게 한다.
 
-    엔진의 `osk.update._fsync_file`과 같은 정책이다: 핸들을 **쓰기 가능**으로
+    엔진의 `osk.update_txn._fsync_file`과 같은 정책이다: 핸들을 **쓰기 가능**으로
     연다(Windows CRT는 읽기 전용 핸들에 `_commit`을 허용하지 않아 `O_RDONLY`면
     `EBADF`가 나고, 그 오류가 복구 자체를 첫 파일에서 중단시킨다). 핸들을 못
     얻으면 조용히 넘긴다 — 복구를 못 끝내는 것보다 낫다."""

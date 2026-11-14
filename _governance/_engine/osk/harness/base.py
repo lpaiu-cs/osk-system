@@ -11,6 +11,7 @@ import os
 import re
 import shlex
 from pathlib import Path
+from .. import core
 
 MCP_NAME = "osk-system"
 # osk의 세 훅 사건과 그 스크립트. 두 호스트가 같은 스크립트를 부른다 — 파일 이름의
@@ -127,7 +128,6 @@ def paste_line(argvs) -> str:
     cmd의 `&`로 잇는다. PowerShell은 공백 없는 인자를 `.cmd` CLI에 인용 없이 넘겨 cmd가
     `C:/R&D/...`를 가르고, npm이 함께 까는 `.ps1`에는 `--%`까지 인자로 넘긴다. cmd는 실행 대상을
     PATHEXT(`.exe`·`.cmd`)로만 찾고 실행 정책과도 무관하다(2026-09-27 Windows PowerShell 5.1 실측)."""
-    from .. import core
     argvs = [[str(a) for a in argv] for argv in argvs]
     if os.name == "nt" and any(set(a) & set(_CMD_OPS) for argv in argvs for a in argv):
         try:

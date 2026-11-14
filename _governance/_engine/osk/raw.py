@@ -10,21 +10,22 @@
 동일성을 깨뜨린다 — 이미 쓴 근거가 다른 라운드를 가리키게 된다. 번호를 부여할
 수 있는 자리는 기존 기록 전체를 읽는 이곳뿐이므로 여기서 부여한다.
 
-바이트는 `secrets.write_raw`를 지난다 — 비밀값 치환과 접두부 보존을 우회하는
+바이트는 `write_raw`를 지난다 — 비밀값 치환과 접두부 보존을 우회하는
 `_raw/` 쓰기 경로를 두지 않기 위해서다(Mechanism §9).
 """
 from __future__ import annotations
-from .core import PERSON, SCOPE
 import contextlib
 import json
 import re
 from pathlib import Path
 
-from .core import ROOT, mutation_lock, posix_rel, resolve_in_root, sha256_file, sha256_bytes
-# `write`의 `_title_errors`·`_name_collision`을 그대로 쓴다 — 파일명 이식성
+from .core import atomic_write, mutation_lock, posix_rel, resolve_in_root, sha256_file, sha256_bytes
+# `naming`의 `title_errors`·`name_collision`을 그대로 쓴다 — 파일명 이식성
 # 규칙(Windows 예약명·링크 파서 충돌·ext4 바이트 상한·대소문자 접기)의 정본은
 # 한 벌이어야 한다. 여기서 다시 쓰면 두 규칙이 조용히 갈라진다.
-from . import graph, secrets, write
+from . import naming, placement, raw_view, routing, secrets
+from .errors import WriteError
+from .vault import Vault
 
 # 라운드 제목 — 행 머리의 `## ` 뒤에 양의 십진 index 하나(Mechanism §8 3항).
 # escape된 제목(`\## 3`)은 `^## `에 걸리지 않으므로 이 하나로 판정이 끝난다.
@@ -57,7 +58,7 @@ def read_exact(p) -> str:
     """기록 파일을 **바이트 그대로** 읽는다 — 개행을 접지 않는다.
 
     `read_text`의 universal newlines가 `\\r\\n`·`\\r`을 `\\n`으로 바꾼다. 그
-    문자열로 전문을 재조립하면 `secrets.write_raw`의 접두부 판정(`read_bytes`)을
+    문자열로 전문을 재조립하면 `write_raw`의 접두부 판정(`read_bytes`)을
     **영원히** 통과하지 못한다 — 대화 한 줄에 `\\r`이 섞이는 순간 그 기록은
     append가 막히고, `_raw/`는 append-only라 되돌릴 수단이 없다(실측 재현).
 
@@ -72,68 +73,67 @@ def rounds(text: str) -> list[int]:
     return [int(m.group(1)) for m in _ROUND.finditer(text)]
 
 
-def _next_index(text: str) -> int:
+def next_index(text: str) -> int:
     """다음 라운드 index. 기존 index의 **중복·역행은 계약 위반**이므로(시행령
     §2 7항 · Mechanism §8 3항) 그 위에 덧쓰지 않고 거부한다 — 손상된 기록에
     이어 붙이면 `[[경로#index]]`가 어느 라운드를 가리키는지 정해지지 않는다."""
     seen = rounds(text)
     if seen != sorted(set(seen)) or (seen and seen[0] != 1):
-        raise write.WriteError(
+        raise WriteError(
             "기록 손상 — 라운드 index가 1부터 단조 증가하지 않는다",
             [f"index 열: {seen} — 중복·역행·시작번호는 계약 위반이므로 "
              f"이어 쓰지 않는다 (시행령 §2 7항)"])
     return (seen[-1] + 1) if seen else 1
 
 
-CITED = graph.RECORD_DIRS[0]
+CITED = placement.RECORD_DIRS[0]
 
 
-def _legacy_dirs():
+def legacy_dirs(vault: Vault):
     """옛 자리 — scope 아래의 `_cited/`·`_raw/`와 Person의 `_cited/`(Mechanism §9 5항)."""
-    for scope in _scope_names():
-        for name in graph.RECORD_DIRS:
-            yield ROOT / SCOPE / scope / name
-    yield ROOT / PERSON / CITED
+    for scope in scope_names(vault):
+        for name in placement.RECORD_DIRS:
+            yield vault.root / vault.scope / scope / name
+    yield vault.root / vault.person / CITED
 
 
-def locate_record(record: str) -> Path | None:
+def locate_record(vault: Vault, record: str) -> Path | None:
     """같은 이름의 기록이 실재하는 자리 — 루트 `_cited/`가 먼저, 그 다음 옛 자리. 없으면 None.
     이식성 기준으로 같은 이름은 같은 정본이다."""
-    root = _record_file(ROOT / CITED / f"{record}.md")
+    root = _record_file(vault, vault.root / CITED / f"{record}.md")
     if root.exists():
         return root
-    for d in _legacy_dirs():
+    for d in legacy_dirs(vault):
         if not d.is_dir():
             continue
-        p = _record_file(d / f"{record}.md")     # 구·신 저장본이 함께 있으면 여기서 거부된다
+        p = _record_file(vault, d / f"{record}.md")     # 구·신 저장본이 함께 있으면 여기서 거부된다
         if p.exists():
             return p
     return None
 
 
-def record_path(scope: str | None, record: str) -> Path:
+def record_path(vault: Vault, scope: str | None, record: str) -> Path:
     """기록의 정본 파일. 옛 자리에 같은 이름이 있으면 그 기록에 잇고(Mechanism §9 5항), 없으면
     루트 `_cited/.records`다(헌법 4조 3항). `scope`는 호환 인자이며 자리를 정하지 않는다."""
-    return locate_record(record) or _record_file(ROOT / CITED / f"{record}.md")
+    return locate_record(vault, record) or _record_file(vault, vault.root / CITED / f"{record}.md")
 
 
-def is_person(space: str | None) -> bool:
+def is_person(vault: Vault, space: str | None) -> bool:
     """Person Space의 인용 기록 자리를 가리키는 착지인가(`"00_Person"`). 옛 루트 이름(`= Person`·
     `Person`)으로 적어도 이 vault의 Person 루트로 읽는다."""
-    from .core import SPACE_ROOTS
     from .layout import adapt_path
     name = (space or "").strip().strip("/")
-    return bool(name) and "/" not in name and adapt_path(name, SPACE_ROOTS) == PERSON
+    return bool(name) and "/" not in name and adapt_path(name, vault.space_roots) == vault.person
 
 
-def _record_pair(path: Path | str) -> tuple[Path, Path]:
+def _record_pair(vault: Vault, path: Path | str) -> tuple[Path, Path]:
     """Confined physical path and its old Markdown alias. No content conversion."""
-    p = resolve_in_root(path)
-    if p is None or graph.space_of(p)[0] != "raw":
-        raise write.WriteError("vault 밖 또는 인용 기록 구획(`_cited/`·`_raw/`) 밖 경로 — 기록을 열지 않았다")
-    requested = Path(path) if Path(path).is_absolute() else ROOT / path
+    p = resolve_in_root(vault, path)
+    if p is None or placement.space_of(vault, p)[0] != "raw":
+        raise WriteError("vault 밖 또는 인용 기록 구획(`_cited/`·`_raw/`) 밖 경로 — 기록을 열지 않았다")
+    requested = Path(path) if Path(path).is_absolute() else vault.root / path
     if requested.absolute() != p:
-        raise write.WriteError("raw 저장 경로의 심볼릭 링크·우회 경로는 허용하지 않는다")
+        raise WriteError("raw 저장 경로의 심볼릭 링크·우회 경로는 허용하지 않는다")
     if p.parent.name == ".records" and p.suffix.lower() == ".txt":
         d, stem = p.parent.parent, p.stem
     elif p.parent.parent.name == ".records" and p.name == "record.txt":
@@ -141,15 +141,15 @@ def _record_pair(path: Path | str) -> tuple[Path, Path]:
     elif p.suffix.lower() == ".md" or not p.suffix:
         d, stem = p.parent, p.stem if p.suffix else p.name
     else:
-        raise write.WriteError("지원하지 않는 raw 기록 경로")
-    old_name = write._name_collision(d, stem, unique=True)
+        raise WriteError("지원하지 않는 raw 기록 경로")
+    old_name = naming.name_collision(d, stem, unique=True)
     old = d / (old_name or f"{stem}.md")
     new_dir = d / ".records"
-    new_name = write._name_collision(new_dir, old.stem, ".txt", unique=True)
-    long_name = write._name_collision(new_dir, old.stem, None, unique=True)
+    new_name = naming.name_collision(new_dir, old.stem, ".txt", unique=True)
+    long_name = naming.name_collision(new_dir, old.stem, None, unique=True)
     if new_name and long_name:
-        raise write.WriteError("raw 파일·디렉터리 별칭이 함께 있다 — 정본을 고를 수 없다")
-    if long_name or (not new_name and len((old.stem + ".txt").encode("utf-8")) > write._MAX_FILENAME_BYTES):
+        raise WriteError("raw 파일·디렉터리 별칭이 함께 있다 — 정본을 고를 수 없다")
+    if long_name or (not new_name and len((old.stem + ".txt").encode("utf-8")) > naming.MAX_FILENAME_BYTES):
         # A legacy 252-byte stem fits .md, but not .txt. Keep its whole name
         # as a directory component, avoiding a lossy rename or alias registry.
         new = new_dir / (long_name or old.stem) / "record.txt"
@@ -157,54 +157,89 @@ def _record_pair(path: Path | str) -> tuple[Path, Path]:
         new = new_dir / (new_name or f"{old.stem}.txt")
     # A symlink must not redirect the alias into another scope or outside raw.
     for candidate in (old, new):
-        resolved = resolve_in_root(candidate)
-        if resolved is None or resolved != candidate or graph.space_of(resolved) != graph.space_of(p):
-            raise write.WriteError("raw 별칭이 저장 구획을 벗어났다")
+        resolved = resolve_in_root(vault, candidate)
+        if resolved is None or resolved != candidate or placement.space_of(vault, resolved) != placement.space_of(vault, p):
+            raise WriteError("raw 별칭이 저장 구획을 벗어났다")
     return old, new
 
 
-def _record_file(path: Path | str) -> Path:
-    old, new = _record_pair(path)
+def _record_file(vault: Vault, path: Path | str) -> Path:
+    old, new = _record_pair(vault, path)
     if old.exists() and new.exists():
-        raise write.WriteError("raw 구·신 저장본이 함께 있다 — 덮어쓰거나 임의로 합치지 않았다")
+        raise WriteError("raw 구·신 저장본이 함께 있다 — 덮어쓰거나 임의로 합치지 않았다")
     return old if old.exists() else new
 
 
-def _migrate_file(path: Path) -> Path:
+def write_raw(vault: Vault, path: Path | str, text: str) -> tuple[Path, list[str]]:
+    """인용 기록(`_cited/`, 호환 `_raw/`)의 **단일 통로** (Mechanism §9 · 시행령 §2 3항).
+
+    필터를 우회하는 기록 쓰기 경로를 두지 않기 위해, 대화를 파일로 남기는
+    코드는 장래에도 이 함수를 통과해야 한다 — 치환은 호출자 재량이 아니다.
+    vault 밖 경로·기록 구획 밖 경로는 기록하지 않고 거부한다(fail-closed).
+    `text`는 **파일 전문**이며, 기존 파일이 있으면 그 바이트를 접두부로
+    보존해야 한다(아래 append 판정). 반환은 (기록한 경로, 적중 패턴 목록)."""
+    p = resolve_in_root(vault, path)
+    if p is None:
+        raise ValueError(f"vault 밖 경로 — 인용 기록 거부: {path}")
+    if placement.space_of(vault, p)[0] != "raw":
+        raise ValueError(f"인용 기록 구획(`_cited/`·`_raw/`) 밖 경로 — 이 통로로 기록할 수 없다: {p}")
+    if p != _record_pair(vault, p)[1] or p != _record_file(vault, p):
+        raise ValueError("raw 쓰기는 숨김 .records의 정본 .txt 경로에만 허용한다")
+    filtered, hits = secrets.filter_text(text)
+    # 바이트로 쓴다 — 라운드 범위·상태 해시가 "정규화하지 않은 UTF-8 바이트"로
+    # 정의돼 있으므로(Mechanism §8 3~4항), 텍스트 모드의 개행 변환이 끼면
+    # Windows에서 쓴 기록만 해시가 달라진다.
+    data = filtered.encode("utf-8")
+    # Mechanism §9 4항 — 기록 쓰기는 기존 파일의 정확한 바이트를 새 파일의
+    # 접두부로 보존하는 append만 허용한다. 판정은 **치환 뒤** 바이트로 한다:
+    # 기존 파일도 이 통로를 지나며 치환됐으므로 평소에는 그대로 일치하고,
+    # 패턴이 늘어 과거 기록까지 새로 치환돼야 하는 경우에만 접두부가 어긋나
+    # 거부된다 — 증거를 소급해 고쳐 쓰는 대신 멈추는 쪽이 감사 추적을 지킨다.
+    if p.exists():
+        prior = p.read_bytes()
+        if not data.startswith(prior):
+            raise ValueError(
+                f"append 아님 — 기존 {len(prior)}바이트가 접두부로 보존되지 "
+                f"않았다. 인용 기록은 불변이며 append만 허용한다: {p}")
+    atomic_write(p, data)       # 원자 교체 — 미치환 중간 상태를 남기지 않는다
+    return p, hits
+
+
+def _migrate_file(vault: Vault, path: Path) -> Path:
     """Caller holds mutation_lock. Rename preserves bytes and survives retry."""
-    old, new = _record_pair(path)
-    current = _record_file(path)  # Detect conflicts even for a replay with no append.
+    old, new = _record_pair(vault, path)
+    current = _record_file(vault, path)  # Detect conflicts even for a replay with no append.
     if current == old and old.is_file():
         digest = sha256_file(old)
         new.parent.mkdir(parents=True, exist_ok=True)
         old.rename(new)
         if sha256_file(new) != digest:
-            raise write.WriteError("raw 이관 후 해시 불일치 — 성공으로 처리하지 않았다")
+            raise WriteError("raw 이관 후 해시 불일치 — 성공으로 처리하지 않았다")
     return new
 
 
-def migrate(*, apply: bool = False) -> dict:
+def migrate(vault: Vault, *, apply: bool = False) -> dict:
     """Preview or move existing raw files. Nodes and raw content are never edited."""
-    with mutation_lock():
+    with mutation_lock(vault):
         plans = []
-        for scope in _scope_names():
-            directory = ROOT / SCOPE / scope / "_raw"
+        for scope in scope_names(vault):
+            directory = vault.root / vault.scope / scope / "_raw"
             for path in sorted(directory.rglob("*")):
                 if path.is_file() and path.suffix.lower() == ".md":
-                    old, new = _record_pair(path)
-                    _record_file(path)  # Preflight every conflict before any rename.
-                    plans.append({"from": posix_rel(old, ROOT), "to": posix_rel(new, ROOT),
+                    old, new = _record_pair(vault, path)
+                    _record_file(vault, path)  # Preflight every conflict before any rename.
+                    plans.append({"from": posix_rel(old, vault.root), "to": posix_rel(new, vault.root),
                                   "hash": sha256_file(old), "bytes": old.stat().st_size})
         if apply:
             for plan in plans:
-                _migrate_file(ROOT / plan["from"])
+                _migrate_file(vault, vault.root / plan["from"])
         return {"ok": True, "applied": apply, "count": len(plans), "files": plans}
 
 
 CONSOLIDATE_RULE = "옛 자리의 인용 기록 → 루트 `_cited/.records/` (v5.2 — Mechanism §9 5항)"
 
 
-def consolidate(*, apply: bool = False, expect: list | None = None) -> dict:
+def consolidate(vault: Vault, *, apply: bool = False, expect: list | None = None) -> dict:
     """옛 자리의 기록을 루트 `_cited/.records/`로 옮긴다 — Mechanism §9 5항의 자료 이관. 바이트와
     라운드 번호를 보존하고, 옛 좌표는 같은 이름으로 계속 해석된다. 노드는 고치지 않는다.
 
@@ -215,32 +250,32 @@ def consolidate(*, apply: bool = False, expect: list | None = None) -> dict:
     세울 때는 잠그지 않는다 — `osk doctor`는 읽기만 하고 잠금 파일도 만들지 않는다. 옮길 때는 이행
     기록에 전수 목록을 먼저 적고, 기록마다 옮기기 전에 이행 판정을 남긴 뒤, 결과와 보류로 목록을 닫는다
     (Mechanism §5 1~3항)."""
-    with (mutation_lock() if apply else contextlib.nullcontext()):
+    with (mutation_lock(vault) if apply else contextlib.nullcontext()):
         moves, conflicts, seen = [], [], {}
-        for d in _legacy_dirs():
+        for d in legacy_dirs(vault):
             for f in sorted({*d.glob("*.md"), *(d / ".records").glob("*.txt"),
                              *(d / ".records").glob("*/record.txt")}):
                 try:
-                    src = _record_file(f)
-                    name = _record_pair(src)[0].stem
-                    dst = _record_file(ROOT / CITED / f"{name}.md")
-                except write.WriteError as e:
-                    conflicts.append({"path": posix_rel(f, ROOT), "reason": e.args[0]})
+                    src = _record_file(vault, f)
+                    name = _record_pair(vault, src)[0].stem
+                    dst = _record_file(vault, vault.root / CITED / f"{name}.md")
+                except WriteError as e:
+                    conflicts.append({"path": posix_rel(f, vault.root), "reason": e.args[0]})
                     continue
-                key = write._portable_name_key(name)
+                key = naming.portable_name_key(name)
                 if dst.exists() or key in seen:
-                    other = posix_rel(dst, ROOT) if dst.exists() else seen[key]
-                    conflicts.append({"path": posix_rel(src, ROOT), "reason": f"같은 이름의 기록이 {other}에 있다"})
+                    other = posix_rel(dst, vault.root) if dst.exists() else seen[key]
+                    conflicts.append({"path": posix_rel(src, vault.root), "reason": f"같은 이름의 기록이 {other}에 있다"})
                     continue
-                seen[key] = posix_rel(src, ROOT)
-                moves.append({"from": seen[key], "to": posix_rel(dst, ROOT),
+                seen[key] = posix_rel(src, vault.root)
+                moves.append({"from": seen[key], "to": posix_rel(dst, vault.root),
                               "hash": sha256_file(src), "bytes": src.stat().st_size})
         if expect is not None and [[m["from"], m["hash"]] for m in moves] != expect:
-            raise write.WriteError("확인받은 이관 계획과 지금의 계획이 다르다 — 옮기지 않았다")
+            raise WriteError("확인받은 이관 계획과 지금의 계획이 다르다 — 옮기지 않았다")
         manifest = None
         if apply and moves:
-            from .core import LEDGER, atomic_write, ledger_append, now_kst
-            events = LEDGER / "migration" / "events.jsonl"
+            from .core import atomic_write, ledger_append, now_kst
+            events = vault.ledger / "migration" / "events.jsonl"
             day = now_kst()[:10]
             manifest = events.parent / f"cited-records-{day}.md"
             k = 1
@@ -257,48 +292,48 @@ def consolidate(*, apply: bool = False, expect: list | None = None) -> dict:
             atomic_write(manifest, "\n".join(head).encode("utf-8"))
         if apply:
             for m in moves:
-                src, dst = ROOT / m["from"], ROOT / m["to"]
+                src, dst = vault.root / m["from"], vault.root / m["to"]
                 if dst.exists():
-                    raise write.WriteError(f"이관 대상이 이미 있다 — 덮지 않았다: {m['to']}")
+                    raise WriteError(f"이관 대상이 이미 있다 — 덮지 않았다: {m['to']}")
                 ledger_append(events, {"kind": "move", "source": m["from"], "dest": m["to"], "before": m["hash"],
                                        "after": m["hash"], "rule": CONSOLIDATE_RULE})
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 src.rename(dst)
                 if sha256_file(dst) != m["hash"]:
-                    raise write.WriteError(f"이관 후 해시 불일치 — 성공으로 처리하지 않았다: {m['to']}")
+                    raise WriteError(f"이관 후 해시 불일치 — 성공으로 처리하지 않았다: {m['to']}")
             if manifest:
                 close = ["## 결과", "", f"- 옮긴 기록 {len(moves)}개 · 보류 {len(conflicts)}", "", "### 보류", "",
                          *(holds or ["없음"]), ""]
                 atomic_write(manifest, ("\n".join(head) + "\n" + "\n".join(close)).encode("utf-8"))
-            for d in _legacy_dirs():     # 비운 옛 자리 — 다른 파일이 남은 디렉터리는 그대로 둔다
+            for d in legacy_dirs(vault):     # 비운 옛 자리 — 다른 파일이 남은 디렉터리는 그대로 둔다
                 for sub in [*sorted((p for p in d.rglob("*") if p.is_dir()), reverse=True), d]:
                     try:
                         sub.rmdir()
                     except OSError:
                         pass
         return {"ok": True, "applied": apply, "count": len(moves), "files": moves, "conflicts": conflicts,
-                **({"manifest": posix_rel(manifest, ROOT)} if manifest else {})}
+                **({"manifest": posix_rel(manifest, vault.root)} if manifest else {})}
 
 
-def canonical_ref(ref: str) -> str:
+def canonical_ref(vault: Vault, ref: str) -> str:
     """Compare old wiki coordinates and new plain coordinates by the same record."""
     value = ref.strip()
     if value.startswith("[[") and value.endswith("]]"):
         value = value[2:-2].strip()
     path, sep, anchor = value.split("|", 1)[0].partition("#")
     path = path.strip()
-    if re.match(r"^https?://", path) or not graph.is_record_ref(path):
+    if re.match(r"^https?://", path) or not placement.is_record_ref(path):
         return ref  # Node IDs and node links keep their existing identity.
-    old, physical = _record_pair(path)
+    old, physical = _record_pair(vault, path)
     if not physical.exists() and not old.exists():
         # 옛 자리의 좌표가 루트의 기록을(또는 그 반대를) 가리킨다 — 같은 이름은 같은 기록이다
-        found = locate_record(old.stem)
+        found = locate_record(vault, old.stem)
         if found is not None:
             physical = found
-    return posix_rel(physical, ROOT) + (sep + anchor if sep else "")
+    return posix_rel(physical, vault.root) + (sep + anchor if sep else "")
 
 
-def _round_body(chunk: str) -> str:
+def round_body(chunk: str) -> str:
     """라운드에서 제목 줄을 뺀 내용. 재시도가 만드는 중복은 번호만 다르므로,
     같음의 판정은 번호가 아니라 내용으로 한다."""
     return chunk.partition("\n")[2].strip()
@@ -318,13 +353,13 @@ def _reject_replay(prior: str, spans: dict, blocks: list) -> None:
     n = len(blocks)
     if len(spans) < n:
         return
-    incoming = [_round_body(secrets.filter_text(b)[0]) for b in blocks]
-    tail = [_round_body(prior[s:e])
+    incoming = [round_body(secrets.filter_text(b)[0]) for b in blocks]
+    tail = [round_body(prior[s:e])
             for _, (s, e) in sorted(spans.items())[-n:]]
     if tail != incoming:
         return
     last = sorted(spans)[-n:]
-    raise write.WriteError(
+    raise WriteError(
         "재시도로 보이는 중복 — 쓰지 않았다",
         [f"직전 라운드 {last}의 내용과 바이트가 같다. 응답을 못 받아 다시 "
          f"보내는 것이라면 이미 기록됐다 — `read_cited`로 목차를 보고 마지막 "
@@ -334,7 +369,7 @@ def _reject_replay(prior: str, spans: dict, blocks: list) -> None:
 
 _CODEX_V2 = "<!-- osk-capture: codex-user-items-v2 -->"
 _CODEX_V3 = "<!-- osk-capture: codex-terminal-v3 "
-_DIALOGUE_V1 = "<!-- osk-capture: dialogue-v1 "
+DIALOGUE_V1 = "<!-- osk-capture: dialogue-v1 "
 _CLAUDE_PREFIX = "<!-- osk-capture: claude-inherited-v1 "
 # 인용 라운드의 원본 턴 좌표(Mechanism §9 9항): harness·conversation·turn·source·
 # agent_sha256·user_by. 이 머리말이 그 라운드의 원본 신원이다 — 커서가 없어도 남는다.
@@ -352,15 +387,15 @@ def is_native(ref: str) -> bool:
 
 def cited_header(chunk: str) -> dict | None:
     """라운드 본문 첫 줄의 인용 머리말 → 값. 머리말이 없으면 None, 손상이면 거부."""
-    header = (_round_body(chunk).splitlines() or [""])[0]
+    header = (round_body(chunk).splitlines() or [""])[0]
     if not header.startswith(_CITED):
         return None
     if not header.endswith(" -->"):
-        raise write.WriteError("damaged citation header")
+        raise WriteError("damaged citation header")
     value = json.loads(header[len(_CITED):-4])
     if not isinstance(value, dict) or not all(
             isinstance(value.get(k), str) and value[k] for k in ("harness", "conversation", "turn")):
-        raise write.WriteError("damaged citation header")
+        raise WriteError("damaged citation header")
     return value
 
 
@@ -373,24 +408,24 @@ def cited_native(chunk: str) -> str | None:
 def storage_error(path: str, text: str) -> str | None:
     """Check a changed raw record, without exposing its payload in diagnostics."""
     p = Path(path)
-    if (not any(d in p.parts for d in graph.RECORD_DIRS) or not p.parts
+    if (not any(d in p.parts for d in placement.RECORD_DIRS) or not p.parts
             or p.parts[0] not in {"00_Scope", "= Scope", "Scope", "00_Person", "= Person", "Person", CITED}):
         return None
     if p.suffix.lower() == ".md":
         return "visible Markdown raw; migrate to hidden .txt storage"
-    if any(_round_body(text[s:e]).startswith((_CODEX_V2, _CODEX_V3))
-           for s, e in _round_spans(text).values()):
+    if any(round_body(text[s:e]).startswith((_CODEX_V2, _CODEX_V3))
+           for s, e in round_spans(text).values()):
         return "legacy capture codec; restore dialogue-v1 from the native transcript"
     return None
 
 
-def storage_violations() -> list[str]:
+def storage_violations(vault: Vault) -> list[str]:
     errors = []
-    dirs = [d for name in graph.RECORD_DIRS for d in (ROOT / SCOPE).glob(f"*/{name}")]
-    for directory in sorted(d for d in (*dirs, ROOT / PERSON / CITED, ROOT / CITED) if d.is_dir()):
+    dirs = [d for name in placement.RECORD_DIRS for d in (vault.root / vault.scope).glob(f"*/{name}")]
+    for directory in sorted(d for d in (*dirs, vault.root / vault.person / CITED, vault.root / CITED) if d.is_dir()):
         for p in directory.rglob("*"):
             if p.is_file() and p.suffix.lower() in {".md", ".txt"}:
-                rel = posix_rel(p, ROOT)
+                rel = posix_rel(p, vault.root)
                 error = storage_error(rel, read_exact(p))
                 if error:
                     errors.append(f"{rel}: {error}")
@@ -406,29 +441,29 @@ def inherited_prefix(path: Path) -> dict | None:
     if not line.startswith(_CLAUDE_PREFIX):
         return None
     if not line.endswith(" -->"):
-        raise write.WriteError("damaged Claude inheritance header")
+        raise WriteError("damaged Claude inheritance header")
     value = json.loads(line[len(_CLAUDE_PREFIX):-4])
     if not isinstance(value, dict) or not isinstance(value.get("rounds"), list):
-        raise write.WriteError("damaged Claude inheritance manifest")
+        raise WriteError("damaged Claude inheritance manifest")
     return value
 
 
-def _block(index: int, user: str, agent: str, *, dialogue_id: str | None = None,
+def round_block(index: int, user: str, agent: str, *, dialogue_id: str | None = None,
            cited: dict | None = None) -> str:
     """한 라운드 = user 발화 + 그에 속한 에이전트 응답의 기록(시행령 §2 7항).
     `dialogue_id`는 옛 포착 라운드를 대조할 때만 쓴다 — 새로 쓰는 라운드는 인용뿐이다."""
     stamp = (_CITED + json.dumps(cited, ensure_ascii=False, sort_keys=True) + " -->\n\n" if cited is not None
-             else _DIALOGUE_V1 + json.dumps(dialogue_id) + " -->\n\n" if dialogue_id is not None else "")
+             else DIALOGUE_V1 + json.dumps(dialogue_id) + " -->\n\n" if dialogue_id is not None else "")
     return (f"## {index}\n\n{stamp}"
             f"### user\n\n{user.rstrip()}\n\n"
             f"### agent\n\n{agent.rstrip()}\n")
 
 
 # scope 열거·space 표기 판정은 `graph`가 한 벌로 소유한다(`wm`도 같은 것을 쓴다).
-_scope_names, _space_list, _scope_of_space = (
-    graph.scope_names, graph.space_list, graph.scope_of_space)
+scope_names, _space_list, scope_of_space = (
+    placement.scope_names, placement.space_list, placement.scope_of_space)
 
-def append_rounds(session: str, record: str, pairs: list,
+def append_rounds(vault: Vault, session: str, record: str, pairs: list,
                   space: str | None = None, *, cited: dict | None = None, bind: bool = True) -> dict:
     """라운드 여럿을 **한 번의 쓰기로** 잇는다. `cited`는 인용 라운드 하나의 원본 턴
     좌표다(Mechanism §9 9항) — 그 라운드는 응답 원문 없이 요지만 둘 수 있고, 같은
@@ -446,32 +481,32 @@ def append_rounds(session: str, record: str, pairs: list,
     if cited is not None and len(pairs) != 1:
         raise ValueError("a citation appends exactly one round")
     if not pairs:
-        raise write.WriteError("빈 배치 — 쓰지 않았다", ["이을 라운드가 없다"])
+        raise WriteError("빈 배치 — 쓰지 않았다", ["이을 라운드가 없다"])
     norm = []
     for i, r in enumerate(pairs):
         u = r.get("user") if isinstance(r, dict) else (r[0] if r else "")
         a = r.get("agent") if isinstance(r, dict) else (r[1] if len(r) > 1 else "")
         if not (u or "").strip() or not (a or "").strip() and cited is None:
-            raise write.WriteError(
+            raise WriteError(
                 "라운드는 user 발화와 그 응답을 함께 담는다",
                 [f"{i + 1}번째 라운드의 user·agent 중 빈 쪽이 있다 — 한 라운드는 "
                  f"user 발화와 그에 속한 에이전트 응답의 쌍이다 (시행령 §2 7항)"])
         norm.append((u, a or ""))
-    errs = write._title_errors(record)      # 기록 이름이 곧 파일명이다
+    errs = naming.title_errors(record)      # 기록 이름이 곧 파일명이다
     if errs:
-        raise write.WriteError("기록 이름 부적격 — 쓰지 않았다", errs)
+        raise WriteError("기록 이름 부적격 — 쓰지 않았다", errs)
     # 프로젝트 키의 형식은 쓰기 전에 본다 — 대화 id를 키 자리에 넣은 호출을 돌려보낸다.
-    errs = write.ephemeral_session_errors(session)
+    errs = routing.ephemeral_session_errors(session)
     if errs:
-        raise write.WriteError("프로젝트 키 부적격 — 쓰지 않았다", errs)
+        raise WriteError("프로젝트 키 부적격 — 쓰지 않았다", errs)
 
-    with mutation_lock():
-        p = record_path(None, record)
+    with mutation_lock(vault):
+        p = record_path(vault, None, record)
         supersedes = None
         if cited is not None:
             existing = find_cited(p, native_ref(cited["harness"], cited["conversation"], cited["turn"]))
             if existing is not None:
-                rel = posix_rel(p.resolve(), ROOT)
+                rel = posix_rel(p.resolve(), vault.root)
                 index, header = existing
                 # Reuse unless both copies came from the transcript and the words differ. Words
                 # changed under the same turn ID are new evidence: append them and keep the
@@ -482,19 +517,19 @@ def append_rounds(session: str, record: str, pairs: list,
                             "filtered": [], "reused": True, "cited": header}
                 supersedes = f"{rel}#{index}"
         prior = read_exact(p) if p.exists() else ""
-        first = _next_index(prior)
+        first = next_index(prior)
         indices = [first + n for n in range(len(norm))]
-        blocks = [_block(i, escape_numeric_h2(u), escape_numeric_h2(a), cited=cited)
+        blocks = [round_block(i, escape_numeric_h2(u), escape_numeric_h2(a), cited=cited)
                   for i, (u, a) in zip(indices, norm)]
-        _reject_replay(prior, _round_spans(prior), blocks)
+        _reject_replay(prior, round_spans(prior), blocks)
         if prior and not prior.endswith("\n"):
             prior += "\n"
         # 되돌아온 경로를 쓴다 — 통로가 봉쇄·해소한 그 경로가 실제로 기록된
         # 자리이고, `ROOT`도 해소된 값이라 둘의 상대 계산이 어긋나지 않는다.
-        written, hits = secrets.write_raw(
-            _migrate_file(p), prior + ("\n" if prior else "") + "\n".join(blocks))
+        written, hits = write_raw(vault,
+            _migrate_file(vault, p), prior + ("\n" if prior else "") + "\n".join(blocks))
 
-        rel = posix_rel(written, ROOT)
+        rel = posix_rel(written, vault.root)
         # `round_ref`를 그대로 돌려준다 — 이 값이 곧 `derived-from`의 비노드
         # 대상 표기다(Mechanism §8 2항). 호출자가 경로와 index를 조립하다
         # 틀리면 근거 배선이 dangling으로 앉는다.
@@ -513,7 +548,7 @@ def find_cited(path: Path, native: str) -> tuple[int, dict] | None:
         return None
     text = read_exact(path)
     found = None
-    for index, (start, end) in sorted(_round_spans(text).items()):
+    for index, (start, end) in sorted(round_spans(text).items()):
         header = cited_header(text[start:end])
         if header and native_ref(header["harness"], header["conversation"], header["turn"]) == native:
             found = index, header
@@ -541,29 +576,28 @@ def parse_ref(ref: str) -> tuple[str, int | None]:
     return path.strip(), int(idx)
 
 
-def _raw_file(path: str) -> Path:
+def raw_file(vault: Vault, path: str) -> Path:
     """`_raw/` 안의 실재 파일로 해소한다. 봉쇄는 쓰기와 **같은 규율**이다 —
     읽기라고 느슨하게 두면 `[[../../어딘가]]`가 vault 밖을 읽는 창이 된다."""
     from .core import resolve_in_root
-    from . import graph
-    p = resolve_in_root(path)
+    p = resolve_in_root(vault, path)
     if p is None:
-        raise write.WriteError("vault 밖 경로 — 읽지 않았다", [f"경로: {path}"])
-    if graph.space_of(p)[0] != "raw":
-        raise write.WriteError(
+        raise WriteError("vault 밖 경로 — 읽지 않았다", [f"경로: {path}"])
+    if placement.space_of(vault, p)[0] != "raw":
+        raise WriteError(
             "인용 기록 구획(`_cited/`·`_raw/`) 밖 경로 — 이 도구로 읽지 않는다",
             [f"`{path}`는 세션 기록이 아니다. 노드는 `read_node`로 읽는다"])
-    p = _record_file(p)
+    p = _record_file(vault, p)
     if not p.is_file():
         # 옛 자리의 좌표로 루트의 기록을, 또는 그 반대를 가리킨 경우 — 같은 이름은 같은 기록이다
-        found = locate_record(_record_pair(p)[0].stem)
+        found = locate_record(vault, _record_pair(vault, p)[0].stem)
         if found is None:
-            raise write.WriteError("없는 기록", [f"그런 세션 기록이 없다: {path}"])
+            raise WriteError("없는 기록", [f"그런 세션 기록이 없다: {path}"])
         return found
     return p
 
 
-def _round_spans(text: str) -> dict:
+def round_spans(text: str) -> dict:
     """index → (시작, 끝). 라운드 범위는 그 제목 행의 첫 바이트부터 다음 숫자
     라운드 제목의 직전까지이고, 다음이 없으면 파일 끝까지다(Mechanism §8 3항)."""
     ms = list(_ROUND.finditer(text))
@@ -572,7 +606,7 @@ def _round_spans(text: str) -> dict:
             for i, m in enumerate(ms)}
 
 
-def _recalled(chunk: str) -> str:
+def recalled_text(chunk: str) -> str:
     """파일 위의 라운드 범위 → 회상 본문. escape를 되돌리고(Mechanism §8 3항)
     범위 경계의 꼬리 개행을 턴다. 목차와 본문이 **같은 함수**를 지나야 둘이
     보고하는 길이가 어긋나지 않는다."""
@@ -581,9 +615,9 @@ def _recalled(chunk: str) -> str:
 
 def _preview(chunk: str, width: int = 60) -> str:
     """라운드의 첫 알맹이 한 줄 — 목차가 파일 전문을 쏟지 않게 한다."""
-    body = _round_body(chunk).splitlines()
+    body = round_body(chunk).splitlines()
     if (body[:3] == [_CODEX_V2, "", "### user"] or len(body) >= 3
-            and body[0].startswith((_CODEX_V3, _DIALOGUE_V1, _CITED)) and body[1:3] == ["", "### user"]):
+            and body[0].startswith((_CODEX_V3, DIALOGUE_V1, _CITED)) and body[1:3] == ["", "### user"]):
         chunk = "\n".join(body[2:])  # Only the header; user quotations stay visible.
     for line in chunk.splitlines():
         s = line.strip()
@@ -597,7 +631,91 @@ def round_hash(stored: str) -> str:
     return sha256_bytes(stored.rstrip("\n").encode())
 
 
-def read_round(ref: str, max_chars: int = 20000, view: str = "full",
+# 라운드 좌표 — `<기록>#N`, 이어진 라운드는 `<기록>#N–M`
+ROUND = re.compile(r"^(?P<record>[^#\s][^#]*)#(?P<first>\d+)(?:[–-](?P<last>\d+))?$")
+# 해시 이름의 기록 — `<하네스>-<16진 32자>`
+HASHED = re.compile(r"^(?P<harness>.+)-(?P<hex>[0-9a-f]{32})$")
+PREFIX = re.compile(r"^[0-9a-f]{8,32}$")
+
+
+class Records:
+    """인용 기록의 이름 색인. 한 번 훑어 여러 좌표를 해석한다 — 검증기는 근거 줄마다
+    파일 목록을 다시 읽지 않는다."""
+
+    def __init__(self, vault: Vault):
+        self.vault = vault
+        self.names: set[str] = set()
+        for d in (vault.root / CITED, *legacy_dirs(vault)):
+            if d.is_dir():
+                for f in (*d.glob("*.md"), *(d / ".records").glob("*.txt"),
+                          *(d / ".records").glob("*/record.txt")):
+                    self.names.add(f.parent.name if f.name == "record.txt" else f.stem)
+        self.hexes: dict[str, list[str]] = {}
+        for name in self.names:
+            m = HASHED.match(name)
+            if m:
+                self.hexes.setdefault(m["hex"], []).append(name)
+        self._files: dict[str, Path] = {}
+        self._rounds: dict[Path, set[int]] = {}
+
+    def find(self, record: str) -> list[str]:
+        """좌표의 기록 부분 → 그에 맞는 기록 이름들. 줄인 해시는 앞자리가 같은 해시 이름의
+        기록 모두이고, 그 밖은 같은 이름 하나다."""
+        if record in self.names:
+            return [record]
+        if PREFIX.match(record):
+            return sorted(n for h, names in self.hexes.items() if h.startswith(record) for n in names)
+        return []
+
+    def short(self, record: str) -> str:
+        """근거 줄에 쓸 기록 표기 — 해시 이름은 다른 기록과 갈리는 가장 짧은 앞자리(8자
+        이상)이고, 해시 이름이 아닌 옛 기록은 이름 그대로다."""
+        m = HASHED.match(record)
+        if not m:
+            return record
+        mine = m["hex"]
+        others = [h for h in self.hexes if h != mine]
+        n = 8
+        while n < 32 and any(h.startswith(mine[:n]) for h in others):
+            n += 1
+        return mine[:n]
+
+    def file(self, record: str) -> Path:
+        """좌표의 기록 부분 → 기록 파일. 줄인 해시·옛 이름·전체 경로를 받는다."""
+        if record not in self._files:
+            if "/" in record:
+                self._files[record] = raw_file(self.vault, record)
+            else:
+                names = self.find(record)
+                if len(names) != 1:
+                    raise WriteError("없는 기록" if not names else "모호한 좌표",
+                                           [f"`{record}`에 맞는 기록 {len(names)}개"
+                                            + (f": {names[:3]}" if names else "")])
+                found = locate_record(self.vault, names[0])
+                if found is None:
+                    raise WriteError("없는 기록", [f"`{record}`"])
+                self._files[record] = found
+        return self._files[record]
+
+    def rounds(self, path: Path) -> set[int]:
+        """기록에 실재하는 라운드 — 한 기록을 인용한 근거 줄이 많아도 한 번만 읽는다."""
+        if path not in self._rounds:
+            self._rounds[path] = set(rounds(read_exact(path)))
+        return self._rounds[path]
+
+
+def record_name(path: Path | str) -> str:
+    """기록 파일 → 기록 이름(긴 이름은 디렉터리가 이름이다)."""
+    p = Path(path)
+    return p.parent.name if p.name == "record.txt" else p.stem
+
+
+def coordinate(vault: Vault, path: Path | str, index: int, records: Records | None = None) -> str:
+    """기록 파일과 라운드 → 근거 줄 좌표(Mechanism §8 9항)."""
+    return f"{(records or Records(vault)).short(record_name(path))}#{index}"
+
+
+def read_round(vault: Vault, ref: str, max_chars: int = 20000, view: str = "full",
                query: str | None = None, *, sides: tuple[int, int] | None = None) -> dict:
     """좌표 하나를 연다. `index`가 없으면 그 기록의 **목차**를 낸다 — 전문을
     쏟지 않는 것이 기본값이어야 세션 기록 하나가 맥락을 삼키지 않는다.
@@ -607,33 +725,31 @@ def read_round(ref: str, max_chars: int = 20000, view: str = "full",
     if view not in {"review", "full"}:
         raise ValueError("view must be review or full")
     # 근거 줄의 좌표(Mechanism §8 9항·§9 8항) — 줄인 해시·옛 기록 이름, 이어진 라운드 `#N–M`
-    from . import evidence
     bare = ref.strip()[2:-2].strip() if ref.strip().startswith("[[") and ref.strip().endswith("]]") else ref.strip()
-    m = evidence.ROUND.match(bare)
+    m = ROUND.match(bare)
     span = None
     if m and m["last"] and m["last"] != m["first"]:
         span = int(m["first"]), int(m["last"])
         if span[1] < span[0]:
-            raise write.WriteError("거꾸로 된 라운드 범위", [f"`{ref}` — 이어진 라운드는 #N–M(N<M)으로 쓴다"])
+            raise WriteError("거꾸로 된 라운드 범위", [f"`{ref}` — 이어진 라운드는 #N–M(N<M)으로 쓴다"])
         path, index = m["record"], None
     else:
         path, index = parse_ref(ref)
     if query is not None and (view != "review" or index is None):
         raise ValueError("query requires view=review and an exact #N round")
-    records = evidence.Records()
-    p = _raw_file(path) if "/" in path or "\\" in path else records.file(path)
+    records = Records(vault)
+    p = raw_file(vault, path) if "/" in path or "\\" in path else records.file(path)
     text = read_exact(p)
-    rel = posix_rel(p, ROOT)
-    spans = _round_spans(text)
+    rel = posix_rel(p, vault.root)
+    spans = round_spans(text)
 
     def one(index: int, budget: int) -> dict:
         stored = text[spans[index][0]:spans[index][1]]
-        chunk = _recalled(stored)
+        chunk = recalled_text(stored)
         identity = {"ok": True, "path": rel, "index": index,
-                    "round_ref": canonical_ref(f"{rel}#{index}"),
-                    "coordinate": evidence.coordinate(p, index, records), "hash": round_hash(stored)}
+                    "round_ref": canonical_ref(vault, f"{rel}#{index}"),
+                    "coordinate": coordinate(vault, p, index, records), "hash": round_hash(stored)}
         if view == "review":
-            from . import raw_view
             return {**identity, **raw_view.project(chunk, budget, query, sides=sides)}
         cut = len(chunk) > budget
         return {**identity, "view": "full",
@@ -645,10 +761,10 @@ def read_round(ref: str, max_chars: int = 20000, view: str = "full",
         # 200자를 못 주는 범위는 받지 않는다. 그래서 응답이 max_chars를 넘지 않는다.
         got = [n for n in sorted(spans) if span[0] <= n <= span[1]]
         if len(got) != span[1] - span[0] + 1:
-            raise write.WriteError("없는 라운드", [f"`{rel}`에 라운드 {span[0]}–{span[1]}이(가) 다 있지 않다. "
+            raise WriteError("없는 라운드", [f"`{rel}`에 라운드 {span[0]}–{span[1]}이(가) 다 있지 않다. "
                                                 f"있는 라운드: {sorted(spans) if spans else '없음'}"])
         if max_chars // len(got) < 200:
-            raise write.WriteError("회상 예산보다 넓은 범위",
+            raise WriteError("회상 예산보다 넓은 범위",
                                    [f"`{ref}` — 라운드 {len(got)}개에 max_chars {max_chars}: 라운드마다 "
                                     "200자가 든다. 범위를 나누거나 max_chars를 키운다"])
         return {"ok": True, "path": rel, "range": list(span),
@@ -659,38 +775,38 @@ def read_round(ref: str, max_chars: int = 20000, view: str = "full",
         # 실제 응답과 다른 수를 쥔다(감사 지적).
         return {"ok": True, "path": rel, "rounds": len(spans),
                 "index": [{"index": i,
-                           "chars": len(_recalled(text[s:e])),
+                           "chars": len(recalled_text(text[s:e])),
                            "preview": _preview(text[s:e])}
                           for i, (s, e) in sorted(spans.items())]}
     if index not in spans:
-        raise write.WriteError(
+        raise WriteError(
             "없는 라운드",
             [f"`{rel}`에 라운드 {index}이(가) 없다. 있는 라운드: "
              f"{sorted(spans) if spans else '없음'}"])
     return one(index, max_chars)
 
 
-def list_records(space: str | None = None) -> dict:
+def list_records(vault: Vault, space: str | None = None) -> dict:
     """세션 기록 목록 — 좌표를 모를 때 여기서 시작한다. `space`가 없으면 루트 `_cited/`(새
     기록의 자리)이고, scope나 Person을 주면 그 옛 자리의 기록이다."""
     if not space:
-        scope, dirs = CITED, [ROOT / CITED]
-    elif is_person(space):
-        scope, dirs = PERSON, [ROOT / PERSON / CITED]
+        scope, dirs = CITED, [vault.root / CITED]
+    elif is_person(vault, space):
+        scope, dirs = vault.person, [vault.root / vault.person / CITED]
     else:
-        scope = _scope_of_space(space)
-        if not scope or scope not in _scope_names():
-            raise write.WriteError(
+        scope = scope_of_space(vault, space)
+        if not scope or scope not in scope_names(vault):
+            raise WriteError(
                 "없는 scope", [f"`{space}`는 scope가 아니다. 가능한 space: "
-                              f"{_space_list()}"])
-        dirs = [ROOT / SCOPE / scope / name for name in graph.RECORD_DIRS]
+                              f"{_space_list(vault)}"])
+        dirs = [vault.root / vault.scope / scope / name for name in placement.RECORD_DIRS]
     out = []
     files = sorted({f for d in dirs
                     for f in (*d.glob("*.md"), *(d / ".records").glob("*.txt"),
                               *(d / ".records").glob("*/record.txt"))})
     for candidate in files:
-        f = _record_file(candidate)
+        f = _record_file(vault, candidate)
         text = read_exact(f)
-        out.append({"record": _record_pair(f)[0].stem, "path": posix_rel(f, ROOT),
+        out.append({"record": _record_pair(vault, f)[0].stem, "path": posix_rel(f, vault.root),
                     "rounds": len(rounds(text)), "chars": len(text)})
     return {"ok": True, "scope": scope, "records": out}

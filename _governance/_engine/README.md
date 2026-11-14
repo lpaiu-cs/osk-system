@@ -9,20 +9,27 @@
 |---|---|
 | `osk/core.py` | Mechanism §1~§3 공통 — 루트·시각·id·rid·대장 append 규율 |
 | `osk/contract.py` | 시행령 §1·Mechanism §2 — 노드 계약 파싱·검증(2술어·순서·형식·정합) |
-| `osk/graph.py` | Mechanism §1·헌법 8조·4조 5항·11조 2항 — 배치·참조 위상(id 해석)·중심성 |
-| `osk/approvals.py` | 헌법 10조·시행령 §6·Mechanism §3 — 보호영역·승인본·승인 기록부 |
+| `osk/placement.py`·`graph.py`·`topology.py` | Mechanism §1·헌법 8조·4조 5항·11조 2항 — 배치(`placement`), 색인과 id 해석(`graph`), 참조 위상·중심성(`topology`) |
+| `osk/approvals.py`·`region_tree.py`·`approval_acts.py` | 헌법 10조·시행령 §6·Mechanism §3 — 보호영역: 승인 기록부와 그 판정(`approvals`), 영역의 tree와 승인본 보관(`region_tree`), 사용자 전속인 지정·승인·반려·해제의 발의(`approval_acts`) |
 | `osk/signatures.py` | 헌법 14조 6항 — 구체제 서명 기록부(사료 판독) + id·사건 헤더 헬퍼 |
 | `osk/authority.py` | 헌법 7조·시행령 §5·Mechanism §7 — 위임 전수·승인본 반영·3값·fail-closed |
 | `osk/secrets.py` | 시행령 §2 3항·Mechanism §9 — 비밀값 필터 + fixture |
 | `osk/search.py` | 헌법 11조 3~4항·시행령 §7 4항 — 작업/열람 검색·summary 확장 |
 | `osk/validate.py` | 시행령 §11 — 검증기 수트(보고 전용)·보호영역 생애 fixture |
 | `osk/cli.py` | 사용자 명령 — protect·unprotect·approve·revert는 대화형 확인 강제(사용자 전속) |
-| `osk/write.py` | Mechanism §6-2 3항 — 노드 쓰기의 단일 통로(계약·위상·세션 라우팅) |
+| `osk/cli_parser.py` | 명령의 문법 — 무엇을 칠 수 있는지. 검증기가 운용 안내문의 CLI 표를 이것과 대조한다 |
+| `osk/write.py` | Mechanism §6-2 3항 — 노드 쓰기의 단일 통로: 생성·갱신·충돌 후보 기록 |
+| `osk/nodefile.py` | 시행령 §1·Mechanism §6-2 3항 — 노드 파일의 해석(이름 → 파일)과 직렬화, 디스크 쓰기의 한 자리 |
+| `osk/cluster_gate.py` | Mechanism §6-2 3항·시행령 §3 4항 — 군집의 자리 규칙(통치 구획·pin)과 신설 관문 |
+| `osk/node_checks.py` | 시행령 §1·헌법 8조·Mechanism §6-2 4항 — 쓰기 전 검사(엣지·참조 위상·CAS)와 되먹임 |
+| `osk/node_moves.py` | Mechanism §6-2 3항·시행령 §3 — 노드와 군집의 이동(계획·실행·허브 배선) |
 | `osk/raw.py` | 헌법 4조 3~4항·Mechanism §9 4~9항 — 인용 기록(`_cited/`, 호환 `_raw/`) append와 좌표 회상 |
+| `osk/integration.py`·`osk/conversation_*.py` | Mechanism §9-4·§9 9항 — 대화 통합: 대화 하나의 커서 파일(`conversation_state`), 전사의 포착(`conversation_capture`), 검토 닫기(`conversation_review`), 원본 턴 인용(`conversation_cite`), 밀린 대화의 목록·따라잡기와 검토 안내(`integration`) |
+| `osk/growth.py`·`growth_ledger.py`·`growth_plan.py`·`growth_reviews.py`·`worker_process.py` | Mechanism §9-4 — 성장의 한 묶음: 기록부와 그 행이 말하는 것(`growth_ledger`), 무엇을 고를지(`growth_plan`), 작업자의 판정을 받아 적기(`growth_reviews`), 작업자의 프로세스·사전 점검·사용량(`worker_process`·`worker_preflight`·`worker_usage`), 지시문과 실행(`growth`) |
 | `osk/scope_memory.py` | Mechanism §9-2 — scope 기억(상한·앵커 일괄·거부 계약) |
 | `osk/evictions.py` | Mechanism §9-2 12항·§9-3 — 퇴출 기록부(evict·settle)와 정돈 실행(훅 주입·`status`·`tidy`) |
 | `osk/epoch.py` | 판본 관문 — 이 프로세스가 적재한 엔진과 디스크의 대조 |
-| `osk/update.py`·`osk/release.py` | Mechanism §1-2 — 정본 릴리스와 인스턴스 갱신(크래시-안전 트랜잭션) |
+| `osk/update.py`·`osk/release.py` | Mechanism §1-2 — 정본 릴리스와 인스턴스 갱신. 갱신은 받은 것의 기록(`update_state`), 릴리스를 받고 비준증빙과 대조하기(`update_source`), 무엇을 쓸 수 있는지와 계획(`update_plan`), 크래시-안전 트랜잭션(`update_txn`), 적용하는 동안 데몬 세워 두기(`daemon_control`), 계획과 적용(`update`)으로 나뉜다 |
 | `osk/update_check.py` | 새 릴리스 알림 — 태그만 묻는 하루 한 번의 분리 확인, 에이전트가 `--ack`로 받을 때까지 세션 시작마다 알림, `overview`·`status` 표시(적용하지 않는다) |
 | `osk/harness/` | 하네스 어댑터 — 호스트(Claude Code·Codex·Kiro·Antigravity)마다 다른 판별·전사 위치·훅 출력·등록 자리·신뢰·확인한 판본의 한 자리, 훅 실행 기록(`runs.py`) |
 | `osk/doctor.py` | `osk doctor` — 이 기기의 하네스 연결 점검(등록·실행·전달·판본·fork, 읽기 전용) |

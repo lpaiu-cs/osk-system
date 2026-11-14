@@ -13,8 +13,8 @@ from osk.cli import main
 if __name__ == "__main__":
     if sys.stdout is None:
         from datetime import datetime
-        from osk import core
-        logs = core.ROOT / ".osk" / "growth" / "scheduler"
+        from osk.vault import default_root
+        logs = default_root() / ".osk" / "growth" / "scheduler"
         logs.mkdir(parents=True, exist_ok=True)
         sys.stdout = sys.stderr = open(logs / f"{datetime.now():%Y%m%d-%H%M%S}.log", "a", encoding="utf-8")
     main(["growth", "run", *sys.argv[1:]])

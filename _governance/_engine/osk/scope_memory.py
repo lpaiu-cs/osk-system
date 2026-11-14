@@ -20,15 +20,16 @@ working_memory는 인지과학 은유(한 마음의 사유물)라 "내 세션의
 없고, 통합할 때마다 자리값 못하는 엔트리가 퇴출되므로 decay 스케줄러도 없다.
 """
 from __future__ import annotations
-from .core import SCOPE
 import hashlib
 import json
 import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .core import ROOT, local_lock_path, mutation_lock, now_iso, posix_rel, sha256_bytes
-from . import evictions, graph, secrets, write
+from .core import local_lock_path, mutation_lock, now_iso, posix_rel, sha256_bytes
+from . import evictions, nodefile, prose, routing, secrets, workspaces, placement
+from .errors import WriteError
+from .vault import Vault
 
 # 계수는 mechanism이 정한다(시행령 서문). 한 세션의 배울 점을 적기에는 충분하고
 # 두 세션어치를 쌓아두기에는 모자란 크기여야 압력이 선다.
@@ -54,32 +55,32 @@ _OVERFLOW_RUNS: dict[str, int] = {}
 # 프로젝트 키는 기기를 넘지 않는다.
 
 
-def _pending_path(key: str) -> Path:
+def _pending_path(vault: Vault, key: str) -> Path:
     # 키에 **이 작업 트리**를 넣는다(리뷰 2차 P1). 잠금 자리는 linked worktree
     # 사이에 공유되는데(`commondir`), 프로젝트 키도 worktree를 본 저장소 이름으로
     # 접으므로, 트리를 빼면 A 트리의 거부를 B 트리의 평범한 성공이 소비한다 —
     # 거부는 그 트리의 사본 위에서 났고, 덜어 내는 쓰기도 그 사본에 온다.
-    h = hashlib.sha256(f"{ROOT.resolve()}\n{key}".encode("utf-8")).hexdigest()[:16]
-    return local_lock_path(f"osk-pending-evict-{h}", ROOT)
+    h = hashlib.sha256(f"{vault.root.resolve()}\n{key}".encode("utf-8")).hexdigest()[:16]
+    return local_lock_path(f"osk-pending-evict-{h}", vault.root)
 
 
-def _pending(key: str) -> bool:
-    return _pending_path(key).is_file()
+def _pending(vault: Vault, key: str) -> bool:
+    return _pending_path(vault, key).is_file()
 
 
-def _pending_set(key: str, scope: str | None = None, base_hash: str | None = None) -> None:
-    p = _pending_path(key)
+def _pending_set(vault: Vault, key: str, scope: str | None = None, base_hash: str | None = None) -> None:
+    p = _pending_path(vault, key)
     p.parent.mkdir(parents=True, exist_ok=True)
     if p.is_file():
         return                              # 재거부로 대기 시작을 늦추지 않는다
     # 초안은 저장하지 않는다. 기존 표식에 복구할 자리·시점만 붙인다.
-    write._atomic_write(p, json.dumps({
+    nodefile.write_file(p, json.dumps({
         "session": key, "scope": scope, "since": now_iso(), "base_hash": base_hash,
     }, ensure_ascii=False).encode("utf-8"))
 
 
-def _pending_clear(key: str) -> None:
-    _pending_path(key).unlink(missing_ok=True)
+def _pending_clear(vault: Vault, key: str) -> None:
+    _pending_path(vault, key).unlink(missing_ok=True)
 
 
 RECOVERY_NOTE = (
@@ -97,14 +98,14 @@ RECOVERY_NOTE = (
     "거부된 새 초안은 저장되지 않았다 — 이 표식은 그 초안의 보관함이 아니다.")
 
 
-def recovery(session: str) -> dict | None:
+def recovery(vault: Vault, session: str) -> dict | None:
     """이 사본·정본 세션의 미완료 통합. 읽기는 소비하지 않는다.
 
     v3.12.0의 키만 든 표식도 읽는다. 그 파일의 mtime은 마지막으로 관측한
     거부 시점일 뿐 최초 실패 시점이라고 소급해서 주장하지 않는다.
     """
-    key = _runs_key(session)
-    p = _pending_path(key)
+    key = _runs_key(vault, session)
+    p = _pending_path(vault, key)
     try:
         raw = p.read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -114,39 +115,39 @@ def recovery(session: str) -> dict | None:
             modified = p.stat().st_mtime
         except FileNotFoundError:
             return None                     # 읽는 사이 성공한 쓰기가 끝냈다
-        record = {"scope": write.resolve_session(key), "base_hash": None,
+        record = {"scope": routing.resolve_session(vault, key), "base_hash": None,
                   "since": datetime.fromtimestamp(modified, timezone.utc).isoformat(),
                   "legacy": True}
     else:
         record = json.loads(raw)
         if not isinstance(record, dict) or record.get("session") != key:
             raise ValueError("scope 복구 표식의 세션이 다르다")
-    scope = record.get("scope") or write.resolve_session(key)
-    bound = write.resolve_session(key)
+    scope = record.get("scope") or routing.resolve_session(vault, key)
+    bound = routing.resolve_session(vault, key)
     return {"session": key, "scope": scope, "since": record["since"],
             "legacy": record.get("legacy", False), "base_hash": record.get("base_hash"),
             "binding_changed": bool(bound and scope and bound != scope)}
 
 
-def recovery_status() -> list[dict]:
+def recovery_status(vault: Vault) -> list[dict]:
     """evict와 별도로 현황에 싣는다. 공통 git 디렉터리의 다른 사본은 제외한다."""
     rows = []
-    for p in sorted(_pending_path("").parent.glob("osk-pending-evict-*")):
+    for p in sorted(_pending_path(vault, "").parent.glob("osk-pending-evict-*")):
         try:
             raw = p.read_text(encoding="utf-8")
         except FileNotFoundError:             # 동시에 성공한 쓰기가 표식을 끝냈다
             continue
         key = json.loads(raw)["session"] if raw.startswith("{") else raw
-        if _pending_path(key) != p:
+        if _pending_path(vault, key) != p:
             continue
-        row = recovery(key)
+        row = recovery(vault, key)
         if row:
             rows.append(row)
     return sorted(rows, key=lambda r: (r["since"], r["session"]))
 
 
-def recovery_block(session: str) -> str:
-    row = recovery(session)
+def recovery_block(vault: Vault, session: str) -> str:
+    row = recovery(vault, session)
     if not row:
         return ""
     head = (f"[osk scope 복구 대기 — {row['scope'] or '착지 확인 필요'} · "
@@ -154,7 +155,7 @@ def recovery_block(session: str) -> str:
             f"관측 {row['since']}]\n")
     if row["binding_changed"]:
         return head + "실패 당시와 지금의 scope 결속이 다르다. 기존 복구 대기를 다른 scope에 적용하지 말고 사용자에게 알려라."
-    return head + session_note(session, row["scope"]) + "\n" + RECOVERY_NOTE
+    return head + session_note(vault, session, row["scope"]) + "\n" + RECOVERY_NOTE
 
 _CONFINE = ("scope 기억은 scope당 하나이므로 한 세션의 것을 다른 scope로 "
             "번지게 하지 않는다 —")
@@ -170,27 +171,27 @@ EVICTION_NOTE = ("엔트리는 자리를 다툰다. 자리값 못하는 것은 �
                  "반복하지 말고 엔트리 단위로 자리를 만든다.")
 
 
-def _runs_key(session: str) -> str:
+def _runs_key(vault: Vault, session: str) -> str:
     """연속 거부 계수의 키 — **정본 프로젝트 키**로 접는다.
 
     구판은 호출자가 보낸 원문으로 키잡았다. 별칭(구 저장소 이름)으로 들어온
     같은 세션이 다른 계수를 갖게 되어, `OVERFLOW_STOP`이 세 번째에 서지 않거나
     엉뚱한 자리에서 섰다."""
     try:
-        return write.canonical_session(session) or session
-    except Exception:
-        return session              # 대장 판독 실패는 계수의 문제가 아니다
+        return routing.canonical_session(vault, session) or session
+    except Exception:      # 격리: 대장 판독 실패는 계수의 문제가 아니다
+        return session
 
 
-def sm_dir() -> Path:
-    return ROOT / SCOPE / "Workbench" / "_scope_memory"
+def sm_dir(vault: Vault) -> Path:
+    return vault.root / vault.scope / "Workbench" / "_scope_memory"
 
 
-def sm_path(scope: str) -> Path:
+def sm_path(vault: Vault, scope: str) -> Path:
     """`00_Scope/Workbench/_scope_memory/<scope>.md`. scope의 지도가 scope 밖에 사는 것은
     scope 디렉토리를 노드만으로 깔끔히 두기 위해서이고, 접근이 어차피 엔진을
     지나므로 물리 자리가 사용성을 좌우하지 않는다."""
-    return sm_dir() / f"{scope}.md"
+    return sm_dir(vault) / f"{scope}.md"
 
 
 def canon(text: str) -> str:
@@ -208,7 +209,7 @@ def _read(p: Path) -> str:
     """저장본을 **바이트 그대로** 읽어 정본 형태로 접는다.
 
     `read_text`의 universal newlines를 쓰면 읽기와 쓰기가 다른 문자열을 본다 —
-    쓰기(`_atomic_write`)는 `\\r`을 그대로 저장하는데 읽기만 접으므로, 성공
+    쓰기(`nodefile.write_file`)는 `\\r`을 그대로 저장하는데 읽기만 접으므로, 성공
     응답의 `hash`와 다음 CAS가 재는 `hash`가 갈린다. 그러면 자기가 방금 쓴
     해시로 다시 부른 호출자가 "다른 기기의 통합이 들어왔다"는 거짓 진단을
     받는다(실측 재현 — PowerShell 파이프가 CRLF를 내므로 `sm write` 훅 경로가
@@ -216,18 +217,18 @@ def _read(p: Path) -> str:
     return canon(p.read_bytes().decode("utf-8")) if p.is_file() else ""
 
 
-def session_note(session: str, scope: str | None) -> str:
+def session_note(vault: Vault, session: str, scope: str | None) -> str:
     """훅과 도구 응답이 같은 호출 키를 이어 준다. scope 이름은 키가 아니다. 주된 scope 밖의 기억은
     수정 안내에도 `space`를 명시한다 — 빠지면 `edits`가 주된 scope의 기억을 고친다(#191 리뷰)."""
     arg = f"`session={json.dumps(session, ensure_ascii=False)}`"
-    if session and scope and write.resolve_session(session) != scope:
-        return (f"`scope_memory`의 {arg}에 `space=\"{SCOPE}/{scope}\"`를 함께 준다 — 이 scope는 그 "
+    if session and scope and routing.resolve_session(vault, session) != scope:
+        return (f"`scope_memory`의 {arg}에 `space=\"{vault.scope}/{scope}\"`를 함께 준다 — 이 scope는 그 "
                 f"프로젝트의 주된 scope가 아니라 space 없는 읽기·`edits`는 다른 기억에 간다.")
     return (f"`scope_memory`의 {arg}를 그대로 쓴다. "
-            f"`{SCOPE}/{scope}`는 저장 위치이며 session 키를 대신하지 않는다.")
+            f"`{vault.scope}/{scope}`는 저장 위치이며 session 키를 대신하지 않는다.")
 
 
-def _state(session: str, scope: str, text: str, *, full: bool = True, **extra) -> dict:
+def _state(vault: Vault, session: str, scope: str, text: str, *, full: bool = True, **extra) -> dict:
     """**잔여는 늘, 전문은 읽기와 거부에만** 싣는다(§9-2 5항).
 
     잔여가 매 응답에 실려야 호출자가 넘치기 전에 정리한다 — 호출자는 글자를 셀
@@ -242,9 +243,9 @@ def _state(session: str, scope: str, text: str, *, full: bool = True, **extra) -
     특히 해시 불일치는 다른 기기의 통합이 들어왔다는 뜻이라(§9-2 8항) 전문
     없이는 그 위에서 다시 통합할 수 없다."""
     text = canon(text)
-    st = {"session": session, "canonical_session": _runs_key(session),
-          "session_note": session_note(session, scope),
-          "scope": scope, "path": posix_rel(sm_path(scope), ROOT)}
+    st = {"session": session, "canonical_session": _runs_key(vault, session),
+          "session_note": session_note(vault, session, scope),
+          "scope": scope, "path": posix_rel(sm_path(vault, scope), vault.root)}
     if full:
         st["text"] = text
     st.update({"chars": len(text), "limit": LIMIT,
@@ -254,48 +255,249 @@ def _state(session: str, scope: str, text: str, *, full: bool = True, **extra) -
     return st
 
 
-def _landing(session: str, space: str | None) -> tuple[str, str | None]:
+def _landing(vault: Vault, session: str, space: str | None) -> tuple[str, str | None]:
     """`(scope, bound)` — 첫 쓰기가 결속을 세워야 하므로 결속 여부도 함께 낸다.
 
     거부에도 전문과 잔여를 싣는다(§9-2 5항). 결속을 아는 거부 — 교차 scope 같은
     경우 — 는 낼 수 있는데 안 내면, 호출자가 고쳐 보내려고 다시 읽어야 한다."""
     try:
-        scope, bound = write.resolve_landing(session, space, _CONFINE)
-    except write.WriteError as e:
-        b = write.resolve_session(session)
+        scope, bound = routing.resolve_landing(vault, session, space, _CONFINE)
+    except WriteError as e:
+        b = routing.resolve_session(vault, session)
         if b:
-            raise write.WriteError(str(e), e.violations,
-                                   **_state(session, b, _read(sm_path(b)))) from None
+            raise WriteError(str(e), e.violations,
+                                   **_state(vault, session, b, _read(sm_path(vault, b)))) from None
         raise
     if not scope:
-        raise write.WriteError(
+        raise WriteError(
             "착지 미정 — 아무것도 하지 않았다",
             [f"세션 `{session}`의 scope 결속이 없다. `space`를 주면 그 자리의 "
-             f"scope 기억을 쓴다. 가능한 space: {graph.space_list()}"])
-    if scope not in graph.scope_names():
-        raise write.WriteError(
+             f"scope 기억을 쓴다. 가능한 space: {placement.space_list(vault)}"])
+    if scope not in placement.scope_names(vault):
+        raise WriteError(
             "결속이 가리키는 scope가 없다 — 아무것도 하지 않았다",
-            [f"세션 `{session}`은 `{SCOPE}/{scope}`에 결속돼 있으나 그 scope가 "
-             f"없다. 가능한 space: {graph.space_list()}"])
+            [f"세션 `{session}`은 `{vault.scope}/{scope}`에 결속돼 있으나 그 scope가 "
+             f"없다. 가능한 space: {placement.space_list(vault)}"])
     return scope, bound
 
 
-def read(session: str, space: str | None = None) -> dict:
+def read(vault: Vault, session: str, space: str | None = None) -> dict:
     """그 scope의 scope 기억 전문. 결속이 없고 `space`도 없으면 거부한다."""
-    scope, _ = _landing(session, space)     # 읽기는 결속을 세우지 않는다
+    scope, _ = _landing(vault, session, space)     # 읽기는 결속을 세우지 않는다
     # 성공한 읽기도 **연속**을 끊는다. §9-2 4항의 상한은 "연속 3회 거부"인데,
     # 구판은 성공한 쓰기만 계수를 지워서 사이에 낀 읽기·앵커 불일치·해시
     # 불일치가 연속으로 세어졌다. 읽기는 호출자가 저장본을 다시 본 순간이니
     # 그 다음 시도는 새 시도다. (계수는 프로세스 안에만 산다 — 이 초기화가
     # 없으면 서버를 대화 사이에 유지하는 클라이언트에서 지난 대화의 거부가
     # 다음 대화의 첫 초과를 곧장 "3회째"로 만든다.)
-    _OVERFLOW_RUNS.pop(_runs_key(session), None)
-    pending = recovery(session)
+    _OVERFLOW_RUNS.pop(_runs_key(vault, session), None)
+    pending = recovery(vault, session)
     extra = {"recovery": pending} if pending else {}
-    return {"ok": True, **_state(session, scope, _read(sm_path(scope)), **extra)}
+    return {"ok": True, **_state(vault, session, scope, _read(sm_path(vault, scope)), **extra)}
 
 
-def replace(session: str, text: str | None = None,
+def _check_shape(text: str | None, edits: list | None) -> None:
+    """요청의 형태 — `text`와 `edits` 가운데 하나이고, `edits`의 항목은 바뀌는 것이 있는 문자열 쌍이다.
+    앵커는 저장본과 같은 정본 형태(NFC)로 접어 둔다."""
+    # 형태 검사는 잠금 **밖**에서 — 틀린 요청이 잠금을 잡을 이유가 없다.
+    if (text is None) == (edits is None):
+        raise WriteError(
+            "`text`(전체 치환)와 `edits`(앵커 일괄) 중 하나만 — 쓰지 않았다",
+            ["둘 다 없으면 쓸 것이 없고, 둘 다 있으면 어느 쪽이 이겼는지 응답으로 "
+             "구분되지 않는다. 읽기는 둘 다 없이 부른다."])
+    if edits is not None:
+        if not isinstance(edits, list) or not edits:
+            raise WriteError(
+                "`edits`가 비어 있다 — 쓰지 않았다",
+                ["`[{old_text, new_text}, …]` 목록을 보내라. 지울 때는 `new_text`에 "
+                 "빈 문자열을 준다."])
+        for i, e in enumerate(edits, 1):
+            if not isinstance(e, dict) or "old_text" not in e or "new_text" not in e:
+                raise WriteError(
+                    f"`edits[{i}]`의 형태가 틀렸다 — 쓰지 않았다",
+                    ["각 항목은 `{old_text, new_text}`다. 한쪽만으로는 무엇을 "
+                     "무엇으로 바꾸는지 정해지지 않는다."])
+            if not all(isinstance(e[k], str) for k in ("old_text", "new_text")):
+                # 문자열이 아니면 아래 `count`·`replace`가 원시 `TypeError`를
+                # 내고, 그 예외 문구가 그대로 위반 목록에 실려 호출자는 무엇을
+                # 고쳐야 할지 모른다. 계약 위반은 계약의 말로 낸다.
+                raise WriteError(
+                    f"`edits[{i}]`의 값이 문자열이 아니다 — 쓰지 않았다",
+                    ["`old_text`·`new_text`는 본문의 조각(문자열)이다. 지울 "
+                     "때는 `new_text`에 빈 문자열을 준다."])
+            # 앵커는 저장본과 **같은 정본 형태**로 맞춘다 — 저장본은 NFC인데
+            # (§9-2 9항) 앵커만 NFD로 오면(macOS 유래) 눈에 같은 글자가 맞지
+            # 않아 "앵커가 없다"가 된다.
+            e["old_text"] = unicodedata.normalize("NFC", e["old_text"])
+            e["new_text"] = unicodedata.normalize("NFC", e["new_text"])
+            if not e["old_text"]:
+                raise WriteError(
+                    f"`edits[{i}]`의 앵커가 비어 있다 — 쓰지 않았다",
+                    ["빈 앵커는 모든 자리에 맞아 고칠 자리를 가리키지 못한다. "
+                     "바꿀 대목을 그대로 넣어라."])
+            if e["old_text"] == e["new_text"]:
+                raise WriteError(
+                    f"`edits[{i}]`는 바뀌는 것이 없다 — 쓰지 않았다",
+                    ["`old_text`와 `new_text`가 같다."])
+
+
+def _check_seen(vault: Vault, session: str, scope: str, cur: str, expect_hash: str | None,
+                edits: list | None) -> None:
+    """보지 않은 상태를 덮지 않는다 — 전체 치환은 읽은 판의 해시를 대야 하고, 댄 해시는 지금 판과 같아야 한다."""
+    if cur and expect_hash is None and edits is None:
+        raise WriteError(
+            "expect_hash 없음 — 쓰지 않았다",
+            ["기존 내용이 있다. 지금 상태를 읽고 그 `hash`를 `expect_hash`로 "
+             "함께 보내라 — 보지 않은 상태를 덮지 않기 위해서다."],
+            **_state(vault, session, scope, cur))
+    if expect_hash is not None and expect_hash != sha256_bytes(cur.encode("utf-8")):
+        raise WriteError(
+            "상태가 어긋났다 — 쓰지 않았다",
+            ["`expect_hash`가 현재 상태와 다르다. 다른 기기의 통합이 "
+             "들어왔을 수 있다 — 아래 전문 위에서 다시 통합하라."],
+            **_state(vault, session, scope, cur))
+
+
+def _edited(vault: Vault, session: str, scope: str, cur: str, edits: list) -> str:
+    """앵커 일괄을 적용한 본문. 전부 아니면 전무다."""
+    # 앵커 일괄 (§9-2 4항). 각 앵커는 **그 시점의 작업본**에 정확히 한 번 —
+    # 앞 연산이 만든 자리를 뒤 연산이 앵커로 쓸 수 있다. 전부 아니면
+    # 전무: 하나라도 안 맞으면 아무것도 쓰지 않는다. 그때 저장본은
+    # 호출자가 모르는 것이 돼 있다는 뜻이므로 전문을 싣는다(5항 — 해시
+    # 불일치와 같은 자리). 유일성이 안전 계약의 전부다 — 여러 곳에
+    # 맞으면 어디를 고칠지 호출자가 정한 바가 없다.
+    if not cur:
+        raise WriteError(
+            "기억이 비어 있다 — 쓰지 않았다",
+            ["`edits`는 기존 본문을 고친다. 첫 쓰기는 `text`로 하라."],
+            **_state(vault, session, scope, cur))
+    work = cur
+    for i, e in enumerate(edits, 1):
+        n = work.count(e["old_text"])
+        if n == 0 and (spaced := prose.space_numeric_tags(e["old_text"])) != e["old_text"]:
+            # 저장본은 태그 방어로 `#숫자` 뒤를 띄웠다(아래) — 쓴 글 그대로의 앵커도 맞춘다(#292)
+            e["old_text"], n = spaced, work.count(spaced)
+        if n != 1:
+            raise WriteError(
+                (f"`edits[{i}]` 앵커가 없다 — 쓰지 않았다" if n == 0 else
+                 f"`edits[{i}]` 앵커가 {n}곳 맞는다 — 쓰지 않았다"),
+                ([f"`old_text`가 지금 저장본에 나오지 않는다. 저장본이 그 "
+                  f"사이 바뀌었을 수 있다 — 아래 전문에서 그대로 복사해 "
+                  f"넣어라. 공백·줄바꿈까지 일치해야 한다."]
+                 if n == 0 else
+                 ["어느 자리를 고칠지 정해지지 않는다. 앞뒤 줄을 함께 "
+                  "넣어 앵커를 **유일하게** 만들어라."]),
+                **_state(vault, session, scope, cur))
+        work = work.replace(e["old_text"], e["new_text"], 1)
+    return work
+
+
+def _refuse_overflow(vault: Vault, session: str, scope: str, cur: str, body: str, edits: list | None) -> None:
+    """상한을 넘는 쓰기를 거부한다 — 언제나 `WriteError`다. 연속 거부를 세고 복구 대기를 세운다."""
+    key = _runs_key(vault, session)
+    runs = _OVERFLOW_RUNS.get(key, 0) + 1
+    _OVERFLOW_RUNS[key] = runs
+    _pending_set(vault, key, scope, sha256_bytes(cur.encode("utf-8")))
+    # §9-2 4항은 3회째에 "**재시도 지시를 거두고** … 다음 통합으로
+    # 넘긴다"고 정한다. 구판은 거두지 않고 "접고 가라"를 덧붙이기만 해서
+    # 상반된 두 지시가 한 응답에 실렸다 — 거두는 것이 조문이다.
+    stop = runs >= OVERFLOW_STOP
+    retry = ("" if stop else
+             ("빼는 연산과 넣는 연산을 **한 `edits`에** 실어 다시 보내라 — "
+              "상한은 순결과에만 걸린다." if edits is not None else
+              "그 뒤 남은 것으로 다시 보내라. 넘칠 때마다 전문을 다시 보내지 "
+              "말고 `edits`로 빼고 넣어라 — 한 호출로 끝난다."))
+    v = [f"{len(body)}자로 상한 {LIMIT}자를 {len(body) - LIMIT}자 "
+         f"넘는다. 복구할 키는 `session={json.dumps(session, ensure_ascii=False)}`, "
+         f"저장 위치는 `{vault.scope}/{scope}`다."]
+    if not stop:
+        v.append(RECOVERY_NOTE + " " + retry)
+    if stop:
+        # 재시도 지시를 거둔다(§9-2 4항) — 실패한 기억 갱신이 본 작업을
+        # 막아서는 안 된다. 기억은 그대로이니 신호를 소비하는 것이 아니라
+        # 미루는 것이다.
+        v.append(f"연속 {runs}회째 거부다 — 이번 통합은 **접고** 본 작업으로 "
+                 f"돌아가라. 다시 보내지 마라. 기억은 그대로다. 미완료 통합은 "
+                 f"복구 대기로 남겨 다음 세션 시작·케이던스 훅이 다시 싣는다.")
+    # 이미 덜어 낸 것과 아직 못 쓴 초안의 보존 범위를 구분한다.
+    v.append("잘라 낸 것은 사라지지 않는다 — 이 거부 뒤 내용을 바꾸는 첫 성공한 쓰기가 "
+             "덜어 낸 줄은 퇴출 기록부에 남고, 다음 세션 시작이 처분을 "
+             "싣는다(§9-2 12항·§9-3). 아직 안 지운 저장본은 복구 대상으로 "
+             "남는다. 거부된 새 초안은 저장되지 않았다.")
+    raise WriteError(
+        "상한 초과 — 쓰지 않았다", v,
+        # 상한 초과에는 전문을 싣지 않는다(§9-2 5항). 이 거부는 **디스크를
+        # 바꾸지 않았고**, 호출자가 다듬을 것은 저장본이 아니라 방금 보낸
+        # 자기 초안이다. 해시 불일치와 다른 점이 그것이다 — 거기서는 다른
+        # 기기의 통합이 들어와 저장본이 호출자가 모르는 것이 돼 있다.
+        # `hash`·`remaining`·넘긴 자수는 그대로 온다.
+        **_state(vault, session, scope, cur, full=False, rejected_chars=len(body),
+                 recovery=recovery(vault, session)))
+
+
+def _evicted(vault: Vault, session: str, scope: str, cur: str, body: str, key: str,
+             pending: dict | None) -> tuple:
+    """상한에 밀려 덜어 낸 것을 퇴출 기록부에 적는다 — `(덜어 낸 글, 그 기록)`. 적을 것이 없으면 `("", None)`."""
+    # 퇴출 기록 (§9-2 12항) — 상한 초과 거부 직후의 첫 성공한 쓰기가 덜어
+    # 낸 구간. 엔진은 자르지 않는다: 호출자가 뺀 것을 적을 뿐이다. 거부와
+    # 무관한 정리는 표식이 없어 적히지 않는다. **파일보다 먼저** 적는다 —
+    # 파일이 먼저면 대장 손상 때 잘린 것이 기록 없이 사라지고, 그것이 이
+    # 조문이 막는 유일한 손실이다. 대장이 거부하면 아무것도 쓰지 않는다.
+    removed = ""
+    if pending and (not pending["scope"] or pending["scope"] == scope):
+        # 전체 치환이든 앵커 일괄이든 **저장본의 전후**로 잰다 — 원시
+        # `edits`의 중간 문자열은 저장된 적이 없고 비밀값 필터도 지나지
+        # 않았다(리뷰 P1). `cur`는 필터를 지나 저장된 것이지만, 대장은
+        # 동기화되므로 한 번 더 거른다 — 손으로 고친 저장본을 믿지 않는다.
+        removed, _ = secrets.filter_text(evictions.removed_lines(cur, body))
+    ev = None
+    if removed:
+        try:
+            ev = evictions.record_evict(vault, scope, key, removed)
+        except ValueError as e:
+            raise WriteError(
+                "퇴출 기록부에 적지 못했다 — 쓰지 않았다",
+                [f"퇴출 기록부에 적지 못했다 — {e}. 상한에 밀려 잘라 낸 것은 "
+                 f"기록 없이 사라질 수 없다(§9-2 12항) — 대장을 복구한 뒤 "
+                 f"다시 보내라. 저장본은 그대로다."],
+                **_state(vault, session, scope, cur, full=False)) from None
+    return removed, ev
+
+
+def _written_notes(vault: Vault, session: str, cur: str, body: str, hits: list, removed: str,
+                   ev: dict | None) -> dict:
+    """성공한 쓰기의 응답에 싣는 것 — 치환된 비밀값, 남은 복구 대기, 퇴출 기록, 크게 줄었을 때의 직전 전문."""
+    # 크게 줄어든 쓰기에는 **사라진 전문**을 함께 돌려준다. 전체 치환이라
+    # 직전 상태가 남지 않고 표면에 복구 수단도 없는데, 자리가 모자라 다급한
+    # 호출자가 가장 손대기 쉬운 것이 `text:""`다 — 가장 위험한 버튼이 가장
+    # 가까운 순간에 놓여 있다. 금지하는 대신(비울 수 없는 scope 기억은 작업
+    # 기억이 아니다) 같은 턴 안에서 되돌릴 수 있게 한다.
+    extra = {"filtered": sorted(set(hits)), "changed": body != cur}
+    remaining_recovery = recovery(vault, session)
+    if remaining_recovery:
+        extra["recovery"] = remaining_recovery
+    if ev:
+        # 잘린 것이 어디 남았는지 — 처분은 다음 세션 시작이 싣는다(§9-3 1항)
+        extra["evicted"] = ev["rid"]
+        extra["evicted_chars"] = len(removed)
+    # 성공이 전문을 싣지 않으므로(§9-2 5항) 치환된 결과가 보이지 않는다.
+    # 상주 스키마는 여유가 4자뿐이라 표면에 못 적는다 — 실제로 치환이 일어난
+    # 때만 싣는다. 안 적으면 호출자의 기억과 저장본이 갈린 채로 다음 통합이
+    # 그 위에 얹힌다.
+    if hits:
+        extra["filtered_note"] = (
+            "비밀값이 치환됐다 — 저장본이 보낸 것과 다르다. 다음 통합 전에 "
+            "`text` 없이 한 번 읽어 저장본 위에서 이어라.")
+    if cur and len(body) * 2 < len(cur):
+        extra["replaced_text"] = cur
+        extra["note"] = (
+            f"이 쓰기로 {len(cur) - len(body)}자가 사라졌다. 의도한 정리라면 "
+            f"그대로 두고, 실수였으면 `replaced_text`를 그대로 다시 보내라 — "
+            f"직전 상태는 여기 말고 어디에도 남지 않는다.")
+    return extra
+
+
+def replace(vault: Vault, session: str, text: str | None = None,
             expect_hash: str | None = None, space: str | None = None,
             edits: list | None = None) -> dict:
     """scope 기억을 쓴다 — **전체 치환**(`text`) 또는 **앵커 일괄**(`edits`).
@@ -319,223 +521,56 @@ def replace(session: str, text: str | None = None,
     빠져 남의 feature 브랜치를 rebase하고, `git add -A`가 진행 중이던 작업까지
     쓸어 담아 push한다(리뷰에서 실측). 네트워크 I/O를 `mutation_lock` 안에서
     하는 것도 표면 전체를 최대 수 분 세운다."""
-    # 형태 검사는 잠금 **밖**에서 — 틀린 요청이 잠금을 잡을 이유가 없다.
-    if (text is None) == (edits is None):
-        raise write.WriteError(
-            "`text`(전체 치환)와 `edits`(앵커 일괄) 중 하나만 — 쓰지 않았다",
-            ["둘 다 없으면 쓸 것이 없고, 둘 다 있으면 어느 쪽이 이겼는지 응답으로 "
-             "구분되지 않는다. 읽기는 둘 다 없이 부른다."])
-    if edits is not None:
-        if not isinstance(edits, list) or not edits:
-            raise write.WriteError(
-                "`edits`가 비어 있다 — 쓰지 않았다",
-                ["`[{old_text, new_text}, …]` 목록을 보내라. 지울 때는 `new_text`에 "
-                 "빈 문자열을 준다."])
-        for i, e in enumerate(edits, 1):
-            if not isinstance(e, dict) or "old_text" not in e or "new_text" not in e:
-                raise write.WriteError(
-                    f"`edits[{i}]`의 형태가 틀렸다 — 쓰지 않았다",
-                    ["각 항목은 `{old_text, new_text}`다. 한쪽만으로는 무엇을 "
-                     "무엇으로 바꾸는지 정해지지 않는다."])
-            if not all(isinstance(e[k], str) for k in ("old_text", "new_text")):
-                # 문자열이 아니면 아래 `count`·`replace`가 원시 `TypeError`를
-                # 내고, 그 예외 문구가 그대로 위반 목록에 실려 호출자는 무엇을
-                # 고쳐야 할지 모른다. 계약 위반은 계약의 말로 낸다.
-                raise write.WriteError(
-                    f"`edits[{i}]`의 값이 문자열이 아니다 — 쓰지 않았다",
-                    ["`old_text`·`new_text`는 본문의 조각(문자열)이다. 지울 "
-                     "때는 `new_text`에 빈 문자열을 준다."])
-            # 앵커는 저장본과 **같은 정본 형태**로 맞춘다 — 저장본은 NFC인데
-            # (§9-2 9항) 앵커만 NFD로 오면(macOS 유래) 눈에 같은 글자가 맞지
-            # 않아 "앵커가 없다"가 된다.
-            e["old_text"] = unicodedata.normalize("NFC", e["old_text"])
-            e["new_text"] = unicodedata.normalize("NFC", e["new_text"])
-            if not e["old_text"]:
-                raise write.WriteError(
-                    f"`edits[{i}]`의 앵커가 비어 있다 — 쓰지 않았다",
-                    ["빈 앵커는 모든 자리에 맞아 고칠 자리를 가리키지 못한다. "
-                     "바꿀 대목을 그대로 넣어라."])
-            if e["old_text"] == e["new_text"]:
-                raise write.WriteError(
-                    f"`edits[{i}]`는 바뀌는 것이 없다 — 쓰지 않았다",
-                    ["`old_text`와 `new_text`가 같다."])
-    errs = write.ephemeral_session_errors(session)
+    _check_shape(text, edits)
+    errs = routing.ephemeral_session_errors(session)
     if errs:
-        raise write.WriteError("프로젝트 키 부적격 — 쓰지 않았다", errs)
-    with mutation_lock():
-        scope, bound = _landing(session, space)
-        p = sm_path(scope)
+        raise WriteError("프로젝트 키 부적격 — 쓰지 않았다", errs)
+    with mutation_lock(vault):
+        scope, bound = _landing(vault, session, space)
+        p = sm_path(vault, scope)
         cur = _read(p)
-
-        if cur and expect_hash is None and edits is None:
-            raise write.WriteError(
-                "expect_hash 없음 — 쓰지 않았다",
-                ["기존 내용이 있다. 지금 상태를 읽고 그 `hash`를 `expect_hash`로 "
-                 "함께 보내라 — 보지 않은 상태를 덮지 않기 위해서다."],
-                **_state(session, scope, cur))
-        if expect_hash is not None and expect_hash != sha256_bytes(cur.encode("utf-8")):
-            raise write.WriteError(
-                "상태가 어긋났다 — 쓰지 않았다",
-                ["`expect_hash`가 현재 상태와 다르다. 다른 기기의 통합이 "
-                 "들어왔을 수 있다 — 아래 전문 위에서 다시 통합하라."],
-                **_state(session, scope, cur))
+        _check_seen(vault, session, scope, cur, expect_hash, edits)
 
         # 비밀값 필터의 적용 지점이 여기다. 전사는 vault 밖이라 필터가 닿지
         # 않지만, scope 기억은 vault 안이고 에이전트가 쓴다 — 요약에 섞이면
         # 그대로 커밋된다. 상한은 **치환 뒤** 길이로 잰다(치환문이 원본보다
         # 길어질 수 있고, 저장되는 것이 세어져야 한다).
         if edits is not None:
-            # 앵커 일괄 (§9-2 4항). 각 앵커는 **그 시점의 작업본**에 정확히 한 번 —
-            # 앞 연산이 만든 자리를 뒤 연산이 앵커로 쓸 수 있다. 전부 아니면
-            # 전무: 하나라도 안 맞으면 아무것도 쓰지 않는다. 그때 저장본은
-            # 호출자가 모르는 것이 돼 있다는 뜻이므로 전문을 싣는다(5항 — 해시
-            # 불일치와 같은 자리). 유일성이 안전 계약의 전부다 — 여러 곳에
-            # 맞으면 어디를 고칠지 호출자가 정한 바가 없다.
-            if not cur:
-                raise write.WriteError(
-                    "기억이 비어 있다 — 쓰지 않았다",
-                    ["`edits`는 기존 본문을 고친다. 첫 쓰기는 `text`로 하라."],
-                    **_state(session, scope, cur))
-            work = cur
-            for i, e in enumerate(edits, 1):
-                n = work.count(e["old_text"])
-                if n == 0 and (spaced := write._space_numeric_tags(e["old_text"])) != e["old_text"]:
-                    # 저장본은 태그 방어로 `#숫자` 뒤를 띄웠다(아래) — 쓴 글 그대로의 앵커도 맞춘다(#292)
-                    e["old_text"], n = spaced, work.count(spaced)
-                if n != 1:
-                    raise write.WriteError(
-                        (f"`edits[{i}]` 앵커가 없다 — 쓰지 않았다" if n == 0 else
-                         f"`edits[{i}]` 앵커가 {n}곳 맞는다 — 쓰지 않았다"),
-                        ([f"`old_text`가 지금 저장본에 나오지 않는다. 저장본이 그 "
-                          f"사이 바뀌었을 수 있다 — 아래 전문에서 그대로 복사해 "
-                          f"넣어라. 공백·줄바꿈까지 일치해야 한다."]
-                         if n == 0 else
-                         ["어느 자리를 고칠지 정해지지 않는다. 앞뒤 줄을 함께 "
-                          "넣어 앵커를 **유일하게** 만들어라."]),
-                        **_state(session, scope, cur))
-                work = work.replace(e["old_text"], e["new_text"], 1)
-            text = work
+            text = _edited(vault, session, scope, cur, edits)
         filtered, hits = secrets.filter_text(text)
         # 옵시디언 태그 방어 (Mechanism §8 7항) — scope 기억도 vault의 md라
         # 옵시디언이 렌더한다. 상한은 변환 **뒤** 길이로 잰다(저장되는 것이
         # 세어져야 한다 — 비밀값 치환과 같은 이유).
-        body = canon(write._space_numeric_tags(filtered))
+        body = canon(prose.space_numeric_tags(filtered))
 
         if body.startswith("---"):
             # `---`로 시작하면 색인이 frontmatter로 읽어 이 파일을 노드형으로
             # 본다 — 표면 도구 하나가 vault를 검증기 FAIL 상태로 만든다.
-            raise write.WriteError(
+            raise WriteError(
                 "`---`로 시작할 수 없다 — 쓰지 않았다",
                 ["scope 기억은 노드가 아니므로 frontmatter를 두지 않는다"
                  "(Mechanism §9-2 1항). 선두의 `---`는 색인이 frontmatter로 "
                  "읽어 검증기를 깨뜨린다 — 다른 줄로 시작하라."],
-                **_state(session, scope, cur))
+                **_state(vault, session, scope, cur))
 
         if len(body) > LIMIT:
-            key = _runs_key(session)
-            runs = _OVERFLOW_RUNS.get(key, 0) + 1
-            _OVERFLOW_RUNS[key] = runs
-            _pending_set(key, scope, sha256_bytes(cur.encode("utf-8")))
-            # §9-2 4항은 3회째에 "**재시도 지시를 거두고** … 다음 통합으로
-            # 넘긴다"고 정한다. 구판은 거두지 않고 "접고 가라"를 덧붙이기만 해서
-            # 상반된 두 지시가 한 응답에 실렸다 — 거두는 것이 조문이다.
-            stop = runs >= OVERFLOW_STOP
-            retry = ("" if stop else
-                     ("빼는 연산과 넣는 연산을 **한 `edits`에** 실어 다시 보내라 — "
-                      "상한은 순결과에만 걸린다." if edits is not None else
-                      "그 뒤 남은 것으로 다시 보내라. 넘칠 때마다 전문을 다시 보내지 "
-                      "말고 `edits`로 빼고 넣어라 — 한 호출로 끝난다."))
-            v = [f"{len(body)}자로 상한 {LIMIT}자를 {len(body) - LIMIT}자 "
-                 f"넘는다. 복구할 키는 `session={json.dumps(session, ensure_ascii=False)}`, "
-                 f"저장 위치는 `{SCOPE}/{scope}`다."]
-            if not stop:
-                v.append(RECOVERY_NOTE + " " + retry)
-            if stop:
-                # 재시도 지시를 거둔다(§9-2 4항) — 실패한 기억 갱신이 본 작업을
-                # 막아서는 안 된다. 기억은 그대로이니 신호를 소비하는 것이 아니라
-                # 미루는 것이다.
-                v.append(f"연속 {runs}회째 거부다 — 이번 통합은 **접고** 본 작업으로 "
-                         f"돌아가라. 다시 보내지 마라. 기억은 그대로다. 미완료 통합은 "
-                         f"복구 대기로 남겨 다음 세션 시작·케이던스 훅이 다시 싣는다.")
-            # 이미 덜어 낸 것과 아직 못 쓴 초안의 보존 범위를 구분한다.
-            v.append("잘라 낸 것은 사라지지 않는다 — 이 거부 뒤 내용을 바꾸는 첫 성공한 쓰기가 "
-                     "덜어 낸 줄은 퇴출 기록부에 남고, 다음 세션 시작이 처분을 "
-                     "싣는다(§9-2 12항·§9-3). 아직 안 지운 저장본은 복구 대상으로 "
-                     "남는다. 거부된 새 초안은 저장되지 않았다.")
-            raise write.WriteError(
-                "상한 초과 — 쓰지 않았다", v,
-                # 상한 초과에는 전문을 싣지 않는다(§9-2 5항). 이 거부는 **디스크를
-                # 바꾸지 않았고**, 호출자가 다듬을 것은 저장본이 아니라 방금 보낸
-                # 자기 초안이다. 해시 불일치와 다른 점이 그것이다 — 거기서는 다른
-                # 기기의 통합이 들어와 저장본이 호출자가 모르는 것이 돼 있다.
-                # `hash`·`remaining`·넘긴 자수는 그대로 온다.
-                **_state(session, scope, cur, full=False, rejected_chars=len(body),
-                         recovery=recovery(session)))
+            _refuse_overflow(vault, session, scope, cur, body, edits)
 
-        # 퇴출 기록 (§9-2 12항) — 상한 초과 거부 직후의 첫 성공한 쓰기가 덜어
-        # 낸 구간. 엔진은 자르지 않는다: 호출자가 뺀 것을 적을 뿐이다. 거부와
-        # 무관한 정리는 표식이 없어 적히지 않는다. **파일보다 먼저** 적는다 —
-        # 파일이 먼저면 대장 손상 때 잘린 것이 기록 없이 사라지고, 그것이 이
-        # 조문이 막는 유일한 손실이다. 대장이 거부하면 아무것도 쓰지 않는다.
-        key = _runs_key(session)
-        removed = ""
-        pending = recovery(session)
-        if pending and (not pending["scope"] or pending["scope"] == scope):
-            # 전체 치환이든 앵커 일괄이든 **저장본의 전후**로 잰다 — 원시
-            # `edits`의 중간 문자열은 저장된 적이 없고 비밀값 필터도 지나지
-            # 않았다(리뷰 P1). `cur`는 필터를 지나 저장된 것이지만, 대장은
-            # 동기화되므로 한 번 더 거른다 — 손으로 고친 저장본을 믿지 않는다.
-            removed, _ = secrets.filter_text(evictions.removed_lines(cur, body))
-        ev = None
-        if removed:
-            try:
-                ev = evictions.record_evict(scope, key, removed)
-            except ValueError as e:
-                raise write.WriteError(
-                    "퇴출 기록부에 적지 못했다 — 쓰지 않았다",
-                    [f"퇴출 기록부에 적지 못했다 — {e}. 상한에 밀려 잘라 낸 것은 "
-                     f"기록 없이 사라질 수 없다(§9-2 12항) — 대장을 복구한 뒤 "
-                     f"다시 보내라. 저장본은 그대로다."],
-                    **_state(session, scope, cur, full=False)) from None
+        key = _runs_key(vault, session)
+        pending = recovery(vault, session)
+        removed, ev = _evicted(vault, session, scope, cur, body, key, pending)
         # 결속을 **쓰기 전에** 세운다. 뒤에 두면 대장이 손상됐을 때 파일은
         # 남고 결속은 안 서서, 표면이 "아무것도 쓰지 않았다"고 보고하는데도
         # 호출자가 방금 쓴 것에 닿지 못하는 상태가 된다(부분 성공 금지).
         # 집합에 없는 scope만 더하고 주된 scope는 정하지 않는다(Mechanism §6-2 6항). 일회성 작업 폴더는 결속하지 않는다.
-        if not write.workspaces.is_one_off(session) and scope not in write.bindings(session)["scopes"]:
-            write.bind_session(session, scope, "scope 기억 쓰기가 결속에 더함", primary=False)
+        if not workspaces.is_one_off(vault, session) and scope not in routing.bindings(vault, session)["scopes"]:
+            routing.bind_session(vault, session, scope, "scope 기억 쓰기가 결속에 더함", primary=False)
         p.parent.mkdir(parents=True, exist_ok=True)
-        write._atomic_write(p, (body + chr(10)).encode("utf-8") if body else b"")
+        nodefile.write_file(p, (body + chr(10)).encode("utf-8") if body else b"")
         _OVERFLOW_RUNS.pop(key, None)       # 성공이 연속 계수를 지운다
         if body != cur and pending and (not pending["scope"] or pending["scope"] == scope):
-            _pending_clear(key)             # no-op·다른 scope의 성공은 복구가 아니다
-
-        # 크게 줄어든 쓰기에는 **사라진 전문**을 함께 돌려준다. 전체 치환이라
-        # 직전 상태가 남지 않고 표면에 복구 수단도 없는데, 자리가 모자라 다급한
-        # 호출자가 가장 손대기 쉬운 것이 `text:""`다 — 가장 위험한 버튼이 가장
-        # 가까운 순간에 놓여 있다. 금지하는 대신(비울 수 없는 scope 기억은 작업
-        # 기억이 아니다) 같은 턴 안에서 되돌릴 수 있게 한다.
-        extra = {"filtered": sorted(set(hits)), "changed": body != cur}
-        remaining_recovery = recovery(session)
-        if remaining_recovery:
-            extra["recovery"] = remaining_recovery
-        if ev:
-            # 잘린 것이 어디 남았는지 — 처분은 다음 세션 시작이 싣는다(§9-3 1항)
-            extra["evicted"] = ev["rid"]
-            extra["evicted_chars"] = len(removed)
-        # 성공이 전문을 싣지 않으므로(§9-2 5항) 치환된 결과가 보이지 않는다.
-        # 상주 스키마는 여유가 4자뿐이라 표면에 못 적는다 — 실제로 치환이 일어난
-        # 때만 싣는다. 안 적으면 호출자의 기억과 저장본이 갈린 채로 다음 통합이
-        # 그 위에 얹힌다.
-        if hits:
-            extra["filtered_note"] = (
-                "비밀값이 치환됐다 — 저장본이 보낸 것과 다르다. 다음 통합 전에 "
-                "`text` 없이 한 번 읽어 저장본 위에서 이어라.")
-        if cur and len(body) * 2 < len(cur):
-            extra["replaced_text"] = cur
-            extra["note"] = (
-                f"이 쓰기로 {len(cur) - len(body)}자가 사라졌다. 의도한 정리라면 "
-                f"그대로 두고, 실수였으면 `replaced_text`를 그대로 다시 보내라 — "
-                f"직전 상태는 여기 말고 어디에도 남지 않는다.")
+            _pending_clear(vault, key)             # no-op·다른 scope의 성공은 복구가 아니다
+        extra = _written_notes(vault, session, cur, body, hits, removed, ev)
         # 성공에는 전문을 싣지 않는다(§9-2 5항) — 호출자가 방금 보낸 것이다.
         # `hash`는 남는다: 다음 쓰기가 재읽기 없이 연쇄한다.
-        return {"ok": True, **_state(session, scope, body, full=False, **extra)}
+        return {"ok": True, **_state(vault, session, scope, body, full=False, **extra)}

@@ -1,0 +1,812 @@
+"""구조 규범의 기준선 시험 — docs/CODE-STANDARD.md의 1·2·3·4·7·9항을 `ast`로 잰다.
+
+엔진을 import하지 않는다(표준 라이브러리만) — 엔진이 깨져 있어도 돈다.
+
+재는 것은 여섯이다.
+- 층(1항): 아래층이 위층을 import하는 줄.
+- 지연 import(2항): 진입점(surface) 밖에서 함수 안에 둔 엔진 내부 import, 그리고 그것까지 넣었을 때의 순환.
+- 밑줄 접근(3항): 다른 모듈의 `_이름`을 쓰는 곳.
+- 저장소(4항): import할 때 저장소를 열어 고정하는 이름, 그리고 저장소가 필요한데 인자로 받지 않는 함수.
+- 넓은 예외(7항): `except Exception`·`except BaseException`·맨 `except`.
+- 함수 크기(9항): 본문 60줄 또는 분기 15를 넘는 함수.
+
+지금의 위반은 `architecture_baseline.json`에 적혀 있고, 시험은 **실측이 기준선과 같을 때만** 통과한다.
+위반이 늘면 코드를 고치고, 줄면 기준선을 낮춘다 — 낮추지 않으면 그만큼의 여유로 다음 위반이 숨는다.
+
+    python tests/test_architecture.py            # 대조. 다르면 exit 1
+    python tests/test_architecture.py --update   # 기준선을 지금 상태로. 합계가 느는 갱신은 거부한다
+"""
+from __future__ import annotations
+
+import ast
+import json
+import re
+import sys
+from pathlib import Path
+
+ENGINE = Path(__file__).resolve().parent.parent
+BASELINE = Path(__file__).with_name("architecture_baseline.json")
+FUNCTION_LINES, FUNCTION_BRANCHES = 60, 15
+
+KERNEL, MODEL, STORE, SERVICE, SURFACE = range(5)
+# 모듈의 층 — 위층만 아래층을 import한다. 새 모듈은 여기에 올려야 시험이 돈다.
+# 한 모듈에 책임이 섞인 것(`write`·`evidence`·`rechecks`)은 갈 곳이 아니라 지금 주로 하는 일로 배정했다.
+LAYERS = {
+    KERNEL: ["osk", "osk._portalock", "osk.epoch", "osk.layout", "osk.vault", "osk.core", "osk.errors"],
+    MODEL: ["osk.contract", "osk.naming", "osk.prose", "osk.secrets", "osk.raw_view"],
+    STORE: ["osk.placement", "osk.graph", "osk.topology", "osk.nodefile", "osk.cluster_gate", "osk.raw", "osk.evidence", "osk.roots", "osk.workspaces", "osk.signatures", "osk.routing",
+            "osk.region_tree", "osk.approvals", "osk.approval_acts", "osk.scope_memory", "osk.evictions", "osk.rechecks", "osk.transcripts",
+            "osk.conversation_state", "osk.growth_ledger", "osk.worker_process", "osk.worker_preflight",
+            "osk.worker_usage",
+            "osk.update_state", "osk.update_source", "osk.update_txn",
+            "osk.native_cli", "osk.harness", "osk.harness.base", "osk.harness.runs", "osk.harness.claude",
+            "osk.harness.codex", "osk.harness.kiro", "osk.harness.antigravity"],
+    SERVICE: ["osk.write", "osk.node_checks", "osk.node_moves", "osk.search", "osk.authority", "osk.organization", "osk.distillation",
+              "osk.validate", "osk.conversation_capture", "osk.conversation_review", "osk.conversation_cite",
+              "osk.integration", "osk.growth_plan", "osk.growth_reviews", "osk.growth", "osk.growth_daily", "osk.growth_status",
+              "osk.response_growth", "osk.update_plan", "osk.daemon_control", "osk.update", "osk.release", "osk.publish", "osk.update_check",
+              "osk.setup", "osk.services", "osk.doctor", "osk.cli_parser", "osk.evidence_migration", "osk.hook_text", "osk.sync_status",
+              "osk._fixture_approvals", "vault_sync"],
+    SURFACE: ["osk.cli", "mcp_server", "sync_daemon", "scripts.growth_run", "scripts.setup",
+              "scripts.recover", "scripts.osk_turn_ledger", "scripts.configure_obsidian_graph",
+              "scripts.hooks.claude_session_start", "scripts.hooks.claude_prompt_submit",
+              "scripts.hooks.capture_stop"],
+}
+LAYER_OF = {name: layer for layer, names in LAYERS.items() for name in names}
+BROAD = {"Exception", "BaseException"}
+# 넓은 예외를 둘 수 있는 경계(코드 규범 7항) — 모듈 전체(None)이거나 그 모듈의 함수들이다. 경계는 프로세스가
+# 밖과 만나는 자리이고, 거기서는 어떤 실패도 응답이나 진단으로 바뀌어 나가야 한다. 안쪽 함수는 종류로 말한다.
+# 여기에 자리를 더하는 것은 규범의 예외를 더하는 일이다 — 까닭을 함께 적는다.
+BOUNDARIES = {
+    # 훅은 호스트의 턴을 실패시키지 않는다. 틀린 것을 진단으로 말하고 0으로 끝난다.
+    "scripts.hooks.claude_session_start": None,
+    "scripts.hooks.claude_prompt_submit": None,
+    "scripts.hooks.capture_stop": None,
+    # MCP 도구의 응답 변환, 그리고 구획 하나가 깨져도 나머지를 내는 보고.
+    "mcp_server": {"_guard", "overview", "_hook_sections"},
+    # 데몬 루프 — 한 주기의 실패가 다음 주기를 막지 않는다.
+    "sync_daemon": {"main"},
+    # 현황 명령 — `status`는 읽히는 구획을 다 보인다. 구획 하나가 깨져도 나머지를 낸다.
+    "osk.cli": {"_status_cmd"},
+    # 검증기는 어떤 입력에도 죽지 않는다(시행령 §11). 검사 하나의 실패는 그 검사의 실패로 보고된다.
+    "osk.validate": {"run"},
+}
+# 경계 밖에서 넓게 받는 자리는 그 `except` 줄에 까닭을 적는다: `# 격리: <까닭>`. 격리는 한 걸음의 실패를 그
+# 자리에서 받아 결과로 바꾸는 것이다 — 저장이 끝난 뒤의 딸린 일, 항목 하나의 실패를 적고 나머지를 잇는 자리,
+# 끝내지 못하면 닫힌 쪽으로 가는 관문. 까닭 없는 넓은 예외만 `broad_except`로 센다.
+ISOLATED = re.compile(r"#.*격리:\s*\S.{7,}")
+# 합계는 모두 "작을수록 좋다" — `--update`는 이 가운데 하나라도 느는 갱신을 거부한다.
+# `tangled_modules`는 여기 없다: 순환에 든 모듈을 둘로 가르면 의존은 그대로인데 수가 는다. 기준선과
+# 같은지는 보되 느는 갱신을 막지는 않는다. 끝의 기준(0)은 같다.
+# `isolated_excepts`도 여기 없다: 까닭을 적은 격리는 위반이 아니다. 기준선과 같은지만 본다 — 늘면 기준선의
+# 차이로 드러난다.
+TOTALS = ("upward_imports", "lazy_imports", "two_module_cycles", "private_access", "vault_fixed_names",
+          "vault_unthreaded", "broad_except", "boundary_excepts", "oversize_functions", "excess_lines",
+          "excess_branches", "late_loads")
+# 뜬 채로 오래 도는 진입점. 도는 프로세스는 뜬 시각의 코드를 쥔다(`osk.epoch`) — 뜬 뒤에 디스크에서
+# 읽는 엔진 모듈은 엔진이 갱신된 뒤라면 옛 판 위에 새 판으로 얹힌다. `late_loads`는 그 문을 센다.
+LONG_LIVED = ("mcp_server", "sync_daemon")
+
+
+def sources() -> dict[str, str]:
+    """제품 코드의 모듈 이름 → 소스. 시험은 세지 않는다."""
+    files = [*ENGINE.glob("*.py"), *(ENGINE / "osk").rglob("*.py"), *(ENGINE / "scripts").rglob("*.py")]
+    out = {}
+    for path in sorted(files):
+        parts = path.relative_to(ENGINE).with_suffix("").parts
+        name = ".".join(parts[:-1] if parts[-1] == "__init__" else parts)
+        out[name] = path.read_text(encoding="utf-8")
+    return out
+
+
+def _package(name: str, is_package: bool) -> list[str]:
+    parts = name.split(".")
+    return parts if is_package else parts[:-1]
+
+
+def _imports(name: str, tree: ast.Module, known: set[str], is_package: bool):
+    """엔진 내부 import마다 `(대상 모듈, 함수 안인가, 줄, 묶인 이름 → 모듈, 가져온 밑줄 이름)`. 진입점 블록
+    (`_entry_block`) 안의 것은 내지 않는다 — 그 모듈을 읽는 쪽에게는 없는 의존이다."""
+    def inside_function(node, stack):
+        return any(isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)) for n in stack)
+
+    def visit(node, stack):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                target = alias.name if alias.name in known else None
+                if target:
+                    bound = {alias.asname: target} if alias.asname else {alias.name.split(".")[0]: alias.name.split(".")[0]}
+                    yield target, inside_function(node, stack), node.lineno, bound, []
+        elif isinstance(node, ast.ImportFrom):
+            base = _package(name, is_package)
+            base = base[:len(base) - (node.level - 1)] if node.level else []
+            module = ".".join([*base, *(node.module.split(".") if node.module else [])])
+            for alias in node.names:
+                sub = f"{module}.{alias.name}" if module else alias.name
+                if sub in known:                       # `from . import write` — 모듈을 묶는다
+                    yield sub, inside_function(node, stack), node.lineno, {alias.asname or alias.name: sub}, []
+                elif module in known:                  # `from .write import X` — 이름을 가져온다
+                    private = [alias.name] if alias.name.startswith("_") and not alias.name.startswith("__") else []
+                    yield module, inside_function(node, stack), node.lineno, {}, private
+        for child in ast.iter_child_nodes(node):
+            if not _entry_block(child):
+                yield from visit(child, [*stack, node])
+
+    yield from visit(tree, [])
+
+
+def _dotted(node) -> str | None:
+    """`a.b.c` 꼴의 표현식을 점 이름으로. 그 밖은 None."""
+    parts = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    return ".".join([node.id, *reversed(parts)]) if isinstance(node, ast.Name) else None
+
+
+def _private_access(name: str, tree: ast.Module, bound: dict[str, str], known: set[str]) -> list[str]:
+    """`모듈._이름` 접근 — 묶인 이름이 가리키는 엔진 모듈이 자기 자신이 아닐 때."""
+    found = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Attribute) and node.attr.startswith("_") and not node.attr.startswith("__")):
+            continue
+        base = _dotted(node.value)
+        if not base:
+            continue
+        head, _, rest = base.partition(".")
+        target = f"{bound[head]}.{rest}" if head in bound and rest else bound.get(head)
+        if target in known and target != name:
+            found.append(f"{node.lineno}: {target}.{node.attr}")
+    return found
+
+
+def _bindings(name: str, tree: ast.Module, known: set[str], is_package: bool) -> tuple[dict, dict]:
+    """import가 묶은 이름 — `(이름 → 엔진 모듈, 이름 → (엔진 모듈, 그 모듈의 이름))`."""
+    mods, names = {}, {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                if a.name in known:
+                    mods[a.asname or a.name.split(".")[0]] = a.name if a.asname else a.name.split(".")[0]
+        elif isinstance(node, ast.ImportFrom):
+            base = _package(name, is_package)
+            base = base[:len(base) - (node.level - 1)] if node.level else []
+            module = ".".join([*base, *(node.module.split(".") if node.module else [])])
+            for a in node.names:
+                sub = f"{module}.{a.name}" if module else a.name
+                if sub in known:
+                    mods[a.asname or a.name] = sub
+                elif module in known:
+                    names[a.asname or a.name] = (module, a.name)
+    return mods, names
+
+
+def _named(module: str, node, mods: dict, names: dict, known: set[str], local: set[str], cls: str | None):
+    """표현식이 가리키는 `(모듈, 이름)` — 엔진 밖이거나 지역 이름이면 None."""
+    if isinstance(node, ast.Name):
+        return None if node.id in local else names.get(node.id, (module, node.id))
+    base = _dotted(node.value)
+    if not base:
+        return None
+    if base in ("self", "cls"):
+        return (module, f"{cls}.{node.attr}") if cls else None
+    head, _, rest = base.partition(".")
+    if head in local:
+        return None
+    target = f"{mods[head]}.{rest}" if head in mods and rest else mods.get(head)
+    return (target, node.attr) if target in known else None
+
+
+def _opens_vault(expr) -> bool:
+    """저장소를 정하는 식 — `Vault.open()`·`Vault(...)`·`default_root()`를 부르거나 환경 변수
+    `OSK_VAULT_ROOT`를 읽는다."""
+    for n in ast.walk(expr):
+        if isinstance(n, ast.Constant) and n.value == "OSK_VAULT_ROOT":
+            return True
+        if isinstance(n, ast.Call):
+            name = (_dotted(n.func) or "").split(".")
+            if name[-1] in ("Vault", "default_root") or name[-2:] == ["Vault", "open"]:
+                return True
+    return False
+
+
+def _opens_ambient(fn) -> bool:
+    """받지 않고 스스로 정한다 — 루트를 주지 않는 `Vault.open()`(`None`을 주는 것도), `default_root()`, 환경
+    변수 `OSK_VAULT_ROOT` 읽기. 루트를 인자로 주고 여는 것(`Vault.open(root)`)과 자식 프로세스의 환경에 적어
+    주는 것은 아니다."""
+    for n in ast.walk(fn):
+        if isinstance(n, ast.Call):
+            name = (_dotted(n.func) or "").split(".")
+            given = [*n.args, *(k.value for k in n.keywords)]
+            if name[-1] == "default_root" or (name[-2:] == ["Vault", "open"] and all(
+                    isinstance(a, ast.Constant) and a.value is None for a in given)):
+                return True
+            reads_env = name[-1] == "getenv" or name[-2:] == ["environ", "get"]
+            if reads_env and n.args and isinstance(n.args[0], ast.Constant) and n.args[0].value == "OSK_VAULT_ROOT":
+                return True
+        elif (isinstance(n, ast.Subscript) and isinstance(n.ctx, ast.Load) and isinstance(n.slice, ast.Constant)
+              and n.slice.value == "OSK_VAULT_ROOT" and (_dotted(n.value) or "").split(".")[-1] == "environ"):
+            return True
+    return False
+
+
+def _entry_block(node) -> bool:
+    """`if __name__ == "__main__":` — 그 파일이 진입점으로 불릴 때만 돈다. import할 때는 돌지 않는다."""
+    return isinstance(node, ast.If) and ast.unparse(node.test).replace("'", '"') == '__name__ == "__main__"'
+
+
+def _module_level(body):
+    """모듈을 import할 때 도는 문장들 — `if`·`try`·`with`·`for` 안에 든 것까지. 함수와 클래스의 안, 그리고
+    `if __name__ == "__main__":` 아래(import할 때는 돌지 않는다)는 들어가지 않는다."""
+    for node in body:
+        yield node
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        if _entry_block(node):
+            continue
+        for field in ("body", "orelse", "finalbody", "handlers", "cases"):
+            for child in getattr(node, field, None) or []:
+                yield from _module_level(child.body if isinstance(child, (ast.ExceptHandler, ast.match_case)) else [child])
+
+
+def _takes_vault(fn, method: bool) -> bool:
+    static = any((_dotted(d) or "").split(".")[-1] == "staticmethod" for d in fn.decorator_list)
+    args = [*fn.args.posonlyargs, *fn.args.args][1 if method and not static else 0:]
+    return bool(args) and args[0].arg == "vault"
+
+
+def _passed_on(srcs: dict[str, str], trees: dict[str, ast.Module], bound: dict) -> dict:
+    """다른 곳의 이름을 제 이름으로 다시 내놓는 것 — `(모듈, 이름) → (원래 모듈, 원래 이름)`. 모듈 머리의
+    `from .m import f`와 모듈 본문의 `g = m.f`(튜플 대입 포함)다. `r.f()`가 실제로는 `m.f`임을 따라간다."""
+    known = set(srcs)
+    out = {}
+    for module, tree in trees.items():
+        mods, names = bound[module]
+        for node in tree.body:
+            if isinstance(node, ast.ImportFrom):
+                one = ast.Module(body=[node], type_ignores=[])
+                for name, key in _bindings(module, one, known, _is_package(module, srcs))[1].items():
+                    out[(module, name)] = key
+            elif isinstance(node, ast.Assign) and len(node.targets) == 1:
+                target, value = node.targets[0], node.value
+                pairs = [(target, value)]
+                if isinstance(target, ast.Tuple) and isinstance(value, ast.Tuple) and len(target.elts) == len(value.elts):
+                    pairs = list(zip(target.elts, value.elts))
+                for t, v in pairs:
+                    if isinstance(t, ast.Name) and isinstance(v, (ast.Name, ast.Attribute)):
+                        key = _named(module, v, mods, names, known, set(), None)
+                        if key and key != (module, t.id):
+                            out[(module, t.id)] = key
+    return out
+
+
+def _resolver(srcs: dict[str, str], trees: dict[str, ast.Module]):
+    """표현식이 가리키는 `(모듈, 이름)`을 찾는 함수와 그 재료 — `(named, passed, bound)`.
+
+    다른 모듈을 거친 이름을 끝까지 따라간다. `core.epoch.loaded`는 `core`가 머리에서 import한 `epoch`의 것이고
+    (모듈 속성 사슬), `write.bind_session`은 `write`가 다시 내놓은 `routing`의 것이다(`_passed_on`).
+    `named(module, node, local, cls, mods=None, names=None)` — 엔진 밖 파일(시험)은 제 import 표를 넘긴다."""
+    known = set(srcs)
+    bound = {m: _bindings(m, trees[m], known, _is_package(m, srcs)) for m in srcs}
+    passed = _passed_on(srcs, trees, bound)
+    attrs = {}                                 # (모듈, 이름) → 그 이름이 묶은 모듈. 모듈 머리의 import만 속성이 된다
+    for module, tree in trees.items():
+        for node in tree.body:
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                one = ast.Module(body=[node], type_ignores=[])
+                for name, target in _bindings(module, one, known, _is_package(module, srcs))[0].items():
+                    attrs[(module, name)] = target
+
+    def named(module, node, local, cls, mods=None, names=None):
+        if mods is None:
+            mods, names = bound[module]
+        key = _named(module, node, mods, names, known, local, cls)
+        if key is None and isinstance(node, ast.Attribute):
+            head, *rest = (_dotted(node.value) or "").split(".")
+            target = mods.get(head) if rest and head not in local else None
+            for part in rest:
+                if target is None:
+                    break
+                target = f"{target}.{part}" if f"{target}.{part}" in known else attrs.get((target, part))
+            if target is not None:
+                key = (target, node.attr)
+        seen = set()
+        while key in passed and key not in seen:
+            seen.add(key)
+            key = passed[key]
+        return key
+    return named, passed, bound
+
+
+def _vault_sets(srcs: dict[str, str], trees: dict[str, ast.Module], layer_of: dict | None = None) -> tuple[set, set, dict]:
+    """4항의 두 집합 — `(import할 때 저장소에서 고정하는 이름, 저장소가 필요한데 받지 않는 함수, 다시 내놓는 이름 표)`.
+
+    고정하는 이름: 모듈 본문이나 클래스 본문에서 저장소를 정하는 식(`_opens_vault`)으로 만든 이름, 그런 이름에서
+    다시 계산한 이름, 받지 않는 함수를 **불러서** 얻은 이름. 받지 않는 함수: 고정된 이름을 읽는 함수, 진입점이
+    아닌데 저장소를 스스로 여는 함수(`_opens_ambient`), 그리고 `vault`를 첫 인자로 받지 않으면서 그런 함수를
+    부르는 함수. 단위는 최상위 함수와 메서드다(안에 든 함수는 그 단위의 몫). 생성자가 `vault`를 받는 클래스의
+    메서드는 받은 것으로 본다.
+
+    저장소를 여는 것은 진입점의 일이다: 표면 층의 모듈, 어느 모듈이든 최상위 `main`, 그리고 `osk.vault`의
+    `default_root`와 `Vault.open`. 그 밖의 함수가 열면 상수가 접근자로 이름만 바뀐 것이라 센다 — `osk.vault`에
+    더한 접근자도, 표면 층의 여는 함수를 아래층에서 부르는 것도 같다(`vault`를 받는 함수여도 센다).
+
+    두 수는 2단계가 끝나며 0이 됐다. 기준선이 0이라 하나라도 생기면 시험이 실패한다. 새는 것을 보려면
+    호출을 놓치지 않아야 하므로, 다른 모듈을 거친 이름(`_resolver`)을 따라가고 클래스를 쓰면 그 메서드
+    전부를 부른 것으로 본다.
+
+    못 보는 것: `getattr(core, "ROOT")`처럼 이름을 문자열로 읽는 것, `self`가 아닌 객체의 메서드 호출,
+    `import *`. `vault`가 첫 인자가 아니면 받은 것으로 치지 않는다. 여는 쪽에서는: 다른 이름으로 들여온 것
+    (`Vault as V`, `OPEN = Vault.open`), 기본값이 `None`인 변수를 넘기는 `Vault.open(root)`, 진입점이 받은
+    저장소를 모듈 전역이나 다른 모듈의 속성에 적어 두고 아래에서 읽는 것, 엔진 파일의 자리로 루트를 직접
+    계산하는 것, 환경을 통째로 복사해 읽는 것. 이 가운데 전역에 쥔 저장소는 회귀가 값으로 본다
+    (`test_validate_global_invariance`). 나머지는 리뷰가 본다."""
+    named, passed, _ = _resolver(srcs, trees)
+    layer_of = LAYER_OF if layer_of is None else layer_of
+
+    units, methods, assigns = {}, {}, []       # (모듈, 이름) → (함수, 클래스), (모듈, 클래스) → 메서드들, 본문의 대입들
+    for module, tree in trees.items():
+        for node in _module_level(tree.body):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                units[(module, node.name)] = (node, None)
+            elif isinstance(node, ast.ClassDef):
+                for sub in node.body:
+                    if isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        units[(module, f"{node.name}.{sub.name}")] = (sub, node.name)
+                        methods.setdefault((module, node.name), []).append((module, f"{node.name}.{sub.name}"))
+                    elif isinstance(sub, (ast.Assign, ast.AnnAssign)) and sub.value is not None:
+                        assigns.append((module, node.name, sub))
+            elif isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
+                assigns.append((module, None, node))
+    holds = {c for c in methods
+             if (c[0], f"{c[1]}.__init__") in units and _takes_vault(units[(c[0], f"{c[1]}.__init__")][0], True)}
+
+    values = []                                # (이름, [(값이 가리키는 것, 부르는가)], 저장소를 정하는가)
+    for module, cls, node in assigns:
+        called = {id(c.func) for c in ast.walk(node.value) if isinstance(c, ast.Call)}
+        seen = [(named(module, n, set(), cls), id(n) in called) for n in ast.walk(node.value)
+                if isinstance(n, (ast.Name, ast.Attribute))]
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        for name in (n.id for t in targets for n in ast.walk(t) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)):
+            values.append(((module, f"{cls}.{name}" if cls else name), [s for s in seen if s[0]], _opens_vault(node.value)))
+
+    reach, threaded = {}, set()                # 함수가 가리키는 것들, 저장소를 받은 함수
+    for key, (fn, cls) in units.items():
+        module = key[0]
+        local = {a.arg for n in ast.walk(fn) if isinstance(n, ast.arguments)
+                 for a in [*n.posonlyargs, *n.args, *n.kwonlyargs, *filter(None, [n.vararg, n.kwarg])]}
+        local |= {n.id for n in ast.walk(fn) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)}
+        local -= {name for n in ast.walk(fn) if isinstance(n, ast.Global) for name in n.names}
+        if _takes_vault(fn, cls is not None) or (cls is not None and (module, cls) in holds):
+            threaded.add(key)
+        reach[key] = {named(module, n, local, cls) for n in ast.walk(fn)
+                      if isinstance(n, (ast.Name, ast.Attribute)) and not isinstance(n.ctx, ast.Store)} - {None, key}
+    entry = {key for key, (_, cls) in units.items()
+             if layer_of.get(key[0]) == SURFACE or (cls is None and key[1] == "main")
+             or key in (("osk.vault", "default_root"), ("osk.vault", "Vault.open"))}
+    openers = {key for key, (fn, _) in units.items() if _opens_ambient(fn)}
+    ambient = {key for key in units if key not in entry and (key in openers or reach[key] & openers)}
+
+    def with_methods(keys) -> set:
+        return set(keys).union(*(methods.get(k, ()) for k in keys))
+
+    fixed, need = set(), set()
+    grew = True
+    while grew:
+        grew = False
+        for name, seen, opens in values:
+            if name not in fixed and (opens or any(k in fixed or (call and with_methods({k}) & need) for k, call in seen)):
+                fixed.add(name)
+                grew = True
+        for key in units:
+            if key not in need and (reach[key] & fixed or key in ambient
+                                    or (key not in threaded and with_methods(reach[key]) & need)):
+                need.add(key)
+                grew = True
+    return fixed, need, passed
+
+
+def _vault(srcs: dict[str, str], trees: dict[str, ast.Module], layer_of: dict | None = None) -> tuple[dict, dict]:
+    """`_vault_sets`의 두 집합을 모듈별 수로."""
+    fixed, need, _ = _vault_sets(srcs, trees, layer_of)
+
+    def count(keys) -> dict[str, int]:
+        return {m: sum(1 for k in keys if k[0] == m) for m in sorted({k[0] for k in keys})}
+    return count(fixed), count(need)
+
+
+# 자가 계량의 표본 — 4항. 모듈 이름 → 소스.
+_VAULT_SAMPLE = {
+    # 못 받은 함수: current(여기에 더한 접근자). default_root와 Vault.open은 여는 것이 제 일이다.
+    "osk.vault": '''
+import os
+
+def default_root():
+    return os.environ.get("OSK_VAULT_ROOT")
+
+class Vault:
+    @classmethod
+    def open(cls, root=None):
+        return cls() if root else cls(default_root())
+
+def current():
+    return Vault.open()
+''',
+    # 고정: VAULT·ROOT, 그리고 `try` 안에서 정한 LATE. RUN은 아니다(`__main__` 아래는 import할 때 돌지 않는다).
+    # 못 받은 함수: reader·caller·passes·Lock.__enter__·locks, 스스로 여는 opens·env·none, `if` 아래의 under_if.
+    # takes·shadow·Box·main(진입점)·child(자식의 환경에 적는다)·other(루트를 받아 연다)는 아니다.
+    "osk.held": '''
+from .vault import Vault
+VAULT = Vault.open()
+ROOT = VAULT.root
+
+def reader():
+    return ROOT
+
+def caller():
+    return reader()
+
+def takes(vault):
+    return vault.root
+
+def passes():
+    return takes(VAULT)
+
+def opens():
+    return takes(Vault.open())
+
+def env():
+    import os
+    return os.environ.get("OSK_VAULT_ROOT")
+
+def main():
+    return takes(Vault.open())
+
+def child(vault):
+    return {"OSK_VAULT_ROOT": str(vault.root)}
+
+def other(root):
+    return takes(Vault.open(root))
+
+def none():
+    return takes(Vault.open(None))
+
+try:
+    LATE = Vault.open()
+except RuntimeError:
+    LATE = None
+
+if LATE:
+    def under_if():
+        return LATE
+
+if __name__ == "__main__":
+    RUN = Vault.open()
+
+def shadow(ROOT):
+    return ROOT
+
+class Box:
+    def __init__(self, vault):
+        self.vault = vault
+
+    def get(self):
+        return takes(self.vault)
+
+class Lock:
+    def __enter__(self):
+        return ROOT
+
+def locks():
+    with Lock():
+        pass
+''',
+    # 다른 모듈에서: 고정은 P(속성 사슬)·K.HERE(클래스 본문), ALIAS는 다시 내놓는 이름이라 아니다.
+    # 못 받은 함수: far(가져온 이름)·via(가져온 함수)·chain(속성 사슬)·K.m(클래스 속성). K.s는 받았다(staticmethod).
+    "osk.held2": '''
+from .held import ROOT, reader
+from . import held
+ALIAS = held.reader
+P = held.VAULT.root
+
+def far():
+    return ROOT
+
+def via():
+    return reader()
+
+def chain():
+    return held.VAULT.root
+
+class K:
+    HERE = ROOT
+
+    @staticmethod
+    def s(vault):
+        return vault
+
+    def m(self):
+        return self.HERE
+''',
+    # 표면 층의 모듈은 연다 — opener는 세지 않는다.
+    "osk.front": '''
+from .vault import Vault
+
+def opener():
+    return Vault.open()
+''',
+    # 다른 모듈을 거쳐서: 고정은 X(못 받은 함수를 불러 얻은 값). 못 받은 함수: through·alias(다시 내놓은 이름),
+    # hop(모듈 속성 사슬 `held2.held.reader`), reaches(표면의 여는 함수를 아래에서 부른다 — 받았어도 센다).
+    "osk.held3": '''
+from . import held2, front
+X = held2.via()
+
+def reaches(vault):
+    return front.opener()
+
+def through():
+    return held2.reader()
+
+def alias():
+    return held2.ALIAS()
+
+def hop():
+    return held2.held.reader()
+''',
+}
+_VAULT_WANT = {"vault_fixed_names": {"osk.held": 3, "osk.held2": 2, "osk.held3": 1},
+               "vault_unthreaded": {"osk.held": 9, "osk.held2": 4, "osk.held3": 4, "osk.vault": 1}}
+
+
+def _broad_except(tree: ast.Module, boundary, lines: list[str]) -> tuple[int, int, int]:
+    """넓은 예외 처리의 수 — `(까닭 없는 것, 경계 안, 까닭을 적은 격리)`. `boundary`는 그 모듈에서 경계인 함수의
+    이름들이고, None이면 모듈 전체가 경계다. 경계 밖의 것은 `except` 줄에 `# 격리: <까닭>`이 있으면 격리다.
+    정리만 하고 그대로 다시 올리는 것(끝이 맨 `raise`)은 세지 않는다 — 삼키는 것이 없다."""
+    def broad(kind) -> bool:
+        if kind is None:
+            return True
+        kinds = kind.elts if isinstance(kind, ast.Tuple) else [kind]
+        return any(isinstance(k, ast.Name) and k.id in BROAD for k in kinds)
+
+    def reraises(handler) -> bool:
+        return isinstance(handler.body[-1], ast.Raise) and handler.body[-1].exc is None
+
+    counts = [0, 0, 0]
+
+    def visit(node, inside: bool) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.ExceptHandler) and broad(child.type) and not reraises(child):
+                counts[1 if inside else 2 if ISOLATED.search(lines[child.lineno - 1]) else 0] += 1
+            named = isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) and child.name in (boundary or ())
+            visit(child, inside or named)
+
+    visit(tree, boundary is None)
+    return counts[0], counts[1], counts[2]
+
+
+def _branches(fn) -> int:
+    """함수 하나의 분기 수 — 안에 든 함수·클래스의 몫은 그쪽에서 센다."""
+    count, stack = 0, list(ast.iter_child_nodes(fn))
+    while stack:
+        node = stack.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        if isinstance(node, (ast.If, ast.For, ast.AsyncFor, ast.While, ast.ExceptHandler, ast.IfExp, ast.match_case)):
+            count += 1
+        elif isinstance(node, ast.BoolOp):
+            count += len(node.values) - 1
+        elif isinstance(node, ast.comprehension):
+            count += len(node.ifs)
+        stack.extend(ast.iter_child_nodes(node))
+    return count
+
+
+def _functions(tree: ast.Module):
+    """`(점 이름, 본문 줄 수, 분기 수)` — 본문은 docstring 다음 문장부터 센다."""
+    def visit(node, path):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                body = child.body[1:] if ast.get_docstring(child, clean=False) is not None else child.body
+                lines = child.end_lineno - body[0].lineno + 1 if body else 0
+                yield ".".join([*path, child.name]), lines, _branches(child)
+                yield from visit(child, [*path, child.name])
+            elif isinstance(child, ast.ClassDef):
+                yield from visit(child, [*path, child.name])
+            else:
+                yield from visit(child, path)
+
+    yield from visit(tree, [])
+
+
+def _tangled(edges: dict[str, set[str]]) -> int:
+    """순환에 든 모듈 수 — 서로 닿는 모듈이 둘 이상인 묶음(강결합 성분)의 크기 합."""
+    def reach(start):
+        seen, stack = set(), [start]
+        while stack:
+            for nxt in edges.get(stack.pop(), ()):
+                if nxt not in seen:
+                    seen.add(nxt)
+                    stack.append(nxt)
+        return seen
+    closure = {m: reach(m) for m in edges}
+    return sum(1 for m in edges if m in closure[m])
+
+
+def _late_loads(entry: str, imports: dict[str, list], known: set[str]) -> list[str]:
+    """`entry`가 뜬 뒤에 엔진을 디스크에서 읽게 되는 문 — 뜰 때 읽힌 모듈이 함수 안에서 읽는, 뜰 때
+    읽히지 않은 모듈(`읽는 쪽 -> 읽히는 쪽`). 맨 위 import를 따라 닿는 모듈은 뜰 때 읽힌다. 문이 없으면
+    뜬 뒤에 읽힐 모듈도 없다. 문 뒤의 모듈 수는 세지 않는다: 그 수는 모듈을 가르면 늘지만 문은 그대로다."""
+    at_start, stack = {entry}, [entry]
+    while stack:
+        for target, in_function in imports.get(stack.pop(), ()):
+            if in_function:
+                continue
+            parts = target.split(".")                      # 모듈을 읽으면 그 위의 패키지도 읽힌다
+            for module in (".".join(parts[:i]) for i in range(1, len(parts) + 1)):
+                if module in known and module not in at_start:
+                    at_start.add(module)
+                    stack.append(module)
+    return sorted({f"{name} -> {target}" for name in at_start for target, in_function in imports.get(name, ())
+                   if in_function and target not in at_start})
+
+
+def measure(srcs: dict[str, str], layer_of: dict[str, int], long_lived: tuple = LONG_LIVED,
+            boundaries: dict = BOUNDARIES) -> dict:
+    """소스 묶음의 구조 실측 — 기준선 파일과 같은 모양."""
+    known = set(srcs)
+    upward, lazy, private, broad, at_boundary, isolated, oversize = {}, {}, {}, {}, {}, {}, {}
+    edges = {m: set() for m in known}
+    imports = {m: [] for m in known}
+    trees = {name: ast.parse(text) for name, text in srcs.items()}
+    fixed_names, unthreaded = _vault(srcs, trees, layer_of)
+    for name, tree in trees.items():
+        bound, imported_private, counted = {}, 0, set()
+        for target, in_function, line, names, privates in _imports(name, tree, known, _is_package(name, srcs)):
+            bound.update(names)
+            if target == name:
+                continue
+            imported_private += len(privates)
+            edges[name].add(target)
+            imports[name].append((target, in_function))
+            if (line, target) in counted:              # 한 import 문은 이름을 여럿 가져와도 한 번 센다
+                continue
+            counted.add((line, target))
+            if layer_of[target] > layer_of[name]:
+                upward[f"{name} -> {target}"] = upward.get(f"{name} -> {target}", 0) + 1
+            if in_function and layer_of[name] != SURFACE:
+                lazy[name] = lazy.get(name, 0) + 1
+        hits = len(_private_access(name, tree, bound, known)) + imported_private
+        if hits:
+            private[name] = hits
+        unexplained, inside, explained = _broad_except(tree, boundaries.get(name, ()), srcs[name].split("\n"))
+        if unexplained:
+            broad[name] = unexplained
+        if inside:
+            at_boundary[name] = inside
+        if explained:
+            isolated[name] = explained
+        for qualname, lines, branches in _functions(tree):
+            if lines > FUNCTION_LINES or branches > FUNCTION_BRANCHES:
+                key = f"{name}:{qualname}"
+                while key in oversize:                 # 같은 이름을 두 번 정의한 모듈
+                    key += "'"
+                oversize[key] = [lines, branches]
+    cycles = sorted(f"{a} <-> {b}" for a in edges for b in edges[a] if a < b and a in edges[b])
+    report = {"upward_imports": upward, "lazy_imports": lazy, "two_module_cycles": cycles,
+              "tangled_modules": _tangled(edges), "private_access": private,
+              "vault_fixed_names": fixed_names, "vault_unthreaded": unthreaded, "broad_except": broad,
+              "boundary_excepts": at_boundary, "isolated_excepts": isolated, "oversize_functions": oversize,
+              "late_loads": {entry: _late_loads(entry, imports, known) for entry in long_lived if entry in known}}
+    return {"limits": {"function_lines": FUNCTION_LINES, "function_branches": FUNCTION_BRANCHES},
+            "totals": totals(report), **{k: _sorted(v) for k, v in report.items()}}
+
+
+def _is_package(name: str, srcs: dict[str, str]) -> bool:
+    return any(other.startswith(name + ".") for other in srcs)
+
+
+def _sorted(value):
+    return dict(sorted(value.items())) if isinstance(value, dict) else value
+
+
+def totals(report: dict) -> dict:
+    over = report["oversize_functions"].values()
+    return {"upward_imports": sum(report["upward_imports"].values()),
+            "lazy_imports": sum(report["lazy_imports"].values()),
+            "two_module_cycles": len(report["two_module_cycles"]),
+            "tangled_modules": report["tangled_modules"],
+            "private_access": sum(report["private_access"].values()),
+            "vault_fixed_names": sum(report["vault_fixed_names"].values()),
+            "vault_unthreaded": sum(report["vault_unthreaded"].values()),
+            "broad_except": sum(report["broad_except"].values()),
+            "boundary_excepts": sum(report["boundary_excepts"].values()),
+            "isolated_excepts": sum(report["isolated_excepts"].values()),
+            "oversize_functions": len(over),
+            "excess_lines": sum(max(0, lines - FUNCTION_LINES) for lines, _ in over),
+            "excess_branches": sum(max(0, branches - FUNCTION_BRANCHES) for _, branches in over),
+            "late_loads": sum(len(late) for late in report["late_loads"].values())}
+
+
+def differences(actual: dict, baseline: dict) -> list[str]:
+    """기준선과 다른 곳 — 사람이 읽는 줄로."""
+    out = []
+    for key in actual:
+        now, was = actual[key], baseline.get(key)
+        if now == was:
+            continue
+        if isinstance(now, dict) and isinstance(was, dict):
+            out += [f"{key}: {k} {was.get(k, '없음')} → {now.get(k, '없음')}"
+                    for k in sorted(set(now) | set(was)) if now.get(k) != was.get(k)]
+        elif isinstance(now, list) and isinstance(was, list):
+            out += [f"{key}: + {x}" for x in now if x not in was] + [f"{key}: - {x}" for x in was if x not in now]
+        else:
+            out.append(f"{key}: {was} → {now}")
+    return out
+
+
+def self_test() -> None:
+    """자가 계량 — 재는 코드가 0만 세고 있지 않은지 작은 표본으로 본다."""
+    big = "def big(x):\n" + "".join(f"    if x == {i}:\n        x += 1\n" for i in range(31)) + "    return x\n"
+    sample = {
+        "osk": "",
+        "osk.low": ("_hidden = 1\n\ndef f():\n    from . import high\n    return high.g()\n\n"
+                    "def h():\n    try:\n        return 1\n    except BaseException:\n        _hidden\n        raise\n"),
+        "osk.high": ("from . import low\nfrom .low import _hidden\n\n"
+                     "def g():\n    \"\"\"doc.\"\"\"\n    try:\n        return low._hidden\n"
+                     "    except Exception:\n        return None\n\n"
+                     "def k():\n    try:\n        return g()\n"
+                     "    except Exception:      # 격리: 이 걸음의 실패는 결과에 적는다\n        return None\n\n" + big),
+        "edge": ("def main():\n    from osk import low\n    try:\n        return low.f()\n"
+                 "    except Exception:\n        return None\n"),
+        **_VAULT_SAMPLE,
+    }
+    got = measure(sample, {"osk": KERNEL, "osk.low": KERNEL, "osk.high": SERVICE, "edge": SURFACE,
+                           **{name: SURFACE if name == "osk.front" else KERNEL for name in _VAULT_SAMPLE}},
+                  long_lived=("edge",), boundaries={"edge": {"main"}})
+    want = {"upward_imports": {"osk.held3 -> osk.front": 1, "osk.low -> osk.high": 1}, "lazy_imports": {"osk.low": 1},
+            "two_module_cycles": ["osk.high <-> osk.low"], "tangled_modules": 2,
+            "private_access": {"osk.high": 2}, "broad_except": {"osk.high": 1}, "boundary_excepts": {"edge": 1},
+            "isolated_excepts": {"osk.high": 1},
+            **_VAULT_WANT,
+            "oversize_functions": {"osk.high:big": [63, 31]},
+            "late_loads": {"edge": ["edge -> osk.low"]}}
+    for key, value in want.items():
+        assert got[key] == value, f"자가 계량 실패 — {key}: {got[key]} != {value}"
+    assert got["totals"]["excess_lines"] == 3 and got["totals"]["excess_branches"] == 16, got["totals"]
+
+
+def main(argv: list[str]) -> int:
+    self_test()
+    srcs = sources()
+    unplaced = sorted(set(srcs) - set(LAYER_OF))
+    gone = sorted(set(LAYER_OF) - set(srcs))
+    if unplaced or gone:
+        print(f"층 배정표(LAYERS)가 코드와 다르다 — 배정 없음 {unplaced}, 없는 모듈 {gone}")
+        return 1
+    actual = measure(srcs, LAYER_OF)
+    baseline = json.loads(BASELINE.read_text(encoding="utf-8")) if BASELINE.exists() else None
+    if "--update" in argv:
+        grown = [k for k in TOTALS if baseline and actual["totals"][k] > baseline["totals"].get(k, actual["totals"][k])]
+        if grown:
+            print("합계가 느는 갱신은 하지 않는다 — 코드를 고친다: "
+                  + ", ".join(f"{k} {baseline['totals'][k]} → {actual['totals'][k]}" for k in grown))
+            return 1
+        BASELINE.write_text(json.dumps(actual, ensure_ascii=False, indent=1) + "\n", encoding="utf-8", newline="\n")
+        print("기준선을 썼다:", json.dumps(actual["totals"], ensure_ascii=False))
+        return 0
+    if baseline is None:
+        print(f"기준선이 없다 — {BASELINE.name}. `--update`로 만든다")
+        return 1
+    diff = differences(actual, baseline)
+    if not diff:
+        print("구조 규범: 기준선과 같다", json.dumps(actual["totals"], ensure_ascii=False))
+        return 0
+    grown = [k for k in TOTALS if actual["totals"][k] > baseline["totals"].get(k, actual["totals"][k])]
+    print("\n".join(diff[:40]) + (f"\n… 외 {len(diff) - 40}줄" if len(diff) > 40 else ""))
+    print("위반이 늘었다 — 코드를 고친다(docs/CODE-STANDARD.md): " + ", ".join(grown) if grown else
+          "기준선이 낡았다 — `python tests/test_architecture.py --update`로 낮춘다")
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

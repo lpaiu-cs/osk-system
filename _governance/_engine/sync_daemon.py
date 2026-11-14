@@ -21,12 +21,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import vault_sync  # noqa: E402
-from osk import core, epoch, raw, update  # noqa: E402
+from osk import core, epoch, raw, update_state  # noqa: E402
 from osk._portalock import lock_exclusive, unlock  # noqa: E402
+# 잠금 자리와 마지막 주기의 기록은 `osk.sync_status`에 산다 — update·setup·doctor가 데몬을 import하지 않고 읽는다.
+from osk.sync_status import STALE, STATUS, last, trouble  # noqa: E402,F401
+from osk.sync_status import lock_path as _lock_path, record as _record  # noqa: E402
+from osk.vault import Vault  # noqa: E402
 
-ROOT = (Path(os.environ["OSK_VAULT_ROOT"]).resolve()
-        if os.environ.get("OSK_VAULT_ROOT")
-        else Path(__file__).resolve().parent.parent.parent)
 _stop = False
 
 
@@ -35,70 +36,7 @@ def _on_signal(signum, frame):
     _stop = True
 
 
-def _lock_path(root: Path = ROOT, name: str = "osk-sync.lock") -> Path:
-    """잠금 파일의 경로 — 자리는 **엔진이 정한다**(`core.local_lock_path`).
-    `name`으로 잠금을 구분한다: `osk-sync.lock`은 데몬 싱글턴(한 기기 한 데몬),
-    `osk-mutation.lock`은 엔진의 working-tree 변경 잠금과 **같은 파일**이다.
-
-    동기화는 이 체계의 필수 구성요소가 아니라 쓰는 사람만 쓰는 편의 모듈이므로,
-    잠금 자리를 여기서 따로 정하면 엔진과 갈라져 상호배제가 조용히 깨진다 —
-    정의는 엔진에 한 벌만 둔다. 엔진의 해석기는 git을 **실행하지 않고**
-    파일시스템으로 읽으므로, 매 tick마다 git.exe를 띄우던 비용과 Windows
-    콘솔 깜빡임도 함께 사라진다."""
-    return core.local_lock_path(name, root)
-
-
-# 마지막 주기의 결과 — 기기 로컬(`core.local_lock_path`). 실패가 데몬 로그에만 묻히면 사용자는 백업이
-# 멈춘 줄 모른다(v5.4의 전송 보류가 그 예다). 세션 시작 훅과 doctor가 `trouble`로 읽는다.
-STATUS = "osk-sync-status.json"
-STALE = 24 * 3600                       # 이보다 오래 성공하지 못했거나 돌지 않았으면 멈춘 것이다
-
-
-def last(root: Path = ROOT) -> dict | None:
-    """마지막 주기의 기록 `{at, status, since}` — 없으면 이 기기는 데몬을 쓰지 않는다."""
-    try:
-        data = json.loads(_lock_path(root, STATUS).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    return data if isinstance(data, dict) and isinstance(data.get("at"), (int, float)) else None
-
-
-def _when(at: float) -> str:
-    return datetime.fromtimestamp(at).strftime("%m-%d %H:%M")
-
-
-def trouble(root: Path = ROOT, now: float | None = None) -> str | None:
-    """동기화가 멈췄으면 그 사유 한 줄, 아니면 None. 전송 보류는 사람이 setup으로 풀어야 하므로
-    곧바로, 그 밖의 실패는 하루 넘게 이어졌을 때, 기록이 하루 넘게 낡았으면 데몬이 돌지 않는 것이다."""
-    rec = last(root)
-    if not rec:
-        return None
-    now = time.time() if now is None else now
-    if now - rec["at"] > STALE:
-        return f"데몬이 {_when(rec['at'])} 뒤로 돌지 않았다"
-    status, since = str(rec.get("status", "")), rec.get("since")
-    if status.startswith("전송 보류"):
-        return status
-    if isinstance(since, (int, float)) and now - since > STALE:
-        return f"{_when(since)}부터 동기화하지 못했다 — 마지막 결과: {status}"
-    return None
-
-
-def _record(root: Path, status: str) -> None:
-    # ok가 아니면 무엇이든(잠금 경합·미완료 트랜잭션 포함) 실패가 이어진 시작을 잰다. 일시적인 것은
-    # 다음 ok가 지우고, 하루를 넘겨야 알리므로(`trouble`) 경합이 경고가 되지는 않는다.
-    prev = last(root) or {}
-    now = time.time()
-    since = None if status.startswith("ok") else (prev.get("since") or now)
-    try:
-        core.atomic_write(_lock_path(root, STATUS),
-                          json.dumps({"at": now, "status": status, "since": since},
-                                     ensure_ascii=False).encode("utf-8"))
-    except OSError:
-        pass        # 기록을 못 남겨도 동기화는 돈다 — 보이지 않을 뿐이다
-
-
-def once(root: Path = ROOT) -> str:
+def once(root: Path) -> str:
     """한 주기를 돌고 그 결과를 기기 로컬에 남긴다(`last`·`trouble`)."""
     try:
         status = _once(root)
@@ -109,7 +47,7 @@ def once(root: Path = ROOT) -> str:
     return status
 
 
-def _once(root: Path = ROOT) -> str:
+def _once(root: Path) -> str:
     """Fetch → locked commit/rebase/snapshot → push the captured SHA.
 
     Network waits do not exclude writers. Recheck pending transactions and Git
@@ -123,7 +61,7 @@ def _once(root: Path = ROOT) -> str:
         return "ok (로컬 커밋만 — 원격 없음)" if status == "ok" else status
     # 전송 경계의 보호 — 등록 뒤에 origin이나 push 대상이 바뀌어도 여기서 막는다. 공개 정본은 어디에
     # 있든 안 되고, 그 밖의 대상은 setup이 확인해 적은 것(`vault_sync.TARGETS`)과 같아야 한다.
-    if any(update.is_canonical(u) for u in [url, *pushes]):
+    if any(update_state.is_canonical(u) for u in [url, *pushes]):
         status, _head = _apply(root)
         return ("전송 보류 — origin의 fetch·push 대상에 공개 정본이 있다(로컬 커밋만)"
                 if status == "ok" else status)
@@ -173,12 +111,12 @@ _RECORD_ROOTS = ("00_Scope", "= Scope", "Scope", "00_Person", "= Person", "Perso
 def _raw_boundary(root: Path, remote: str | None = None, *, base: str | None = None) -> list[str]:
     """Inspect changed records before commit/rebase; never repair source bytes here."""
     def git(args):
-        result = vault_sync._git(root, args, 30, text=False)
+        result = vault_sync.run_git(root, args, 30, text=False)
         if result.returncode:
             raise RuntimeError("raw boundary Git inspection failed")
         return result.stdout
 
-    head = vault_sync._head(root, 10)
+    head = vault_sync.head_commit(root, 10)
     if remote:
         paths = git(["diff", "--name-only", "-z", "--diff-filter=ACMRT",
                      base or head or "4b825dc642cb6eb9a060e54bf8d69288fbee4904", remote, "--", *_RECORD_ROOTS])
@@ -217,9 +155,9 @@ def _keep_local(root: Path) -> None:
     rule = local / ".gitignore"
     if not rule.is_file():
         rule.write_text("*\n!.gitignore\n", encoding="utf-8")
-    tracked = vault_sync._git(root, ["ls-files", "-z", "--", ".osk"], 30, text=False)
+    tracked = vault_sync.run_git(root, ["ls-files", "-z", "--", ".osk"], 30, text=False)
     if tracked.returncode == 0 and set(tracked.stdout.split(b"\0")) - {b"", b".osk/.gitignore"}:
-        vault_sync._git(root, ["rm", "-r", "--cached", "--quiet", "--", ".osk"], 60)
+        vault_sync.run_git(root, ["rm", "-r", "--cached", "--quiet", "--", ".osk"], 60)
 
 
 def _once_locked(root: Path, fetched: tuple[str, str | None] | None) -> tuple[str, str | None]:
@@ -258,7 +196,7 @@ def _once_locked(root: Path, fetched: tuple[str, str | None] | None) -> tuple[st
         return f"pull 실패: {st} {detail}", None
     if detail:
         print(f"sync: {detail}", file=sys.stderr)
-    head = vault_sync._head(root, 10)
+    head = vault_sync.head_commit(root, 10)
     if not head:
         return "push 실패: 커밋 SHA를 확인할 수 없다", None
     try:
@@ -288,10 +226,11 @@ def _normal_priority() -> None:
 
 
 def main():
+    root = Vault.open().root      # 여는 것이 배치 점검이다 — 같은 공간의 폴더가 둘이면 동기화하지 않고 멈춘다
     if sys.stderr is None:
         # 콘솔 없이 떴다(Windows 작업의 `pythonw.exe`) — 알림을 버리지 않고 기기 로컬 로그에
         # 남긴다. 추적 트리 밖이라 데몬 자신의 `git add -A`가 싣지 않는다.
-        sys.stdout = sys.stderr = open(_lock_path(ROOT, "osk-sync-daemon.log"), "a",
+        sys.stdout = sys.stderr = open(_lock_path(root, "osk-sync-daemon.log"), "a",
                                        encoding="utf-8", buffering=1)
     try:
         _normal_priority()
@@ -303,7 +242,7 @@ def main():
     a = ap.parse_args()
     if os.environ.get("SYNC_ENABLED", "").lower() not in ("1", "true", "yes"):
         sys.exit("sync 비활성 — SYNC_ENABLED=1 로 명시 활성화 (템플릿 계약: 키가 없으면 동기화하지 않는다)")
-    lock = open(_lock_path(), "w")
+    lock = open(_lock_path(root), "w")
     try:
         lock_exclusive(lock, blocking=False)
     except OSError:
@@ -312,7 +251,7 @@ def main():
     signal.signal(signal.SIGINT, _on_signal)
     if a.once:
         try:
-            print(once())
+            print(once(root))
         except Exception as e:  # 루프와 같이 git이 답하지 못한 것을 traceback 없이 알린다.
             sys.exit(f"sync 실패: {e}")
         return
@@ -325,7 +264,7 @@ def main():
                            # 참/거짓 래치로 두면 두 번째 교체가 침묵한다.
     while not _stop:
         try:
-            st = once()
+            st = once(root)
             if not st.startswith("ok"):      # "ok (로컬 커밋만 — 원격 없음)"은 정상이다
                 print(f"sync 상태: {st}", file=sys.stderr)
         except Exception as e:

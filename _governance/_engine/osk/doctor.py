@@ -27,9 +27,11 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from . import core
+from . import (core, evictions, evidence_migration as em, growth_daily, raw, rechecks, response_growth, scope_memory,
+               validate, conversation_capture, conversation_state)
 from . import harness as adapters
 from .harness import base, runs
+from .vault import Vault
 
 LEVELS = ("ok", "info", "warn", "fail")
 _NO_WINDOW = 0x08000000 if os.name == "nt" else 0
@@ -38,10 +40,10 @@ _ONE = ("같은 호출에 함께 걸리는 등록을 하나로 합친다(Session
         "나눠도 된다) — osk는 같은 호출을 한 번만 처리하지만 호스트는 매번 두 번 띄운다")
 
 
-def _engine_dir() -> Path:
+def engine_dir(vault: Vault) -> Path:
     """등록 명령이 가리켜야 할 엔진 — 이 vault 안의 사본이다. 훅과 MCP 서버는 자기 파일
     자리로 vault를 찾으므로, 다른 자리의 엔진을 부르는 등록은 이 vault가 아니다."""
-    return core.ROOT / "_governance" / "_engine"
+    return vault.root / "_governance" / "_engine"
 
 
 def _item(level: str, check: str, detail: str, fix: str | None = None) -> dict:
@@ -55,9 +57,9 @@ def _kst(at) -> str:
         return "?"
 
 
-def _python() -> Path:
+def venv_python(vault: Vault) -> Path:
     """이 vault의 가상환경 Python — 등록 명령이 써야 하는 자리."""
-    return core.ROOT / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    return vault.root / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 
 
 def _runnable(program: str) -> bool:
@@ -66,9 +68,9 @@ def _runnable(program: str) -> bool:
     return Path(program).is_file() if Path(program).is_absolute() else shutil.which(program) is not None
 
 
-def _pip(prefix) -> str:
+def _pip(vault: Vault, prefix) -> str:
     """그 해석기에 엔진 의존성을 까는 한 줄."""
-    engine = _engine_dir()
+    engine = engine_dir(vault)
     return core.shell_join([*prefix, "-m", "pip", "install", "-r", engine / "requirements.txt",
                             "-c", engine / "constraints.txt"])
 
@@ -99,23 +101,23 @@ def _probe(prefix) -> tuple[str, str] | None:
     return _PROBED[key]
 
 
-def _engine(records: dict) -> list[dict]:
+def _engine(vault: Vault, records: dict) -> list[dict]:
     items = []
     v = sys.version_info
     ok = v >= (3, 11)
     items.append(_item("ok" if ok else "fail", "Python", f"{v.major}.{v.minor}.{v.micro} — {sys.executable}",
                        None if ok else "엔진은 Python 3.11 이상이 필요하다"))
-    if base.fold(str(Path(sys.prefix).resolve())) != base.fold(str((core.ROOT / ".venv").resolve())):
+    if base.fold(str(Path(sys.prefix).resolve())) != base.fold(str((vault.root / ".venv").resolve())):
         items.append(_item("info", "가상환경", f"이 명령은 이 vault의 `.venv`가 아닌 {sys.prefix}에서 돈다",
-                           f"훅·MCP 등록 명령은 {_python()}를 쓴다"))
+                           f"훅·MCP 등록 명령은 {venv_python(vault)}를 쓴다"))
     if importlib.util.find_spec("mcp") is None:
         items.append(_item("fail", "mcp 패키지", "이 Python에 `mcp`가 없다 — MCP 서버가 뜨지 않는다",
-                           _pip([sys.executable])))
+                           _pip(vault, [sys.executable])))
     else:
         items.append(_item("ok", "mcp 패키지", "설치됨"))
     try:
         from . import update_check
-        rep = update_check.report()
+        rep = update_check.report(vault)
         if rep.get("available"):
             items.append(_item("info", "릴리스", f"새 릴리스 {rep['latest']} (이 vault {rep['current']})",
                                '에이전트에게 "osk 업데이트해 줘"라고 요청한다'))
@@ -124,19 +126,19 @@ def _engine(records: dict) -> list[dict]:
             detail += f" · 마지막 확인 {rep['checked_at']}" if rep.get("checked_at") else ""
             detail += f" · 자동 확인 안 함: {rep['auto_off']}" if rep.get("auto_off") else ""
             items.append(_item("ok" if rep.get("current") else "info", "릴리스", detail))
-    except Exception as exc:
+    except Exception as exc:      # 격리: 진단 항목 하나의 판독 실패가 나머지 진단을 막지 않는다
         items.append(_item("info", "릴리스", f"판독 실패 — {type(exc).__name__}: {exc}"))
     try:
-        import sync_daemon
-        rec = sync_daemon.last()
+        from . import sync_status
+        rec = sync_status.last(vault.root)
         if rec:
-            trouble = sync_daemon.trouble()
+            trouble = sync_status.trouble(vault.root)
             items.append(_item("warn" if trouble else "ok", "동기화 데몬",
                                trouble or f"마지막 주기 {_kst(rec['at'])} — {rec.get('status')}",
                                "에이전트용 안내 docs/OPERATE-AGENT.md의 Check the connection 절을 따른다 — 전송 "
                                "보류는 `setup.py --apply --sync`를 두 단계로, 돌지 않는 데몬은 그 등록을 다시 "
                                "시작한다" if trouble else None))
-    except Exception as exc:
+    except Exception as exc:      # 격리: 진단 항목 하나의 판독 실패가 나머지 진단을 막지 않는다
         items.append(_item("info", "동기화 데몬", f"판독 실패 — {type(exc).__name__}: {exc}"))
     for key, run in sorted(records["runs"].items()):
         if key.startswith("unknown/") and isinstance(run, dict):
@@ -145,9 +147,9 @@ def _engine(records: dict) -> list[dict]:
     return items
 
 
-def _mcp(adapter, servers: list[dict]) -> list[dict]:
-    server = _engine_dir() / "mcp_server.py"
-    fix = adapter.mcp_command(_python(), server) or None
+def _mcp(vault: Vault, adapter, servers: list[dict]) -> list[dict]:
+    server = engine_dir(vault) / "mcp_server.py"
+    fix = adapter.mcp_command(venv_python(vault), server) or None
     mine = [s for s in servers if base.mentions(s["tokens"], server)]
     if mine:
         out = []
@@ -159,7 +161,7 @@ def _mcp(adapter, servers: list[dict]) -> list[dict]:
             elif prefix and (bad := _probe(prefix)):
                 kind, why = bad
                 out.append(_item("fail", "MCP", f"{where} · 등록된 Python으로 서버가 뜨지 않는다 — {why}",
-                                 fix if kind == "version" else _pip(prefix)))
+                                 fix if kind == "version" else _pip(vault, prefix)))
             else:
                 out.append(_item("ok", "MCP", where))
         return out
@@ -172,13 +174,13 @@ def _mcp(adapter, servers: list[dict]) -> list[dict]:
     return [_item("warn", "MCP", f"이 vault의 MCP 서버가 등록되지 않았다({files})", fix)]
 
 
-def _hook(adapter, event: str, hooks: list[dict], run: dict | None) -> dict:
+def _hook(vault: Vault, adapter, event: str, hooks: list[dict], run: dict | None) -> dict:
     name = adapter.events[event]
-    script = _engine_dir() / "scripts" / "hooks" / adapters.SCRIPTS[event]
+    script = engine_dir(vault) / "scripts" / "hooks" / adapters.SCRIPTS[event]
     files = ", ".join(str(f) for f in adapter.hook_files())
     try:
         fix = (f"안내서(docs/GETTING-STARTED.md) {adapter.guide}단계대로 hooks.{name}에 "
-               f"`{adapter.hook_command([_python().as_posix(), script.as_posix()])}`를 등록한다")
+               f"`{adapter.hook_command([venv_python(vault).as_posix(), script.as_posix()])}`를 등록한다")
     except ValueError as e:
         fix = str(e)
     ran = f"마지막 실행 {_kst(run.get('at'))}" if run else ""
@@ -211,7 +213,7 @@ def _hook(adapter, event: str, hooks: list[dict], run: dict | None) -> dict:
             return _item("warn", f"훅 {name}", f"{where} · {ran}" if run else where, _ONE)
         limit = h.get("timeout")
         if isinstance(limit, (int, float)) and limit < base.HOOK_TIMEOUT:
-            setup = core.shell_join([str(_python()), str(_engine_dir() / "scripts" / "setup.py"), "--interactive"])
+            setup = core.shell_join([str(venv_python(vault)), str(engine_dir(vault) / "scripts" / "setup.py"), "--interactive"])
             return _item("warn", f"훅 {name}", f"{where} · 제한이 {limit}초다 — 설치는 {base.HOOK_TIMEOUT}초를 쓴다. "
                          "부하가 높으면 훅이 끝나기 전에 끊긴다", f"`{setup}`가 이 등록을 설치의 한 줄로 바꾼다")
         if run:
@@ -242,11 +244,10 @@ def _delivery(start: dict | None, overview: dict) -> dict | None:
                  "저장소 이름으로 답해야 한다")
 
 
-def _version(adapter, cli: str | None) -> dict:
+def _version(vault: Vault, adapter, cli: str | None) -> dict:
     version, source = None, ""
     try:
-        from . import integration
-        path = integration.recent_transcript(adapter.name)
+        path = conversation_capture.recent_transcript(vault, adapter.name)
         if path:
             version, source = adapter.transcript_version(path), "최근 대화"
     except (OSError, ValueError):
@@ -269,17 +270,16 @@ def _version(adapter, cli: str | None) -> dict:
     return _item("ok", "판본", f"{source} {version} (검증 {adapter.verified})")
 
 
-def _fork(adapter) -> dict:
-    from . import response_growth
+def _fork(vault: Vault, adapter) -> dict:
     try:
-        executable = response_growth.configured(adapter.name)
+        executable = response_growth.configured(vault, adapter.name)
         if executable is False:
             return _item("info", "fork", "대화별 검토를 껐다 — fork도 세션 안 9·15턴 검토도 없고, "
                          "끝난 대화는 정기 실행이 통합한다")
         if not executable:
             return _item("info", "fork", "구독 fork를 설정하지 않았다 — 세션 안에서 9·15턴 검토로 동작한다",
                          "켜려면 SETUP의 '대화별 검토 훅'대로 .osk/response-growth.json에 CLI 경로를 둔다")
-        verdict = response_growth.check(adapter.name, None, None, os.getcwd())
+        verdict = response_growth.check(vault, adapter.name, None, None, os.getcwd())
     except (OSError, ValueError) as exc:
         return _item("warn", "fork", f"설정을 판정하지 못했다 — {exc}")
     if verdict["mode"] == "background":
@@ -288,7 +288,7 @@ def _fork(adapter) -> dict:
                  f"근거는 `fork doctor --harness {adapter.name}`로 본다")
 
 
-def _host(adapter, records: dict) -> dict:
+def _host(vault: Vault, adapter, records: dict) -> dict:
     head = {"harness": adapter.name, "title": adapter.title}
     prefix = adapter.name + "/"
     ran = {k[len(prefix):]: v for k, v in records["runs"].items()
@@ -300,8 +300,8 @@ def _host(adapter, records: dict) -> dict:
                 "items": [_item("info", "설치", f"이 기기에서 쓴 흔적이 없다({home}) — 건너뛴다")]}
     servers, hooks, errors = adapter.registrations()
     items = [_item("warn", "설정 판독", e) for e in errors]
-    items += _mcp(adapter, servers)
-    items += [_hook(adapter, event, hooks, ran.get(event)) for event in adapters.SCRIPTS]
+    items += _mcp(vault, adapter, servers)
+    items += [_hook(vault, adapter, event, hooks, ran.get(event)) for event in adapters.SCRIPTS]
     now = time.time()
     for event in adapters.SCRIPTS:
         at = records.get("duplicates", {}).get(prefix + event)
@@ -312,39 +312,38 @@ def _host(adapter, records: dict) -> dict:
     delivery = _delivery(ran.get("start"), records["overview"])
     if delivery:
         items.append(delivery)
-    items.append(_version(adapter, cli))
+    items.append(_version(vault, adapter, cli))
     if adapter.fork:
-        items.append(_fork(adapter))
+        items.append(_fork(vault, adapter))
     return {**head, "in_use": True, "items": items}
 
 
-def _migrations() -> list[tuple[str, object, object]]:
+def _migrations(vault: Vault) -> list[tuple[str, object, object]]:
     """호환성·일괄 이행 — (이름, 옮길 대상, 적용). 체제가 바뀌어 옛 표기·자리를 옮겨야 하면 여기에 더한다
     (2026-11-09 사용자 결정): 점검은 `osk doctor`가 읽기만 하고, 적용은 `osk doctor --migrate` 하나가 확인을
     받은 뒤 이 순서로 한다. 대상은 옮길 것의 정체(자리·해시) 목록이고 확인은 그 목록에 묶인다. 근거 절
     이행이 기록 이관보다 먼저다 — 라운드 날짜를 기록의 지금 경로에 대한 git blame으로 정하므로, 먼저
     옮긴 기록은 거기서 추적되지 않아 그 항목이 보류된다. 앞 이행이 만든 표기는 뒤 이행이 받는다."""
-    from . import evidence_migration as em, raw
     return [("비노드 derived-from → 관측 줄 (v5.4)",
-             lambda: [[n["path"], n["before"]] for n in em.plan()["nodes"] if n["new"]],
-             lambda targets: em.apply(expect=targets)),
+             lambda: [[n["path"], n["before"]] for n in em.plan(vault)["nodes"] if n["new"]],
+             lambda targets: em.apply(vault, expect=targets)),
             ("옛 자리의 인용 기록 → 루트 `_cited/` (v5.2)",
-             lambda: [[m["from"], m["hash"]] for m in raw.consolidate()["files"]],
-             lambda targets: raw.consolidate(apply=True, expect=targets)),
+             lambda: [[m["from"], m["hash"]] for m in raw.consolidate(vault)["files"]],
+             lambda targets: raw.consolidate(vault, apply=True, expect=targets)),
             ("관측 절 제목 `## 근거` → `# 관측` (v5.6)",
-             lambda: [[it["path"], it["before"]] for it in em.heading_plan() if it["new"] is not None],
-             lambda targets: em.heading_apply(expect=targets))]
+             lambda: [[it["path"], it["before"]] for it in em.heading_plan(vault) if it["new"] is not None],
+             lambda targets: em.heading_apply(vault, expect=targets))]
 
 
 MIGRATE_FIX = "`osk doctor --migrate`로 옮긴다 — 첫 실행은 계획만 보이고, 확인 뒤 1시간 안의 같은 실행이 적용한다"
 
 
-def _vault() -> list[dict]:
+def _vault(vault: Vault) -> list[dict]:
     items = []
-    for name, targets, _apply in _migrations():
+    for name, targets, _apply in _migrations(vault):
         try:
             n = len(targets())
-        except Exception as exc:
+        except Exception as exc:      # 격리: 진단 항목 하나의 판독 실패가 나머지 진단을 막지 않는다
             items.append(_item("info", name, f"판독 실패 — {type(exc).__name__}: {exc}"))
             continue
         items.append(_item("warn", name, f"옮길 대상 {n}개", MIGRATE_FIX) if n
@@ -359,19 +358,19 @@ MIGRATE_INSTRUCTION = ("여기서 멈추고 사용자에게 옮길 기록과 이
                        "새 확인을 요구한다.")
 
 
-def migrate() -> tuple[dict, int]:
+def migrate(vault: Vault) -> tuple[dict, int]:
     """남은 이행을 적용한다 — (결과, 종료 코드). 이행은 자료 이관이라 사용자가 계획을 본 뒤에 적용한다
     (Mechanism §1 4항·§5 4항·§9 5항). 첫 실행은 이행마다 옮길 대상과 `approval_required`를 내고 2로 끝난다.
     1시간 안에 같은 계획으로 다시 실행하면 순서대로 적용하고, 이행마다 전수 목록과 이행 기록을 남긴다.
     계획은 이 vault 자리와 대상의 정체로 짓는다 — worktree는 확인표 자리를 함께 쓰고(공통 git 디렉터리),
     개수만으로는 다른 대상으로 바뀐 계획을 가르지 못한다. 적용 전에 옛 정의로 적은 재검토 기록을 지금
     정의로 이어 적는다 — 그러지 않으면 바이트가 바뀐 노드의 기록이 옛 정의로 맞지 않아 그 쌍이 후보가 된다."""
-    plan = {"root": str(core.ROOT),
-            "migrations": [[name, found] for name, targets, _ in _migrations() if (found := targets())]}
+    plan = {"root": str(vault.root),
+            "migrations": [[name, found] for name, targets, _ in _migrations(vault) if (found := targets())]}
     if not plan["migrations"]:
         return {"ok": True, "applied": []}, 0
     review_id = core.sha256_bytes(json.dumps(plan, ensure_ascii=False, sort_keys=True).encode())
-    ticket = core.local_lock_path(CONFIRM_TICKET)
+    ticket = core.local_lock_path(CONFIRM_TICKET, vault.root)
     try:
         pending = json.loads(ticket.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -383,12 +382,11 @@ def migrate() -> tuple[dict, int]:
         return {"ok": False, "approval_required": True, "review_id": review_id, "plan": plan,
                 "instruction": MIGRATE_INSTRUCTION}, 2
     ticket.unlink(missing_ok=True)   # 한 번만 — 실패한 적용도 새 확인을 요구한다
-    from . import rechecks
-    rechecks.ensure_baseline(carry=True)
+    rechecks.ensure_baseline(vault, carry=True)
     confirmed = dict(plan["migrations"])
     after: dict[str, str] = {}   # 이 실행의 앞선 이행이 쓴 노드 → 결과 해시. 뒤 이행은 그것을 예상값으로 받는다
     done = []
-    for name, _targets, apply in _migrations():
+    for name, _targets, apply in _migrations(vault):
         if name in confirmed:
             result = apply([[p, after.get(p, h)] for p, h in confirmed[name]])
             after.update(result.pop("after", {}))
@@ -396,16 +394,16 @@ def migrate() -> tuple[dict, int]:
     return {"ok": True, "applied": done}, 0
 
 
-def report(only: str | None = None) -> dict:
+def report(vault: Vault, only: str | None = None) -> dict:
     """호스트별 점검 결과. `only`는 하네스 이름 하나로 좁힌다."""
-    records = {**runs.read(), "duplicates": runs.duplicates()}
-    engine = _engine(records)
-    vault = _vault()
-    hosts = [_host(a, records) for a in adapters.ADAPTERS if only in (None, a.name)]
-    items = engine + vault + [i for h in hosts for i in h["items"]]
+    records = {**runs.read(vault), "duplicates": runs.duplicates(vault)}
+    engine = _engine(vault, records)
+    content = _vault(vault)
+    hosts = [_host(vault, a, records) for a in adapters.ADAPTERS if only in (None, a.name)]
+    items = engine + content + [i for h in hosts for i in h["items"]]
     counts = {level: sum(i["level"] == level for i in items) for level in LEVELS}
-    return {"ok": not counts["fail"], "root": str(core.ROOT), "counts": counts,
-            "engine": engine, "vault": vault, "hosts": hosts}
+    return {"ok": not counts["fail"], "root": str(vault.root), "counts": counts,
+            "engine": engine, "vault": content, "hosts": hosts}
 
 
 def _section(lines: list, title: str, items: list) -> None:
@@ -441,12 +439,11 @@ def _first(errs: list, n: int = 3) -> str:
     return " / ".join(map(str, errs[:n])) + (f" 외 {len(errs) - n}건" if len(errs) > n else "")
 
 
-def _vault_items() -> list[dict]:
+def _vault_items(vault: Vault, read_tools) -> list[dict]:
     """vault 내용 점검의 항목 — 남은 이행(`_vault`), 기록 충돌, 검증기, 잔재, 적체. 읽기만 한다."""
-    from . import evictions, integration, raw, scope_memory, validate
-    rep = validate.run()
-    items = _vault()
-    for c in raw.consolidate()["conflicts"]:
+    rep = validate.run(vault, read_tools)
+    items = _vault(vault)
+    for c in raw.consolidate(vault)["conflicts"]:
         items.append(_item("warn", "기록 충돌", f"{c['path']} — {c['reason']}",
                            "어느 사본이 정본인지 사용자와 정한다 — 엔진은 덮거나 합치지 않는다"))
 
@@ -468,23 +465,22 @@ def _vault_items() -> list[dict]:
         items.append(_item("warn", "근거 재검토", f"후보 {rc}건이 닫히지 않았다",
                            "`osk.cli rechecks`의 후보마다 노드와 근거를 읽고, 맞으면 update_node(rechecked=[대상])로 "
                            "닫는다 — cascade거나 다음 노드까지 고치게 되는 수정은 사용자에게 올린다"))
-    blocked = integration.blocked(limit=1000)
+    blocked = conversation_state.blocked(vault, limit=1000)
     if blocked["count"]:
         gone = sum(c["error"].startswith("FileNotFoundError") for c in blocked["conversations"])
         items.append(_item("warn", "포착 막힘", f"대화 {blocked['count']}건"
                            + (f" — 그중 {gone}건은 원본 전사가 이 기기에서 지워졌다" if gone else "")
                            + f" · 최근 오류: {blocked['conversations'][0]['error'][:160]}",
                            "잃은 것은 없다 — 검토는 9·15턴에 계속된다. 오류를 사용자에게 보인다"))
-    for r in scope_memory.recovery_status():
+    for r in scope_memory.recovery_status(vault):
         items.append(_item("warn", "scope 복구 대기", f"{r['session']} → {r['scope'] or '착지 미정'} · {r['since']}부터",
                            f"프로젝트 {r['session']}의 새 세션을 열면 시작 훅이 복구 절차를 싣는다"))
-    for scope, s in sorted(evictions.status().items()):
+    for scope, s in sorted(evictions.status(vault).items()):
         items.append(_item("warn" if s["overdue"] else "info", "정돈 대기",
                            f"{scope} — 미처분 {s['unsettled']}건, 가장 오래된 것 {s['oldest_days']}일",
                            f"`osk.cli tidy prompt --scope {scope}`의 프롬프트로 정돈 세션을 연다"))
-    from . import growth_daily
     try:
-        b = growth_daily.backlog()
+        b = growth_daily.backlog(vault)
     except (OSError, ValueError, KeyError, TypeError) as exc:
         items.append(_item("info", "대화 검토 적체", f"세지 못했다 — {type(exc).__name__}: {exc}"))
     else:
@@ -502,11 +498,12 @@ def _vault_items() -> list[dict]:
     return items
 
 
-def vault() -> tuple[dict, int]:
-    """(보고, 종료 코드) — 읽기만 한다. 실패가 있으면 1이다. 남은 이행의 적용은 `migrate`가 한다."""
-    items = _vault_items()
+def vault(vault: Vault, read_tools) -> tuple[dict, int]:
+    """(보고, 종료 코드) — 읽기만 한다. 실패가 있으면 1이다. 남은 이행의 적용은 `migrate`가 한다.
+    `read_tools`는 검증기에 건넬 표면의 도구 목록이다(`validate.run`)."""
+    items = _vault_items(vault, read_tools)
     counts = {level: sum(i["level"] == level for i in items) for level in LEVELS}
-    rep = {"ok": not counts["fail"], "root": str(core.ROOT), "counts": counts, "items": items}
+    rep = {"ok": not counts["fail"], "root": str(vault.root), "counts": counts, "items": items}
     return rep, 0 if rep["ok"] else 1
 
 

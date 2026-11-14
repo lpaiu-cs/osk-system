@@ -34,7 +34,9 @@ from datetime import datetime
 from pathlib import Path
 
 from . import epoch
-from .layout import space_roots, adapt_path
+from .errors import LedgerDamage
+from .layout import adapt_path
+from .vault import Vault
 from ._portalock import lock_exclusive, unlock
 
 B36 = string.digits + string.ascii_lowercase
@@ -55,29 +57,7 @@ def __getattr__(name: str):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-def vault_root() -> Path:
-    env = os.environ.get("OSK_VAULT_ROOT")
-    if env:
-        return Path(env).resolve()
-    # <vault>/_governance/_engine/osk/core.py — 4단계 위가 vault 루트다
-    return Path(__file__).resolve().parent.parent.parent.parent
-
-
-ROOT = vault_root()
-SPACE_ROOTS = space_roots(ROOT)
-SCOPE, DOMAIN, PERSON = (SPACE_ROOTS[k] for k in ("Scope", "Domain", "Person"))
-LEDGER = ROOT / SCOPE / "Workbench/_ledger"
-SIGNATURES = LEDGER / "signatures.jsonl"
-CANDIDATES = LEDGER / "case" / "candidates.jsonl"
-PINS = LEDGER / "pins.jsonl"
-VALIDATORS = LEDGER / "validators.jsonl"   # 검증기 활성화 기록 (Mechanism §6-1)
-ROUTING = LEDGER / "routing.jsonl"       # 세션→scope 라우팅 (Mechanism §6-2 3항)
-EVICTIONS = LEDGER / "evictions.jsonl"   # 퇴출 기록부 (Mechanism §9-2 12항)
-ROOTS = LEDGER / "roots.jsonl"           # 외부 루트 선언 (Mechanism §1 6항)
-_MUTATION_LOCK_PATH: Path | None = None
-
-
-def local_lock_path(name: str, root: Path | None = None) -> Path:
+def local_lock_path(name: str, root: Path) -> Path:
     """기기 로컬 잠금 파일의 경로 — **추적 트리 밖으로만** 고른다.
 
     엔진의 primitive다. 동기화는 이 체계의 필수 구성요소가 아니라 쓰는 사람만
@@ -92,7 +72,7 @@ def local_lock_path(name: str, root: Path | None = None) -> Path:
 
     추적 트리 안에 두지 않는 이유: `git add -A`에 딸려 들어가고, checkout이
     그 pathname의 inode를 갈면 "같은 경로 = 같은 mutex" 전제가 깨진다."""
-    r = Path(root) if root is not None else ROOT
+    r = Path(root)
     dot = r / ".git"
     try:
         if dot.is_dir():
@@ -116,16 +96,14 @@ def local_lock_path(name: str, root: Path | None = None) -> Path:
     return Path(tempfile.gettempdir()) / f"{stem}-{key}.lock"
 
 
-def mutation_lock_path() -> Path:
+@functools.cache
+def mutation_lock_path(vault: Vault) -> Path:
     """working-tree 변경 상호배제 잠금의 경로 — 동기화(sync·update)가 잡는
     `osk-mutation.lock`과 **같은 파일**이다.
 
     이름을 공유해야 데몬의 `pull(rebase)`가 반려의 파괴 구간과 경합하지 않는다.
-    프로세스마다 한 번만 해석한다 — 이 잠금은 모든 노드 쓰기가 잡는다."""
-    global _MUTATION_LOCK_PATH
-    if _MUTATION_LOCK_PATH is None:
-        _MUTATION_LOCK_PATH = local_lock_path("osk-mutation.lock")
-    return _MUTATION_LOCK_PATH
+    저장소마다 한 번만 해석한다 — 이 잠금은 모든 노드 쓰기가 잡는다."""
+    return local_lock_path("osk-mutation.lock", vault.root)
 
 
 class StaleEngineError(RuntimeError):
@@ -192,8 +170,11 @@ class mutation_lock:
     관문을 여기 두면 쓰는 쪽이 그것을 잊을 수 없다 — 호출부마다 걸면 새 쓰기
     통로가 생길 때 빠뜨리는 것이 언제나 가능해진다."""
 
+    def __init__(self, vault: Vault):
+        self.vault = vault
+
     def __enter__(self):
-        path = mutation_lock_path()
+        path = mutation_lock_path(self.vault)
         path.parent.mkdir(parents=True, exist_ok=True)
         self._f = open(path, "w")
         lock_exclusive(self._f)
@@ -218,12 +199,12 @@ class mutation_lock:
 
 
 @contextmanager
-def device_lock():
+def device_lock(vault: Vault):
     """기기 로컬 설정(`.osk/`)을 읽고 고치는 동안 mutation 잠금을 쥔다. 동기화 데몬은 이 잠금 안에서
     rebase하고 그 rebase가 바꾼 `.osk/` 파일을 rebase 전 바이트로 되돌린다(`vault_sync.rebase_snapshot`)
     — 그 사이에 읽은 설정은 다른 기기의 판본일 수 있고, 쓴 설정은 되돌리기에 덮인다. 노드 쓰기가
     아니므로 판본 관문(`_fence`)은 세우지 않는다."""
-    path = mutation_lock_path()
+    path = mutation_lock_path(vault)
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w") as f:
         lock_exclusive(f)
@@ -238,8 +219,8 @@ TS_RE = r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2} \(KST\)$"
 # id도 그대로 유효하다(길이가 다르므로 신·구가 충돌할 수 없다).
 #
 # 이것은 유효성 검사가 아니라 **판별자**다 — "이 문자열은 id인가 이름인가"를
-# 가르는 자리로 여섯 곳에서 쓰인다(resolve·_score_key·_live_locate·_as_links·
-# _check_edges·read_node). 넓히면 id로 읽히는 노드 제목의 집합이 넓어지므로,
+# 가르는 자리로 여섯 곳에서 쓰인다(resolve·_score_key·live_locate·_as_links·
+# node_checks.check_edges·read_node). 넓히면 id로 읽히는 노드 제목의 집합이 넓어지므로,
 # 넓히는 폭은 4|8 두 값으로 한정한다.
 ID_RE = r"^\d{6}-[0-9a-z]{4}-[0-9a-z]{4}(?:[0-9a-z]{4})?$"
 RID_RE = r"^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$"
@@ -359,7 +340,7 @@ def atomic_write(path: Path, data: bytes) -> None:
     fsync**. 호출부가 이 뒤에 그 파일을 가리키는 대장 기록을 남기므로, 엔트리가
     기록보다 먼저 내구화돼야 전원 차단 뒤 '기록은 있는데 파일은 없는' 상태가
     생기지 않는다. 권한은 mkstemp 기본이다 — 기존 권한을 보존해야 하는 갱신은
-    `update._write_atomic`을 쓴다.
+    `update_txn.write_atomic`을 쓴다.
 
     Windows에서는 대상이나 임시 파일을 FILE_SHARE_DELETE 없이 연 읽기(Python의
     `open()`이 그렇다)가 있으면 교체가 WinError 5·32로 실패한다. 그런 읽기는 곧
@@ -393,7 +374,7 @@ def atomic_write(path: Path, data: bytes) -> None:
 _DETACHED = 0x08000200
 
 
-def spawn_worker(module: str, *, env: dict | None = None, stdin: bytes | None = None,
+def spawn_worker(vault: Vault, module: str, *, env: dict | None = None, stdin: bytes | None = None,
                  stderr=None) -> subprocess.Popen:
     """이 vault 엔진의 모듈을 **분리 프로세스**로 띄우고 기다리지 않는다 — 훅과
     표면은 곧바로 돌아간다. 부모가 끝나도 자식은 남는다(POSIX는 새 세션, Windows는
@@ -402,14 +383,14 @@ def spawn_worker(module: str, *, env: dict | None = None, stdin: bytes | None = 
     부모의 표준 입출력은 물려주지 않는다. stdio로 도는 MCP 표면의 파이프를 자식이
     쥐면 표면의 입력을 가로채거나 표면의 종료를 붙잡는다. `stdin`을 주면 그 바이트만
     넘기고 닫는다. `stderr`는 열린 파일을 주면 거기 쓰고, 주지 않으면 버린다."""
-    child_env = {**os.environ, "OSK_VAULT_ROOT": str(ROOT),
+    child_env = {**os.environ, "OSK_VAULT_ROOT": str(vault.root),
                  "PYTHONPATH": str(Path(__file__).resolve().parents[1]), **(env or {})}
     proc = subprocess.Popen(
         [sys.executable, "-m", module],
         stdin=subprocess.DEVNULL if stdin is None else subprocess.PIPE,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL if stderr is None else stderr,
-        env=child_env, cwd=ROOT, shell=False, start_new_session=os.name != "nt",
+        env=child_env, cwd=vault.root, shell=False, start_new_session=os.name != "nt",
         creationflags=_DETACHED if os.name == "nt" else 0)
     if stdin is not None:
         try:
@@ -434,11 +415,11 @@ def shell_join(argv) -> str:
     return ("& " if quoted and quoted[0] != argv[0] else "") + " ".join(quoted)
 
 
-def cli_command(*args: str) -> str:
+def cli_command(vault: Vault, *args: str) -> str:
     """이 vault의 `osk.cli`를 부르는 **한 줄 명령** — 에이전트가 제 셸에 그대로
     붙인다. vault 루트와 엔진 자리를 명령 안에 실으므로 작업 폴더·`PYTHONPATH`와
     무관하다."""
-    code = (f"import os,runpy,sys;os.environ['OSK_VAULT_ROOT']={str(ROOT)!r};"
+    code = (f"import os,runpy,sys;os.environ['OSK_VAULT_ROOT']={str(vault.root)!r};"
             f"sys.path.insert(0,{str(Path(__file__).resolve().parents[1])!r});"
             "runpy.run_module('osk.cli',run_name='__main__')")
     return shell_join([sys.executable, "-c", code, *args])
@@ -458,20 +439,20 @@ def posix_rel(p: Path, relative_to: Path) -> str:
     return p.relative_to(relative_to).as_posix()
 
 
-def resolve_in_root(rel_or_abs: str | Path) -> Path | None:
+def resolve_in_root(vault: Vault, rel_or_abs: str | Path) -> Path | None:
     """대장·사건부에 적힌 경로 문자열을 **vault 안으로 봉쇄** 해석한다.
     대장은 다기기 병합으로 임의의 내용이 유입될 수 있는 신뢰 밖 입력이므로,
     `..`·절대 경로·심볼릭 링크로 루트를 벗어나면 None(=해석 실패)이다.
     실패는 호출부에서 언제나 거부·불일치 쪽으로 처리한다."""
     try:
         p = Path(rel_or_abs)
-        if p.is_absolute() and p.is_relative_to(ROOT):
-            p = Path(adapt_path(p.relative_to(ROOT).as_posix(), SPACE_ROOTS))
+        if p.is_absolute() and p.is_relative_to(vault.root):
+            p = Path(adapt_path(p.relative_to(vault.root).as_posix(), vault.space_roots))
         elif not p.is_absolute():
-            p = Path(adapt_path(str(p), SPACE_ROOTS))
-        cand = p if p.is_absolute() else ROOT / p
+            p = Path(adapt_path(str(p), vault.space_roots))
+        cand = p if p.is_absolute() else vault.root / p
         real = Path(os.path.realpath(cand))
-        root = Path(os.path.realpath(ROOT))
+        root = Path(os.path.realpath(vault.root))
         if real != root:
             real.relative_to(root)      # 벗어나면 ValueError
         return real
@@ -479,7 +460,7 @@ def resolve_in_root(rel_or_abs: str | Path) -> Path | None:
         return None
 
 
-def _within(base: Path, rel: str) -> Path | None:
+def resolve_within(base: Path, rel: str) -> Path | None:
     """rel을 base 안으로 봉쇄한 **정규 절대 경로** — 아니면 None. release 증빙
     key와 (다기기 병합되는) 저널 path는 **신뢰 밖 입력**이므로, 어느 I/O 전에도
     이 봉쇄를 통과한다. 두 겹으로 막는다: ①`.`/`..` segment·절대경로를 문자열
@@ -501,14 +482,14 @@ def _within(base: Path, rel: str) -> Path | None:
         return None
 
 
-def _canon_rel(base: Path, rel: str) -> str | None:
+def canon_rel(base: Path, rel: str) -> str | None:
     """봉쇄된 canonical base-상대 경로(posix) — 탈출·재진입·**경로 정체성 훼손**은
     None. floor·I/O 판정은 raw 문자열이 아니라 이 canonical 경로에 건다. realpath가
     lexical 경로와 다르면(경로 구성요소에 symlink) 다른 프레임워크 파일로 write가
     재지정된 것이므로 거부한다 — symlink 탈출만이 아니라 ROOT **내부** alias도 막는다
     (예: `docs/SETUP.md -> _engine/osk/core.py`). 정션과 (Windows에서는) 대소문자만 바뀐 이름도
     realpath가 다른 자리를 내므로 같이 걸린다 — 갱신과 반려가 이 계약을 공유한다."""
-    p = _within(base, rel)
+    p = resolve_within(base, rel)
     if p is None:
         return None
     try:
@@ -522,13 +503,13 @@ def _canon_rel(base: Path, rel: str) -> str | None:
 
 # ── rid — 시각 48비트 + 시퀀스 12비트 (생성 단조 표식) ────────────────────
 
-def _rid_parts(rid: str) -> tuple[int, int]:
+def rid_parts(rid: str) -> tuple[int, int]:
     h = rid.replace("-", "")
     return int(h[0:12], 16), int(h[12:16], 16) & 0x0FFF
 
 
-def _rid_key(rid: str) -> tuple[int, int, str]:
-    ms, seq = _rid_parts(rid)
+def rid_key(rid: str) -> tuple[int, int, str]:
+    ms, seq = rid_parts(rid)
     return (ms, seq, rid)
 
 
@@ -545,7 +526,7 @@ def _next_rid(max_rid: str | None) -> str:
     섞여 있어도 최대값이 바닥이다."""
     now_ms = int(time.time() * 1000)
     if max_rid:
-        last_ms, last_seq = _rid_parts(max_rid)
+        last_ms, last_seq = rid_parts(max_rid)
         if now_ms > last_ms:
             return _make_rid(now_ms, 0)
         seq = last_seq + 1
@@ -569,22 +550,34 @@ def _parse_lines(text: str, path: Path) -> list[dict]:
             continue
         try:
             rec = json.loads(line)
-        except json.JSONDecodeError as e:
-            raise ValueError(
+        # 해석기가 내는 것을 다 받는다 — 문법 오류(`JSONDecodeError`)만이 아니라 자릿수 상한을 넘는 정수도
+        # `ValueError`이고, 깊이 겹친 행은 `RecursionError`다.
+        except (ValueError, RecursionError) as e:
+            raise LedgerDamage(
                 f"대장 손상(부분 행) {path}:{i+1} — 수동 복구 절차 필요") from e
         if not isinstance(rec, dict):
-            raise ValueError(
+            raise LedgerDamage(
                 f"대장 손상(기록이 아닌 행) {path}:{i+1} — 수동 복구 절차 필요")
         out.append(rec)
     return out
 
 
+def _not_utf8(path: Path, e: UnicodeDecodeError) -> LedgerDamage:
+    return LedgerDamage(f"대장 손상(UTF-8이 아닌 바이트 {e.start}) {path} — 수동 복구 절차 필요")
+
+
 def ledger_read(path: Path) -> list[dict]:
     """파일 순서 그대로 반환한다. 판정의 정본은 인과(parents)이며,
-    유산 구간(앵커 이전)은 파일 순서가 인과다."""
+    유산 구간(앵커 이전)은 파일 순서가 인과다.
+
+    올리는 것은 둘뿐이다 — 읽지 못하면 `OSError`, 읽었는데 기록으로 해석되지 않으면 `LedgerDamage`."""
     if not path.exists():
         return []
-    return _parse_lines(path.read_text(encoding="utf-8"), path)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as e:
+        raise _not_utf8(path, e) from e
+    return _parse_lines(text, path)
 
 
 def ledger_damage(records: list[dict], path: Path | str = "") -> list[str]:
@@ -668,7 +661,7 @@ def heads(records: list[dict]) -> list[str]:
     return [rid for rid in par if rid not in referenced]
 
 
-def _ancestors(rid: str, par: dict[str, list[str]]) -> set[str]:
+def ancestors(rid: str, par: dict[str, list[str]]) -> set[str]:
     seen: set[str] = set()
     stack = list(par.get(rid, []))
     while stack:
@@ -699,7 +692,7 @@ def causal_maxima(records: list[dict], value: str,
     if candidate is not None:
         mine = [r for r in mine if candidate(r)]
     rids = {r["rid"] for r in mine}
-    anc = {r["rid"]: _ancestors(r["rid"], par) for r in mine}
+    anc = {r["rid"]: ancestors(r["rid"], par) for r in mine}
     return [r for r in mine
             if not any(r["rid"] in anc[o] for o in rids if o != r["rid"])]
 
@@ -760,11 +753,14 @@ def ledger_extend(path: Path, new: list[dict], expect=None) -> list[dict]:
         lock_exclusive(f)
         try:
             f.seek(0)
-            text = f.read()
+            try:
+                text = f.read()
+            except UnicodeDecodeError as e:
+                raise _not_utf8(path, e) from e
             records = _parse_lines(text, path)
             dmg = ledger_damage(records, path)
             if dmg:
-                raise ValueError(
+                raise LedgerDamage(
                     f"대장 손상 — 수동 복구 절차 필요 (Mechanism §3 8항): "
                     + "; ".join(dmg[:5]))
             if expect is not None:
@@ -772,7 +768,7 @@ def ledger_extend(path: Path, new: list[dict], expect=None) -> list[dict]:
                 if why:
                     raise ValueError(why)
             last = max((r["rid"] for r in records if r.get("rid")),
-                       key=_rid_key, default=None)
+                       key=rid_key, default=None)
             hs, rows = heads(records), []
             for record in new:
                 record["rid"] = last = _next_rid(last)

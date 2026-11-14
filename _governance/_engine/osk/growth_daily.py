@@ -20,24 +20,22 @@
 from __future__ import annotations
 
 import json
-import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import re
-import subprocess
-import threading
 import time
 
-from . import core, growth, integration
+from . import (core, growth, integration, growth_status, raw, transcripts, conversation_capture, conversation_review,
+               growth_ledger, worker_process)
+from .vault import Vault
+from . import worker_usage
 
-PROVIDERS = ("codex", "claude")          # 선호 순서 — Codex 예산을 넘는 몫은 Claude가 맡는다
 DAY_SECONDS = 90 * 60                    # 하루 벽시계 예산; 작업 스케줄러 제한은 이것 + 30분이다
 SCOPE_ROUNDS = growth.SCOPE_ROUNDS_PER_JOB
 SCOPE_TIMEOUT = 900                      # 9라운드 작업은 대화별 검토 실측으로 최대 9.8분이다
 LIGHT_SIZE, LIGHT_TIMEOUT = 3, 600
-LIGHT = tuple(q for q in growth._QUEUES if q != "scope_jobs")
+LIGHT = tuple(q for q in growth_ledger.QUEUES if q != "scope_jobs")
 BUSY_WAIT = 600                          # 잠금을 쥔 대화별 검토는 작업자 시한(600초) 안에 끝난다
-MISS_BELOW = 0.9                         # 적중률(캐시 읽기 ÷ 입력)이 이보다 낮은 요청이 미스다
 WEEK = 7                                 # D — 소진일에도 Claude로 대신 돌므로 매일 돈다
 REST_AT = 0.9                            # 공급자의 주간 사용률이 이 이상이면 쉰다(#306 D3)
 OLD_SHARE = 4                            # 오래된 대기는 4주에 나눠 갚는다
@@ -48,158 +46,7 @@ SCOPE_UNIT_COST = 150_000
 BACKLOG_COMMAND = ("`osk growth run --daily --backlog --command-file .osk/growth-command.json`(Claude 워커가 "
                    "있으면 `--command-file .osk/growth-command-claude.json`을 더한다)로 일괄로 돈다 — 하루 한도 "
                    "없이 대기열이 빌 때까지 Scope 묶음만 돌고, 공급자는 주간 사용률 0.9에서 쉰다")
-NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 DAYS = Path(".osk/growth/days.jsonl")    # 하루 실행의 멈춘 까닭과 묶음 수 — 기기 소유(Mechanism §9-4 5항)
-
-
-def provider(command: list[str]) -> str | None:
-    """명령의 공급자 — 실행 파일 이름(`codex`·`claude`)이다. 그 밖의 명령은 한도도 예산도 모른다."""
-    name = Path(command[0]).stem.lower() if command else ""
-    return name if name in PROVIDERS else None
-
-
-def codex_limits(executable: str, timeout: float = 30) -> dict:
-    """`codex app-server`의 `account/rateLimits/read` — 모델을 부르지 않는다(codex-cli 0.154 확인).
-    소진은 크레딧까지 바닥난 상태다: `rateLimitReachedType`이나 `spendControlReached`가 서 있거나,
-    포함 사용량도 크레딧도 없다. 주간 창이 100%여도 크레딧이 있으면 소진이 아니다. 답하지 못하면
-    신호 없음이고 소진과 같이 다룬다."""
-    from . import response_growth
-    requests = [{"id": 0, "method": "initialize", "params": {"clientInfo": {"name": "osk", "version": "1"}}},
-                {"method": "initialized"},
-                {"id": 1, "method": "account/rateLimits/read", "params": {"excludeResetCreditDetails": True}}]
-    try:
-        proc = subprocess.Popen([executable, "app-server"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                stderr=subprocess.DEVNULL, cwd=core.ROOT, env=response_growth.subscription_env(),
-                                start_new_session=os.name != "nt", creationflags=NO_WINDOW)
-    except OSError as exc:
-        return {"signal": False, "exhausted": True, "error": str(exc)}
-    answer: dict = {}
-
-    def read():
-        for line in proc.stdout:
-            try:
-                row = json.loads(line)
-            except ValueError:
-                continue
-            if isinstance(row, dict) and row.get("id") == 1:
-                answer.update(row)
-                return
-
-    reader = threading.Thread(target=read, daemon=True)
-    reader.start()
-    try:
-        proc.stdin.write(("\n".join(json.dumps(r) for r in requests) + "\n").encode("utf-8"))
-        proc.stdin.flush()
-    except OSError:
-        pass
-    reader.join(timeout)
-    growth._stop_tree(proc)
-    result = answer.get("result")
-    snap = result.get("rateLimits") if isinstance(result, dict) else None
-    if not isinstance(snap, dict):
-        return {"signal": False, "exhausted": True,
-                "error": str((answer.get("error") or {}).get("message") or "no rate-limit answer")}
-    credits = snap.get("credits") if isinstance(snap.get("credits"), dict) else {}
-    windows = {w.get("windowDurationMins"): w.get("usedPercent")
-               for w in (snap.get("primary"), snap.get("secondary")) if isinstance(w, dict)}
-    exhausted = bool(snap.get("rateLimitReachedType") or snap.get("spendControlReached")
-                     or result.get("ordinaryUsageAllowed") is not True
-                     and not (credits.get("hasCredits") or credits.get("unlimited")))
-    return {"signal": True, "exhausted": exhausted, "weekly": windows.get(10080), "five_hour": windows.get(300),
-            "ordinary": result.get("ordinaryUsageAllowed"), "credits": credits.get("balance"),
-            "has_credits": credits.get("hasCredits"), "reached": snap.get("rateLimitReachedType"),
-            "spend_control": snap.get("spendControlReached")}
-
-
-def _events(output: Path) -> list[dict]:
-    rows = []
-    for line in output.read_text(encoding="utf-8", errors="replace").splitlines():
-        try:
-            row = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(row, dict):
-            rows.append(row)
-    return rows
-
-
-def limited(output: Path, command: list[str]) -> bool:
-    """끝내지 못한 작업자가 한도에 막혔는가 — 실패가 아니라 대기다(#173). Claude는 조직 설정으로
-    초과 사용이 꺼져 있어 100%에서 거절하고, 그 거절을 `rate_limit_event`(status `rejected`)로 낸다.
-    Codex는 크레딧까지 바닥나야 거절하므로, 끝난 뒤 다시 조회해 소진이면 거절로 본다. 조회가 답하지
-    못하면 거절이 아니다 — 실행 전 선택은 신호 없음을 소진과 같이 다루지만, 이미 실패한 작업의 까닭으로
-    확정하면 작업자 오류가 대기로 묻힌다."""
-    who = provider(command)
-    try:
-        if who == "claude":
-            return any(e.get("type") == "rate_limit_event"
-                       and (e.get("rate_limit_info") or {}).get("status") == "rejected" for e in _events(output))
-    except OSError:
-        return False
-    if who != "codex":
-        return False
-    limits = codex_limits(command[0])
-    return limits["signal"] and limits["exhausted"]
-
-
-def _claude_requests(output: Path) -> tuple[list, dict | None]:
-    """요청마다 (입력 전체, 캐시 읽기, 출력) — 한 메시지의 부분들은 같은 id로 따로 나온다. 합계는
-    `result.usage`다: `result.modelUsage`는 이어받은 원 대화의 누계를 담는다."""
-    messages, total = {}, None
-    for e in _events(output):
-        message = e.get("message") or {}
-        u = message.get("usage")
-        if e.get("type") == "assistant" and isinstance(u, dict) and message.get("id"):
-            messages[message["id"]] = u
-        elif e.get("type") == "result" and isinstance(e.get("usage"), dict):
-            total = e["usage"]
-    shape = lambda u: (u.get("input_tokens", 0) + u.get("cache_creation_input_tokens", 0)
-                       + u.get("cache_read_input_tokens", 0), u.get("cache_read_input_tokens", 0),
-                       u.get("output_tokens", 0))
-    return [shape(u) for u in messages.values()], shape(total) if total else None
-
-
-def _codex_requests(output: Path) -> tuple[list, None]:
-    """요청마다 (입력 전체, 캐시 읽기, 출력) — 작업자 자신의 세션 기록(`thread.started`의 id)에서
-    읽는다. fork는 원 대화의 행을 이어받으므로 자기 `session_meta` 뒤의 행만 센다."""
-    from . import harness as adapters
-    tid = next((e.get("thread_id") for e in _events(output) if e.get("type") == "thread.started"), None)
-    paths = adapters.get("codex").transcripts(tid) if isinstance(tid, str) and tid.isprintable() and tid else []
-    if len(paths) != 1:
-        return [], None
-    rows = _events(paths[0])
-    start = next((r.get("timestamp", "") for r in rows if r.get("type") == "session_meta"), "")
-    out = []
-    for r in rows:
-        p = r.get("payload") or {}
-        u = (p.get("info") or {}).get("last_token_usage") if p.get("type") == "token_count" else None
-        if r.get("type") == "event_msg" and isinstance(u, dict) and r.get("timestamp", "") >= start:
-            out.append((u.get("input_tokens", 0), u.get("cached_input_tokens", 0), u.get("output_tokens", 0)))
-    return out, None
-
-
-def usage(output: Path, command: list[str], *, cold_first: bool) -> dict:
-    """한 실행의 토큰과 캐시 적중. 토큰은 캐시 읽기를 뺀 값(캐시 아닌 입력 + 캐시 쓰기 + 출력)이다.
-    미스는 적중률 0.9 미만인 요청이다. 정기 묶음은 `codex exec`를 새로 띄워 첫 요청이 구조적으로
-    식어 있다 — 그 냉시작은 따로 적고 판정에서 뺀다(`cold_first`). 대화별 검토의 첫 요청은 원
-    대화의 캐시를 이어받아야 하므로 판정에 넣는다."""
-    who = provider(command)
-    try:
-        requests, total = (_codex_requests(output) if who == "codex" else
-                           _claude_requests(output) if who == "claude" else ([], None))
-    except (OSError, ValueError, TypeError) as exc:
-        return {"measured": False, "reason": str(exc)}
-    if not requests and not total:
-        return {"measured": False, "reason": "no per-request usage"}
-    whole, cached, out = total or tuple(map(sum, zip(*requests)))
-    hit = lambda r: r[1] / r[0] if r[0] else 1.0
-    result = {"measured": True, "tokens": whole - cached + out, "cache_read": cached, "requests": len(requests),
-              "misses": [[i, round(hit(r), 3)] for i, r in enumerate(requests)
-                         if (i or not cold_first) and hit(r) < MISS_BELOW]}
-    if cold_first and requests:
-        first = requests[0]
-        result["cold_start"] = {"tokens": first[0] - first[1] + first[2], "hit": round(hit(first), 3)}
-    return result
 
 
 def _epoch(value) -> float | None:
@@ -211,7 +58,6 @@ def _epoch(value) -> float | None:
 
 def _scan(path: str, harness: str, sid: str, since: float, wanted: set, times: dict) -> int:
     """한 대화의 `since` 뒤 작업 토큰(캐시 읽기 제외). 검토 대기 중인 Claude 턴의 시각도 함께 모은다."""
-    from . import transcripts
     tokens, messages = 0, {}
     for line in transcripts.native_lines(path, harness, sid):
         if harness == "codex" and b'"token_count"' not in line:
@@ -244,24 +90,23 @@ def _round_at(harness: str, ident: str, times: dict) -> float | None:
     return times.get(ident.split(":", 1)[0])
 
 
-def _measure(since: float) -> dict:
+def _measure(vault: Vault, since: float) -> dict:
     """이 vault가 추적하는 대화의 원본 전사에서 `since` 뒤의 공급자별 작업 토큰, 그리고 검토할 수
     있는 대기 라운드를 `since` 앞뒤로 갈라 센다. 작업은 대화마다 9라운드씩이다. 원본이 없는 대화의
     원본 라운드는 검토할 수 없어 세지 않는다."""
-    from . import growth_status, raw
-    work = dict.fromkeys(PROVIDERS, 0)
+    work = dict.fromkeys(worker_usage.PROVIDERS, 0)
     inflow = dict.fromkeys(("new_rounds", "new_jobs", "old_rounds", "old_jobs", "unread"), 0)
-    for s in growth_status._states():
+    for s in growth_status.conversation_states(vault):
         harness, sid = s["harness"], s["conversation_id"]
         if harness not in work:
             continue
         try:
-            path = integration._locate_transcript(harness, sid, s.get("capture_path") or s["transcript_path"])
+            path = conversation_capture.locate_transcript(vault, harness, sid, s.get("capture_path") or s["transcript_path"])
             recent = bool(path) and Path(path).stat().st_mtime >= since
         except (OSError, ValueError):
             path, recent = None, False
         by_ref = {r["ref"]: r for r in s["rounds"]}
-        pending = [by_ref[ref] for ref in dict.fromkeys(integration._view(s)["pending_refs"])
+        pending = [by_ref[ref] for ref in dict.fromkeys(conversation_capture.state_view(vault, s)["pending_refs"])
                    if ref in by_ref and (path or not raw.is_native(ref))]
         times = {}
         if recent:
@@ -297,21 +142,20 @@ def _scope_unit(rows: list[dict]) -> tuple[int, int]:
     return (round(sum(got) / len(got)) if got else SCOPE_UNIT_COST), len(got)
 
 
-def backlog() -> dict:
+def backlog(vault: Vault) -> dict:
     """대화 검토 적체(#306) — 정기 실행이 지금 검토할 수 있는 대화와 턴(끝난 대화의 원본 턴과 저장
     라운드), 같은 scope의 작은 꼬리를 9턴까지 묶는 Scope 묶음 수의 추정(남는 꼬리를 큰 것부터 채운다),
     예상 토큰(Scope 묶음 단가 × 묶음 수). 대화 상태를 쓰지 않고 읽기만 한다."""
-    from . import growth_status, raw
-    unit, measured = _scope_unit(growth._records())
+    unit, measured = _scope_unit(growth_ledger.ledger_records(vault))
     scopes: dict = {}
     conversations = turns = 0
-    for s in growth_status._states():
-        refs = integration._view(s)["pending_refs"]
-        ended = bool(refs) and integration._ended_source(s)
+    for s in growth_status.conversation_states(vault):
+        refs = conversation_capture.state_view(vault, s)["pending_refs"]
+        ended = bool(refs) and conversation_capture.ended_source(vault, s)
         n = sum(1 for ref in refs if ended or not raw.is_native(ref))
         if n:
             conversations, turns = conversations + 1, turns + n
-            scopes.setdefault(integration._review_scope(s), []).append(n)
+            scopes.setdefault(conversation_review.review_scope(vault, s), []).append(n)
     batches = 0
     for scope, sizes in scopes.items():
         batches += sum(n // SCOPE_ROUNDS for n in sizes)
@@ -332,7 +176,7 @@ def _adjustments(rows: list[dict]) -> list[dict]:
             if r.get("kind") == "plan" and isinstance((r.get("daily") or {}).get("adjustment"), dict)]
 
 
-def adjust(rows: list[dict], providers: list[str], now: datetime | None = None) -> dict:
+def adjust(vault: Vault, rows: list[dict], providers: list[str], now: datetime | None = None) -> dict:
     """주간 한도 조정. N은 지난 7일 유입 가운데 정기 실행 몫(9라운드 작업 수)과 7일보다 오래된 대기
     작업의 4분의 1이다. 하루 Scope 작업 S = ⌈N÷7⌉, 하루 한도는 L = max(6, S+3)이다(+3은 가벼운 큐
     묶음 하나). 공급자별 예산으로 자르지 않는다 — 공급자는 주간 사용률 0.9에서 쉰다(`_choose`, #306 D3).
@@ -340,7 +184,7 @@ def adjust(rows: list[dict], providers: list[str], now: datetime | None = None) 
     토큰(`work`)은 판단 근거로만 남는다."""
     now = now or datetime.now(timezone.utc).astimezone()
     since = now - timedelta(days=WEEK)
-    measured = _measure(since.timestamp())
+    measured = _measure(vault, since.timestamp())
     inflow = measured["inflow"]
     n = inflow["new_jobs"] + -(-inflow["old_jobs"] // OLD_SHARE)
     s = -(-n // WEEK)
@@ -352,13 +196,13 @@ def adjust(rows: list[dict], providers: list[str], now: datetime | None = None) 
             "limit": limit, "inflow": inflow, "work": {p: measured["work"][p] for p in providers}}
 
 
-def idle(today: str | None = None) -> dict | None:
+def idle(vault: Vault, today: str | None = None) -> dict | None:
     """정기 실행이 묶음을 하나도 돌지 못한 날이 오늘까지 이어지면 그 날들과 마지막 까닭(`DAYS`). 기록이
     없는 날도 센다 — 정기 실행이 시작되지 않은 날이다(`missing`). 오늘은 기록이 있을 때만 센다(아직 돌 때가
     아닐 수 있다). 고를 작업이 없던 날(`empty`)은 쉰 것이 아니라 끊는다. 적체 일괄 실행(`backlog`)은 정기
     실행이 아니라 판정에 넣지 않는다. 이어지지 않으면 None."""
     try:
-        rows = [json.loads(line) for line in (core.ROOT / DAYS).read_text(encoding="utf-8").splitlines()
+        rows = [json.loads(line) for line in (vault.root / DAYS).read_text(encoding="utf-8").splitlines()
                 if line.strip()]
     except (OSError, ValueError):
         return None
@@ -400,7 +244,7 @@ def _next_kind(done: dict, left: set, limit: int) -> str | None:
     return "light" if "light" in left else "scope" if scope else None
 
 
-def claude_week(rows: list[dict], now: float | None = None) -> float | None:
+def claude_week(vault: Vault, rows: list[dict], now: float | None = None) -> float | None:
     """Claude의 7일 사용률(0~1) — 가장 최근 Claude 실행(정기 묶음·대화 검토 fork) 출력의 한도 알림
     (`rate_limit_event`의 `unifiedWindows.seven_day`)에서 읽는다. Claude에는 모델을 부르지 않는 조회가
     없다. 그 창이 이미 새로 열렸거나 읽은 값이 없으면 None이다. 최근 Claude 실행 20개까지만 본다."""
@@ -411,7 +255,7 @@ def claude_week(rows: list[dict], now: float | None = None) -> float | None:
             continue
         seen += 1
         try:
-            events = _events(core.ROOT / r["output"] / "stdout.txt")
+            events = worker_usage.output_events(vault.root / r["output"] / "stdout.txt")
         except OSError:
             events = []
         for e in reversed(events):
@@ -424,36 +268,36 @@ def claude_week(rows: list[dict], now: float | None = None) -> float | None:
     return None
 
 
-def _choose(commands: dict, off: dict) -> tuple[str | None, dict | None, dict]:
+def _choose(vault: Vault, commands: dict, off: dict) -> tuple[str | None, dict | None, dict]:
     """이 묶음의 공급자 — 선호 순서대로, 그날 막힌 공급자(`off`)·소진(신호 없음 포함)·주간 사용률이
     0.9에 닿은 공급자(`rest`)를 건너뛴다. Codex는 묶음마다 다시 조회하고, Claude는 최근 실행의 한도
     알림을 읽는다(`claude_week`). (공급자, Codex 조회, 건너뛴 까닭)."""
     limits, skipped = None, {}
-    for who in [p for p in PROVIDERS if p in commands] + [p for p in commands if p not in PROVIDERS]:
+    for who in [p for p in worker_usage.PROVIDERS if p in commands] + [p for p in commands if p not in worker_usage.PROVIDERS]:
         if who in off:
             skipped[who] = off[who]
             continue
         if who == "codex":
             # 실행기가 띄울 바이너리로 묻는다 — Desktop이 갱신되면 명령 파일의 옛 경로는 지워진다.
             # 쓸 수 없는 명령은 묻지 않는다: 그 묶음이 `invalid_command`로 알린다.
-            checked = growth.check_command(commands[who])
-            if checked["ok"] and (limits := codex_limits(checked["executable"]))["exhausted"]:
+            checked = worker_process.check_command(vault, commands[who])
+            if checked["ok"] and (limits := worker_usage.codex_limits(vault, checked["executable"]))["exhausted"]:
                 skipped[who] = "exhausted" if limits["signal"] else "no_signal"
                 continue
             if checked["ok"] and (limits.get("weekly") or 0) >= REST_AT * 100:
                 skipped[who] = "rest"
                 continue
-        elif who == "claude" and (claude_week(growth._records()) or 0) >= REST_AT:
+        elif who == "claude" and (claude_week(vault, growth_ledger.ledger_records(vault)) or 0) >= REST_AT:
             skipped[who] = "rest"
             continue
         return who, limits, skipped
     return None, limits, skipped
 
 
-def _batch(command: list[str], kind: str, size: int, **args) -> dict:
+def _batch(vault: Vault, command: list[str], kind: str, size: int, **args) -> dict:
     """묶음 하나. 다른 실행이 잠금을 쥐었으면(`busy`) 기다렸다가 한 번 다시 시도한다."""
     for wait in (True, False):
-        result = growth.run(command, limit=size, timeout=SCOPE_TIMEOUT if kind == "scope" else LIGHT_TIMEOUT,
+        result = growth.run(vault, command, limit=size, timeout=SCOPE_TIMEOUT if kind == "scope" else LIGHT_TIMEOUT,
                             queues=("scope_jobs",) if kind == "scope" else LIGHT, scope_rounds=SCOPE_ROUNDS,
                             scope_bundle=SCOPE_ROUNDS if kind == "scope" else 0, **args)
         if result.get("state") != "busy" or not wait:
@@ -462,31 +306,32 @@ def _batch(command: list[str], kind: str, size: int, **args) -> dict:
     return result
 
 
-def daily(commands: list[list[str]], *, invocation: str = "scheduled", backlog: bool = False) -> dict:
-    """하루 정기 성장 실행. 명령은 공급자마다 하나다(Codex, 그리고 대신 돌 Claude 워커). `backlog`는 대화
-    검토 적체를 일괄로 돈다 — 주간 조정·하루 한도·벽시계 예산 없이 Scope 묶음만, 대기열이 비거나 작업자
-    이상이 나거나 모든 공급자가 쉴 때까지."""
-    started = time.monotonic()
+def _by_provider(commands: list[list[str]]) -> dict:
+    """공급자마다 명령 하나."""
     by: dict = {}
     for command in commands:
-        who = provider(command) or "other"      # 한도도 예산도 모르는 명령
+        who = worker_usage.provider(command) or "other"      # 한도도 예산도 모르는 명령
         if who in by:
             raise ValueError(f"two growth commands for one provider ({who})")
         by[who] = command
-    errors = []
+    return by
+
+
+def _capture_first(vault: Vault) -> tuple:
+    """묶음을 돌기 전의 포착 — `(포착의 결과, 그날의 실패로 셀 것)`."""
     # 포착은 모델을 부르지 않는다 — 공급자가 모두 소진인 날에도, 주간 측정보다 먼저 한 번 한다.
     # 실패는 묶음을 막지 않지만 그날의 실패다. 이미 적힌 같은 오류(원본이 지워진 대화 등)는 대화
     # 상태와 `integration status`에 남아 있다 — 날마다 실패로 세면 새 실패가 묻힌다.
     try:
-        captured = integration.capture_known()
-    except Exception as exc:
+        captured = integration.capture_known(vault)
+    except Exception as exc:      # 격리: 포착의 실패는 오류로 적고 하루의 실행은 간다
         captured = {"captures": [], "errors": [{"error": f"{type(exc).__name__}: {exc}"}]}
     failed = captured["errors"] + [c for c in captured["captures"] if c.get("new_error")]
-    if failed:
-        errors.append({"capture": failed})
-    rows = growth._records()
-    now = datetime.now(timezone.utc).astimezone()
-    day = now.date().isoformat()
+    return captured, failed
+
+
+def _week_limit(vault: Vault, rows: list[dict], by: dict, now: datetime, backlog: bool, errors: list) -> tuple:
+    """이번 주의 하루 한도 — `(조정, 이번에 새로 정했는가)`. 주가 바뀌었으면 다시 잰다."""
     last = (_adjustments(rows) or [None])[-1]
     # 주는 날짜로 센다. 조정 시각은 포착을 마친 뒤에 적혀 날마다 몇 분씩 달라서, 시각으로 재면 같은
     # 시각의 매일 실행이 7일째에 몇 분 모자라 하루씩 밀린다(#258).
@@ -495,14 +340,17 @@ def daily(commands: list[list[str]], *, invocation: str = "scheduled", backlog: 
     adjustment = last
     if fresh:
         try:
-            adjustment = adjust(rows, [p for p in PROVIDERS if p in by], now)
+            adjustment = adjust(vault, rows, [p for p in worker_usage.PROVIDERS if p in by], now)
         except (OSError, ValueError, KeyError, TypeError) as exc:
             # 재지 못한 주는 남기지 않는다 — 다음 실행이 다시 잰다. 그동안은 지난 L(없으면 하한)로 돈다.
             errors.append({"adjustment": f"{type(exc).__name__}: {exc}"})
             fresh = False
     adjustment = adjustment or {"at": now.isoformat(timespec="seconds"), "limit": LIMIT_FLOOR}
-    recorded = fresh                 # 새로 정했으면 첫 묶음의 계획에 판단 근거를 싣는다
-    limit = adjustment["limit"]
+    return adjustment, fresh
+
+
+def _spent_today(rows: list[dict], day: str) -> tuple:
+    """그날 앞선 실행이 쓴 것 — `(다시 고르지 않을 작업, 큐마다 돈 작업 수, 쓴 초)`."""
     plans = {r["rid"]: r for r in rows if r.get("kind") == "plan"}
     today = [(plans[r["manifest"]], r) for r in rows if r.get("kind") == "run" and r.get("manifest") in plans
              and (plans[r["manifest"]].get("daily") or {}).get("day") == day]
@@ -515,10 +363,43 @@ def daily(commands: list[list[str]], *, invocation: str = "scheduled", backlog: 
     for plan, run in today:
         if plan["daily"].get("backlog"):
             continue
-        if plan["daily"].get("kind") in done and run.get("state") not in growth.WAITS:
+        if plan["daily"].get("kind") in done and run.get("state") not in growth_ledger.WAITS:
             done[plan["daily"]["kind"]] += _counted(plan["daily"]["kind"], run)
         if (begun := _at(plan)) and (ended := _at(run)):
             earlier += max(0.0, (ended - begun).total_seconds())
+    return exclude, done, earlier
+
+
+def _note_day(vault: Vault, day: str, stop: str | None, batches: list, backlog: bool, errors: list) -> None:
+    """하루 실행이 멈춘 까닭과 묶음 수를 기기의 기록에 적는다."""
+    try:
+        path = vault.root / DAYS
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps({"day": day, "at": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+                                "state": stop, "batches": len(batches), **({"backlog": True} if backlog else {})},
+                               ensure_ascii=False) + "\n")
+    except OSError as exc:
+        errors.append({"days": f"{type(exc).__name__}: {exc}"})
+
+
+def daily(vault: Vault, commands: list[list[str]], *, invocation: str = "scheduled", backlog: bool = False) -> dict:
+    """하루 정기 성장 실행. 명령은 공급자마다 하나다(Codex, 그리고 대신 돌 Claude 워커). `backlog`는 대화
+    검토 적체를 일괄로 돈다 — 주간 조정·하루 한도·벽시계 예산 없이 Scope 묶음만, 대기열이 비거나 작업자
+    이상이 나거나 모든 공급자가 쉴 때까지."""
+    started = time.monotonic()
+    by = _by_provider(commands)
+    errors = []
+    captured, failed = _capture_first(vault)
+    if failed:
+        errors.append({"capture": failed})
+    rows = growth_ledger.ledger_records(vault)
+    now = datetime.now(timezone.utc).astimezone()
+    day = now.date().isoformat()
+    adjustment, fresh = _week_limit(vault, rows, by, now, backlog, errors)
+    recorded = fresh                 # 새로 정했으면 첫 묶음의 계획에 판단 근거를 싣는다
+    limit = adjustment["limit"]
+    exclude, done, earlier = _spent_today(rows, day)
     left, off, faults = {"scope", "light"}, {}, set()
     batches, stop, skipped = [], None, {}
     while stop is None:
@@ -531,7 +412,7 @@ def daily(commands: list[list[str]], *, invocation: str = "scheduled", backlog: 
             stop = "worker_fault" if faults else "empty"
         if stop:
             break
-        who, limits, skipped = _choose(by, off)
+        who, limits, skipped = _choose(vault, by, off)
         if who is None:
             # 소진·한도 거절은 대기다(#173). 사용률 0.9에서 쉬는 것도 실패가 아니다.
             stop = ("limited" if {"exhausted", "no_signal", "limited"} & set(skipped.values()) else
@@ -541,7 +422,7 @@ def daily(commands: list[list[str]], *, invocation: str = "scheduled", backlog: 
                 "limits": limits, "skipped": skipped, **({"backlog": True} if backlog else {})}
         if recorded:
             info["adjustment"] = adjustment
-        result = _batch(by[who], kind, 1 if kind == "scope" else min(LIGHT_SIZE, limit - sum(done.values())),
+        result = _batch(vault, by[who], kind, 1 if kind == "scope" else min(LIGHT_SIZE, limit - sum(done.values())),
                         capture=False, exclude=frozenset(exclude), daily=info, invocation=invocation)
         state = result.get("state")
         if result.get("manifest"):
@@ -560,19 +441,11 @@ def daily(commands: list[list[str]], *, invocation: str = "scheduled", backlog: 
         else:
             done[kind] += _counted(kind, result)
             exclude |= set(result["progress"]["none"])
-            if growth.run_failed(result):
+            if growth_ledger.run_failed(result):
                 errors.append({"manifest": result["manifest"], "state": state, "error": result.get("error")})
                 faults.add(kind)
                 left.discard(kind)   # 작업자 이상 — 이 큐만 그날 멈춘다
-    try:
-        path = core.ROOT / DAYS
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps({"day": day, "at": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
-                                "state": stop, "batches": len(batches), **({"backlog": True} if backlog else {})},
-                               ensure_ascii=False) + "\n")
-    except OSError as exc:
-        errors.append({"days": f"{type(exc).__name__}: {exc}"})
+    _note_day(vault, day, stop, batches, backlog, errors)
     # `done`과 `day_seconds`는 그날 앞선 실행까지 더한 값이다.
     return {"ok": not errors, "state": stop, "day": day, "limit": limit, "done": done,
             "elapsed_seconds": round(time.monotonic() - started),

@@ -27,6 +27,45 @@ device.
   files again. Before you start the daemon, run `git pull` to take the ignore
   rule (`.osk/.gitignore`) first, or update the engine first.
 
+## From v5.6 to v6.0
+
+v5.7.0 was not released. v6.0.0 adds no feature: it restructures the engine
+([plan and record](v6.0-refactoring.md), in Korean).
+
+- **Nothing to do.** The governing documents did not change and there is no
+  data to move. The 12 MCP tools and 48 CLI commands keep the names and
+  arguments they had in v5.6.0. Older notations and older locations still read
+  as before.
+- **Scripts that call engine functions directly need a fix.** This means
+  scripts that put the engine on `PYTHONPATH` and call functions of `osk`. If
+  you only use the MCP tools or the `osk` commands, nothing changes for you.
+  - A function that uses the vault takes it as its first argument. Open it with
+    `Vault.open()` after `from osk.vault import Vault` and pass it. Before, the
+    vault was fixed once when the engine was imported.
+  - The large modules were split (`write`, `integration`, `growth`, `update`,
+    `approvals`, `graph`). Read a moved function from its new module.
+  - Underscore names that other modules used lost the underscore.
+  - The one-line commands in [SETUP](SETUP.md) already have the new shape.
+- **A few errors surface in a different place.** A healthy vault does not show
+  any of these.
+  - A ledger with a deeply nested row or bytes that are not UTF-8 is reported
+    as damaged. Where the error type is printed, it reads `LedgerDamage:`
+    instead of `ValueError:`.
+  - Frontmatter with deeply nested blocks is a parse failure of that one file.
+    Before, the parser crashed.
+  - An exception raised while reading a node that is not a parse failure is no
+    longer dropped quietly as a "broken file". It fails that call.
+  - The validator no longer dies when one check raises an unexpected exception.
+    It records the failure for that check and goes on. Two or more stale
+    regions are reported in name order.
+  - In a scheduled growth run's result packet, a recheck item of the wrong type
+    is refused on its own. Before, the whole packet was refused.
+- **The validator report loses "보호영역 생애 fixture".** It runs 24 checks
+  instead of 25. That check ran the designate, approve, revert and release
+  cycle of a protected region in a temporary vault on every validation. It
+  tested the engine, not your vault. The engine's test suite runs the same
+  cycle.
+
 ## From v5.5 to v5.6
 
 v5.5.1 was not released. Its changes ship in v5.6.0.
@@ -513,7 +552,7 @@ and `_raw` coordinates record. For each folder that `validate` reports:
      by a new row):
 
      ```bash
-     .venv/bin/python -c "from osk import write; print(write.bind_session('<key>', 'inbox', 'v4 upgrade'))"
+     .venv/bin/python -c "from osk import write; from osk.vault import Vault; print(write.bind_session(Vault.open(), '<key>', 'inbox', 'v4 upgrade'))"
      ```
 
 5. Review the changesets of protected regions. In a region that contains the

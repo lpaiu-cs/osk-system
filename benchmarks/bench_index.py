@@ -45,7 +45,9 @@ def worker(a):
     sys.path.insert(0, str(a.engine.resolve()))
     start, cpu = time.perf_counter(), time.process_time()
     import mcp_server as server
-    from osk import contract, graph, search
+    from osk import contract, core, graph, search
+    from osk.vault import Vault
+    VAULT = Vault.open()
     imported = {"import_ms": (time.perf_counter()-start)*1000,
                 "import_cpu_ms": (time.process_time()-cpu)*1000, **memory()}
     target = a.target or next((a.root / "00_Scope").glob("osk-system/*.md")).stem
@@ -106,7 +108,7 @@ def worker(a):
         wall, cpu_ms = (time.perf_counter()-start)*1000, (time.process_time()-cpu)*1000
         # Payload sizing and memory interrogation are outside the handler timer.
         result = {"op": cmd["op"], "wall_ms": wall, "cpu_ms": cpu_ms,
-                  **counts, **memory(), "margin_ms": graph.racy_margin_ns()/1e6,
+                  **counts, **memory(), "margin_ms": graph.racy_margin_ns(VAULT)/1e6,
                   "payload_bytes": len(json.dumps(value, ensure_ascii=False).encode())}
         if server._index is not None:
             idx = server._index

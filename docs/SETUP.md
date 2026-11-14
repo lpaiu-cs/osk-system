@@ -987,7 +987,7 @@ Kiro, Claude Code CLI, Codex CLI는 사용자가 연 폴더를 쓰므로 규칙�
 
 ```powershell
 $env:PYTHONPATH='_governance/_engine'
-.venv/Scripts/python.exe -c "from osk import workspaces; print(workspaces.add('<하네스>', '<뿌리 폴더>', r'<뿌리 아래 모양의 정규식>', '<확인한 판본>', '<설명>'))"
+.venv/Scripts/python.exe -c "from osk import workspaces; from osk.vault import Vault; print(workspaces.add(Vault.open(), '<하네스>', '<뿌리 폴더>', r'<뿌리 아래 모양의 정규식>', '<확인한 판본>', '<설명>'))"
 ```
 
 뿌리 폴더에는 `~`와 `%APPDATA%` 같은 환경 변수를 쓸 수 있다. 대장의 규칙은 엔진 규칙보다 먼저
@@ -1256,7 +1256,7 @@ git 동기화만 한다. 검색·색인 서빙은 하지 않는다 — 그것은
 등록한 데몬은 나중에 더한 원격으로, setup이 확인하기 전에는 보내지 않는다. 그 파일이 없어도
 보내지 않는다 — v5.4 전에 등록한 데몬과 손으로 등록한 데몬은 `setup --sync`를 한 번 돌려 적거나,
 `{"origin": "<fetch 주소>", "push": ["<push 대상>"]}`를 직접 둔다. fetch·push 대상 어디에든
-공개 정본이 있으면 어느 경우에도 보내지 않는다(`update.is_canonical`).
+공개 정본이 있으면 어느 경우에도 보내지 않는다(`update_state.is_canonical`).
 
 ```bash
 SYNC_ENABLED=1 .venv/bin/python _governance/_engine/sync_daemon.py --interval 900
@@ -1463,8 +1463,16 @@ osk validate                    # 전 영역 clean
   업그레이드 행렬(`OSK_MATRIX=full`)을 돈다. GitHub는 PR head 커밋의 메시지에
   `[skip ci]`가 있으면 그 PR의 CI를 건너뛴다. 그래서 릴리스 PR의 마지막 커밋에는 붙이지
   않는다.
-- 이유: 전체 회귀는 Windows에서 9~20분 걸리고, CI는 PR마다 다섯 잡을 돈다. 판 하나에
+- 이유: 전체 회귀는 Windows에서 9~20분 걸리고, CI는 PR마다 세 잡(Windows·Ubuntu·macOS)을 돈다. 판 하나에
   PR이 수십 건이므로, 검증을 릴리스 PR 한 번으로 모아 시간과 Actions 비용을 줄인다.
+- 예외: `v6.0-devel`로 가는 PR은 CI를 돈다. 구조 개편은 동작을 바꾸지 않는 대신 코드 전체를
+  옮기므로, 바꾼 시험만으로는 깨진 곳을 찾지 못한다. 그 PR의 커밋에는 `[skip ci]`를 붙이지
+  않고, 로컬에서도 정식 회귀를 돈다([개편 계획](v6.0-refactoring.md), 2026-11-10).
+  이 PR의 CI는 Ubuntu 한 잡만 돈다. 개발 기기가 Windows에서 정식 회귀를 돌린 뒤에 올리므로
+  CI는 Linux만 보고, 전체 행렬은 릴리스 PR에서 돈다(2026-11-10 사용자 결정).
+- CI의 Python은 어느 잡이든 3.11 하나다 — 지원하는 가장 낮은 판이다. 개발 기기는 3.12에서 정식
+  회귀를 돌리므로, 3.12에서만 되는 문법은 CI가 잡고 3.12 자체는 개발 기기가 본다. 3.12 이상의 판을
+  CI가 따로 보지는 않는다(2026-11-11 사용자 결정).
 
 **정본에서 — 릴리스 전 점검.** 발행 노트는 workflow가 PR 목록으로 자동으로 만든다.
 그래서 사용자가 읽어야 할 안내는 노트가 아니라 문서에 먼저 쓴다.
@@ -1526,16 +1534,18 @@ workflow 실행 전에 최종 후보를 실제 인스턴스의 사본에 적용�
 따로 받는다. 실패한 발행을 재시도할 때는 같은 비준증빙 커밋에서 실행한다.
 
 사본의 엔진은 복사해 온 대화 커서를 그대로는 보지 못한다(#242). 커서는 git 디렉터리에
-두는 기기 로컬 상태이고, vault의 절대 경로를 열쇠로 쓴다. 파일 이름(`integration.state_path`)과
+두는 기기 로컬 상태이고, vault의 절대 경로를 열쇠로 쓴다. 파일 이름(`conversation_state.state_path`,
+v5까지는 `integration.state_path`)과
 내용의 `root`가 모두 그 경로다. 갱신만 적용하면 사본의 `growth status`는
 `integration.conversations` 0을 보이고, 재검토 기준선은 확인되지 않는다. 다른 경로에서 연
 vault도 같은 이유로 기존 커서를 보지 못한다. 기준선은 다음 순서로 확인한다.
 
 1. 사본의 git 디렉터리에 복사된 커서(`osk-integration-<원본 경로 열쇠>-*.json`)와 성장
    로그(`*.growth.log`)를 사본 경로의 열쇠로 옮긴다. 내용의 `root`를 사본 경로로 고치고,
-   이름을 사본의 `integration.state_path(harness, conversation_id)`로 바꾼다. 원본 인스턴스의
+   이름을 사본의 엔진이 내는 `state_path`의 값으로 바꾼다. 원본 인스턴스의
    파일은 건드리지 않는다.
-2. 옛 엔진으로 모든 커서를 강제 포착한다(커서마다 `integration.capture`).
+2. 옛 엔진으로 모든 커서를 강제 포착한다(커서마다 `conversation_capture.capture`, v5까지는
+   `integration.capture`).
 3. 사본에 갱신을 적용한다.
 4. 새 엔진으로 다시 모든 커서를 강제 포착한다.
 5. 커서마다 오류, 포착·상속 라운드, 검토 대기를 견준다. 달라진 커서는 원인을 확인한 뒤에
@@ -1591,7 +1601,7 @@ v3.20.x의 updater에는 이 관문이 없다. 최초 전환 때는 **검토한 
 - `--adopt`는 방향이 반대다 — "현재 릴리스를 기준선 삼는다"는 뜻이므로 로컬
   수정을 **덮는다.** 대신 덮기 전 내용을 `<이름>.local-<버전>`으로 남기고,
   보고의 `adopted`에 그 경로들을 따로 싣는다. 성공하면 pre-image는 지워지므로
-  (`_txn_clear`) 그 사이드카가 유일한 회수 경로다 — 편입 뒤 `adopted`를 보고
+  (`update_txn.txn_clear`) 그 사이드카가 유일한 회수 경로다 — 편입 뒤 `adopted`를 보고
   필요한 것을 되살린 다음 사이드카를 지운다. 같은 이름의 사이드카가 이미 있고
   내용이 다르면 **편입을 시작하지 않는다** — 그 사이드카를 쓰지 못한 채 원본을
   덮으면 지금 파일의 수정이 어디에도 남지 않기 때문이다. 그 파일을 확인해

@@ -22,15 +22,15 @@ scope 기억의 상한 초과 거부 **직후의 첫 성공한 쓰기**가 저�
 지우지 않는다 — 처분 뒤에도 "무엇이 잘려 어디로 갔는가"가 남는다.
 """
 from __future__ import annotations
-from .core import SCOPE
 import re
 import time
 from datetime import datetime
 
-from .core import (EVICTIONS, RID_RE, ID_RE, ledger_read, ledger_damage,
-                   ledger_append, ledger_anchor_index, mutation_lock, _rid_parts,
-                   _rid_key)
+from .core import (RID_RE, ID_RE, ledger_read, ledger_damage, ledger_append, ledger_anchor_index,
+                   mutation_lock, rid_parts, rid_key)
 from . import graph
+from .errors import LedgerDamage
+from .vault import Vault
 
 KINDS = ("evict", "settle")
 OUTCOMES = ("node", "merged", "discarded")
@@ -67,19 +67,19 @@ def removed_lines(old: str, new: str) -> str:
 
 # ── 대장 ─────────────────────────────────────────────────────────────────
 
-def record_evict(scope: str, session: str, text: str) -> dict:
+def record_evict(vault: Vault, scope: str, session: str, text: str) -> dict:
     """거부 직후의 첫 성공한 쓰기가 덜어 낸 구간. 잠금 순서는 호출부가 쥔
     mutation → 대장이다(`ledger_append`가 대장 잠금을 잡는다)."""
-    return ledger_append(EVICTIONS, {"kind": "evict", "scope": scope,
+    return ledger_append(vault.evictions, {"kind": "evict", "scope": scope,
                                      "session": session, "text": text})
 
 
-def records() -> list[dict]:
+def records(vault: Vault) -> list[dict]:
     """전 기록. 구조 손상이면 판정을 세우지 않는다(§3 2항 — fail-closed)."""
-    recs = ledger_read(EVICTIONS)
-    dmg = ledger_damage(recs, EVICTIONS)
+    recs = ledger_read(vault.evictions)
+    dmg = ledger_damage(recs, vault.evictions)
     if dmg:
-        raise ValueError("퇴출 기록부 손상 — 수동 복구 절차 필요 (Mechanism §3 8항): "
+        raise LedgerDamage("퇴출 기록부 손상 — 수동 복구 절차 필요 (Mechanism §3 8항): "
                          + "; ".join(dmg[:3]))
     return recs
 
@@ -89,7 +89,7 @@ def row_ms(r: dict) -> int | None:
     계기(`osk_turn_ledger.py`)와 같은 판정이라 둘이 같은 나이를 낸다."""
     rid = str(r.get("rid", ""))
     if re.match(RID_RE, rid):
-        return _rid_parts(rid)[0]
+        return rid_parts(rid)[0]
     at = r.get("at")
     if at:
         try:
@@ -99,16 +99,16 @@ def row_ms(r: dict) -> int | None:
     return None
 
 
-def unsettled(scope: str | None = None,
+def unsettled(vault: Vault, scope: str | None = None,
               recs: list[dict] | None = None) -> list[dict]:
     """미처분 `evict` — 오래된 것부터. 처분은 그 rid를 `of`로 가리키는 `settle`이
     하나라도 있는 것이다(둘이면 다기기 동시 처분이고 손상이 아니다 — §9-3 4항)."""
-    recs = records() if recs is None else recs
+    recs = records(vault) if recs is None else recs
     done = {r.get("of") for r in recs if r.get("kind") == "settle"}
     rows = [r for r in recs
             if r.get("kind") == "evict" and r.get("rid") not in done
             and (scope is None or r.get("scope") == scope)]
-    rows.sort(key=lambda r: _rid_key(r["rid"]))
+    rows.sort(key=lambda r: rid_key(r["rid"]))
     return rows
 
 
@@ -118,11 +118,11 @@ def age_days(r: dict, now_ms: int | None = None) -> int:
     return 0 if ms is None else max(0, (now_ms - ms) // _DAY_MS)
 
 
-def status(now_ms: int | None = None) -> dict[str, dict]:
+def status(vault: Vault, now_ms: int | None = None) -> dict[str, dict]:
     """scope별 미처분 수·가장 오래된 나이·밀림 여부 (§9-3 3항). 미처분이 있는
     scope만 싣는다."""
     out: dict[str, dict] = {}
-    for r in unsettled():
+    for r in unsettled(vault):
         s = out.setdefault(r["scope"], {"unsettled": 0, "oldest_days": 0})
         s["unsettled"] += 1
         s["oldest_days"] = max(s["oldest_days"], age_days(r, now_ms))
@@ -131,11 +131,11 @@ def status(now_ms: int | None = None) -> dict[str, dict]:
     return out
 
 
-def require_evict(of: str) -> None:
+def require_evict(vault: Vault, of: str) -> None:
     """보존 요청의 원본을 쓰기 전에 확인한다. 호출부는 변경 잠금을 쥔다."""
     if not isinstance(of, str) or not re.fullmatch(RID_RE, of):
         raise ValueError("settle에는 보존한 evict의 rid를 준다")
-    why = _missing_evict(records(), of)
+    why = _missing_evict(records(vault), of)
     if why:
         raise ValueError(why)
 
@@ -161,17 +161,17 @@ def require_target(target: str, idx) -> None:
                          f"처분은 노드가 선 뒤에 적는다. 제목은 파일 이름 그대로, 경로 없이")
 
 
-def _record_settle(of: str, outcome: str, target: str | None, reason: str | None = None) -> dict:
+def _record_settle(vault: Vault, of: str, outcome: str, target: str | None, reason: str | None = None) -> dict:
     """변경 잠금·대상 검증을 끝낸 호출부 전용. 대장 잠금 안에서 원본을 재확인."""
     rec = {"kind": "settle", "of": of, "outcome": outcome}
     if target:
         rec["target"] = target
     if reason:
         rec["reason"] = reason
-    return ledger_append(EVICTIONS, rec, expect=lambda recs: _missing_evict(recs, of))
+    return ledger_append(vault.evictions, rec, expect=lambda recs: _missing_evict(recs, of))
 
 
-def _after_node_write(result: dict, of: str | None, outcome: str, target: str) -> dict:
+def after_node_write(vault: Vault, result: dict, of: str | None, outcome: str, target: str) -> dict:
     """노드 저장 뒤의 영수증. 기록 실패 때문에 보존한 지식을 되돌리지 않는다.
 
     fsync/응답 실패는 이미 기록된 뒤에도 생긴다. 미기록이라고 단정하거나
@@ -181,9 +181,9 @@ def _after_node_write(result: dict, of: str | None, outcome: str, target: str) -
     if of is not None:
         receipt = {"of": of, "outcome": outcome, "target": target}
         try:
-            row = _record_settle(of, outcome, target)
+            row = _record_settle(vault, of, outcome, target)
             receipt.update(state="recorded", rid=row["rid"])
-        except Exception as e:
+        except Exception as e:      # 격리: 노드는 저장됐다 — 처분 기록의 실패를 저장의 실패로 만들지 않는다
             receipt.update(state="unconfirmed", error=str(e), note=(
                 "노드 저장은 성공했다. 처분 기록은 확인하지 못했다. 노드를 다시 쓰지 말고 "
                 "CLI tidy list/status로 확인한 뒤 필요하면 tidy settle로 기록하라."))
@@ -191,32 +191,32 @@ def _after_node_write(result: dict, of: str | None, outcome: str, target: str) -
     return result
 
 
-def settle(of: str, outcome: str, target: str | None = None, reason: str | None = None) -> dict:
-    with mutation_lock():
-        return _settle_locked(of, outcome, target, reason)
+def settle(vault: Vault, of: str, outcome: str, target: str | None = None, reason: str | None = None) -> dict:
+    with mutation_lock(vault):
+        return settle_locked(vault, of, outcome, target, reason)
 
 
-def _settle_locked(of: str, outcome: str, target: str | None = None, reason: str | None = None) -> dict:
+def settle_locked(vault: Vault, of: str, outcome: str, target: str | None = None, reason: str | None = None) -> dict:
     """처분 기록. `outcome`은 node·merged·discarded, `target`은 노드 제목이며
     폐기에는 없다. 노드가 서 있지 않으면 적지 않는다 — 처분은 한 일의 기록이지
     하겠다는 약속이 아니다. `of`는 잠금 안에서 다시 확인한다."""
-    return _record_settle(of, outcome, _check_settle(outcome, target, reason), reason)
+    return _record_settle(vault, of, outcome, _check_settle(vault, outcome, target, reason), reason)
 
 
-def settle_many(of: str, outcome: str, targets: list | None = None,
+def settle_many(vault: Vault, of: str, outcome: str, targets: list | None = None,
                 reason: str | None = None) -> list[dict]:
     """대상이 여럿인 처분 — 대상마다 `settle`을 하나씩 적는다. 같은 항목의 `settle`
     여럿은 §9-3 4항의 union이 이미 허용하므로 기록 형식은 그대로다. 대상을 전부
     확인한 뒤에야 적는다 — 일부만 적히는 처분을 만들지 않는다."""
-    with mutation_lock():
-        idx = graph.Index()
-        checked = [_check_settle(outcome, t, reason, idx) for t in (targets or [None])]
+    with mutation_lock(vault):
+        idx = graph.Index(vault)
+        checked = [_check_settle(vault, outcome, t, reason, idx) for t in (targets or [None])]
         if len(set(checked)) != len(checked):
             raise ValueError("같은 target을 두 번 적지 않는다")
-        return [_record_settle(of, outcome, t, reason) for t in checked]
+        return [_record_settle(vault, of, outcome, t, reason) for t in checked]
 
 
-def _check_settle(outcome: str, target: str | None, reason: str | None, idx=None) -> str | None:
+def _check_settle(vault: Vault, outcome: str, target: str | None, reason: str | None, idx=None) -> str | None:
     """처분의 형식과 대상 노드를 확인하고 정규화한 target을 돌려준다."""
     if outcome not in OUTCOMES:
         raise ValueError(f"outcome은 {'·'.join(OUTCOMES)} 중 하나다 — `{outcome}`은 아니다")
@@ -240,7 +240,7 @@ def _check_settle(outcome: str, target: str | None, reason: str | None, idx=None
     # 증류된 적 없는 조각이 정돈 큐에서 영구히 빠진다. 잠금 순서는 다른
     # 모듈과 같다 — 변경 잠금 → 대장 잠금.
     if target:
-        require_target(target, idx or graph.Index())
+        require_target(target, idx or graph.Index(vault))
     return target
 
 
@@ -288,74 +288,11 @@ def schema_errors(recs: list[dict]) -> list[str]:
 
 # ── 정돈 문안 — 훅과 전용 세션이 같은 말을 쓴다 ──────────────────────────
 
-def transit_titles() -> list[str]:
+def transit_titles(vault: Vault) -> list[str]:
     """Workbench의 경유 노드 제목 — 정돈의 다른 대상(Workbench 계약 §3)."""
-    idx = graph.Index()
+    idx = graph.Index(vault)
     return sorted(stem for stem, (_p, kind) in idx.names.items()
                   if kind and kind[0] == "workbench-transit")
-
-
-def discard_transit(title: str, confirm: str | None = None) -> dict:
-    """경유 노드의 폐기 — Workbench 계약 §3의 통합·폐기 출구를 실행한다.
-
-    들어오는 참조(Link·Predicate Edge)가 남았거나 scope 기억이 그 노드를 가리키면
-    거부한다 — 재배선·정정이 먼저다. `confirm` 없이 부르면 지울 판(해시)만 알린다.
-    사용자에게 확인받은 그 해시로 다시 부를 때만 지운다 — 확인한 뒤 바뀐 판은 지우지
-    않는다. 새 대장은 두지 않는다. 지우기 전 판은 이 기기에 사본으로 남긴다 — 동기화
-    전의 판은 vault git 이력에 없을 수 있다."""
-    from . import scope_memory, write   # 둘 다 이 모듈을 부른다 — 순환을 피한다
-    from .core import ROOT, local_lock_path, posix_rel, sha256_file
-    with mutation_lock():
-        idx = graph.Index()
-        if not idx.complete:
-            raise ValueError("vault를 전부 관측하지 못했다 — 폐기하지 않았다: "
-                             + "; ".join(idx.scan_errors[:3]))
-        hit = idx.locate(title)
-        if not hit or hit[1][0] != "workbench-transit":
-            raise ValueError(f"`{title}`는 Workbench 경유 노드가 아니다 — 폐기는 경유 노드의 "
-                             f"출구다(Workbench 계약 §3)")
-        path = hit[0]
-        # 입력이 id·경로여도 실제 제목과 id로 찾는다 — 참조와 기억은 그 둘로 적힌다
-        name, nid = path.stem, idx.node(path).id
-        inbound = []
-        for p in idx.mentioning([name, nid]):
-            if p == path:
-                continue
-            try:
-                n = idx.node(p)
-            except Exception:
-                continue          # 판독되지 않는 파일은 참조를 말하지 않는다
-            # 그래프와 같은 해석(`Index.locate` — 제목·id·경로, 제목 속 `.md` 포함)으로 대조한다
-            for _relation, text in n.references():
-                found = idx.locate(text.split("#", 1)[0].strip())
-                if found and graph._same_file(found[0], path):
-                    inbound.append(p.stem)
-                    break
-        memory = sorted(f.stem for f in scope_memory.sm_dir().glob("*.md")
-                        if any(k in f.read_text(encoding="utf-8", errors="replace")
-                               for k in (name, nid)))
-        where = []
-        if inbound:
-            where.append("노드 " + ", ".join(sorted(inbound)))
-        if memory:
-            where.append("scope 기억 " + ", ".join(memory))
-        if where:
-            raise ValueError("폐기하지 않았다 — 이 노드를 가리키는 곳을 먼저 재배선·정정하라: "
-                             + "; ".join(where))
-        plan = {"title": name, "id": nid, "path": posix_rel(path, ROOT), "hash": sha256_file(path)}
-        if confirm is None:
-            return {"ok": False, "plan": plan, "next": (
-                "사용자에게 확인받은 뒤 같은 명령에 --confirm <hash>를 붙여 다시 실행한다. "
-                "지운 판은 이 기기의 사본(응답의 copy)이나, 동기화된 판이면 vault git 이력에서 되살린다")}
-        if confirm != plan["hash"]:
-            raise ValueError("확인한 판과 지금 판이 다르다 — 폐기하지 않았다. 다시 확인받아라")
-        # 사본 이름은 확인받은 판의 해시다 — frontmatter의 id는 검증 전 값이라 경로 문자가
-        # 들어 있으면 vault 밖을 가리키고, 같은 id의 다른 판(다른 worktree, 다시 만든 노드)은
-        # 앞 사본을 덮는다(#138 리뷰 P1).
-        copy = local_lock_path(f"osk-discarded-{plan['hash'].removeprefix('sha256:')}.md")
-        write._atomic_write(copy, path.read_bytes())
-        path.unlink()
-        return {"ok": True, "discarded": plan, "copy": str(copy)}
 
 
 def _item(r: dict, now_ms: int | None) -> str:
@@ -364,11 +301,11 @@ def _item(r: dict, now_ms: int | None) -> str:
             f"세션 `{r.get('session')}`\n  {body}")
 
 
-def _exits(scope: str, python: str, engine: str) -> str:
+def _exits(vault: Vault, scope: str, python: str, engine: str) -> str:
     return (f"출구는 셋이다(§9-3 2항). 본문을 읽고 `search`로 같은 주제의 노드를 찾아 "
             f"`read_node` 뒤 같은 주장·적용 조건의 갱신(`update_node`)을 우선한다. "
             f"같은 프로젝트라는 이유만으로 독립 주장을 합치지 않는다. 새 노드가 필요하면 "
-            f"`create_node`(착지 `{SCOPE}/{scope}`; 여러 scope에 재사용되면 Domain). "
+            f"`create_node`(착지 `{vault.scope}/{scope}`; 여러 scope에 재사용되면 Domain). "
             f"보존하는 쓰기에 `settle=\"<evict rid>\"`를 함께 주면 저장 뒤 node·merged 처분도 "
             f"기록한다 — 응답의 `settlement.state`를 확인하라. "
             f"같은 내용 재저장·summary만 수정해서는 처분하지 않는다. "
@@ -381,38 +318,38 @@ def _exits(scope: str, python: str, engine: str) -> str:
             f"받는다 — 정돈이 승인을 대신하지 않는다.")
 
 
-def hook_block(scope: str, python: str, engine: str,
+def hook_block(vault: Vault, scope: str, python: str, engine: str,
                now_ms: int | None = None) -> tuple[str, str]:
     """SessionStart 훅의 두 조각 — (밀림 경고, 정돈 블록). 미처분이 없으면 둘 다
     빈 문자열이다. 경고는 N일을 넘었을 때만 있고 **주입문의 맨 앞**에 선다."""
-    parts = hook_parts(scope, python, engine, now_ms)
+    parts = hook_parts(vault, scope, python, engine, now_ms)
     return parts["banner"], parts["block"]
 
 
-def hook_parts(scope: str, python: str, engine: str, now_ms: int | None = None) -> dict:
+def hook_parts(vault: Vault, scope: str, python: str, engine: str, now_ms: int | None = None) -> dict:
     """`hook_block`의 두 조각과, 예산이 모자랄 때 정돈 블록 대신 남길 한 줄의 말
     (`label` — 건수·가장 오래된 나이와 할 일, `osk.hook_text`)."""
-    rows = unsettled(scope)
-    transit = transit_titles()
+    rows = unsettled(vault, scope)
+    transit = transit_titles(vault)
     counts = ([f"퇴출 {len(rows)}건(가장 오래된 {age_days(rows[0], now_ms)}일)"] if rows else []) + (
         [f"경유 노드 {len(transit)}개"] if transit else [])
     label = f"정돈 {'·'.join(counts)} — 첫 도구 호출에 처분을 함께 싣는다" if counts else ""
-    banner, block = _hook_block(scope, python, engine, now_ms, rows, transit)
+    banner, block = _hook_block(vault, scope, python, engine, now_ms, rows, transit)
     return {"banner": banner, "block": block, "label": label}
 
 
-def _hook_block(scope: str, python: str, engine: str, now_ms, rows, transit) -> tuple[str, str]:
+def _hook_block(vault: Vault, scope: str, python: str, engine: str, now_ms, rows, transit) -> tuple[str, str]:
     if not rows:
         return "", _transit_prompt(transit)
     oldest = age_days(rows[0], now_ms)
     banner = ""
     if oldest > N_DAYS:
-        banner = (f"[osk 정돈이 밀렸다 — {SCOPE}/{scope} 미처분 {len(rows)}건, 가장 "
+        banner = (f"[osk 정돈이 밀렸다 — {vault.scope}/{scope} 미처분 {len(rows)}건, 가장 "
                   f"오래된 것 {oldest}일 (기준 {N_DAYS}일)] 아래 항목을 먼저 처분하라. "
                   f"그래도 밀리면 `osk tidy prompt`가 전용 세션의 프롬프트를 낸다.")
     shown = rows[:K]
     lines = [
-        f"[osk 정돈 — {SCOPE}/{scope} 미처분 퇴출 {len(rows)}건 중 오래된 {len(shown)}건]",
+        f"[osk 정돈 — {vault.scope}/{scope} 미처분 퇴출 {len(rows)}건 중 오래된 {len(shown)}건]",
         "scope 기억에서 상한에 밀려 잘려 나간 조각이다(Mechanism §9-2 12항). "
         "**첫 도구 호출에 처분을 함께 실어라** — 벽이 아니다: 본 작업이 먼저면 "
         "넘어가도 되고, 항목은 대장에 남는다.",
@@ -423,7 +360,7 @@ def _hook_block(scope: str, python: str, engine: str, now_ms, rows, transit) -> 
     if transit:
         lines.append("Workbench 경유 노드(정돈 대상 — Workbench 계약 §3): "
                      + " · ".join(f"[[{t}]]" for t in transit) + "\n" + _TRANSIT_EXITS)
-    lines.append(_exits(scope, python, engine))
+    lines.append(_exits(vault, scope, python, engine))
     return banner, "\n".join(lines)
 
 
@@ -446,32 +383,32 @@ def _transit_prompt(titles: list[str]) -> str:
             + " · ".join(f"[[{t}]]" for t in titles))
 
 
-def tidy_prompt(scope: str | None, python: str, engine: str,
+def tidy_prompt(vault: Vault, scope: str | None, python: str, engine: str,
                 now_ms: int | None = None) -> str:
     """전용 정돈 세션의 프롬프트 (§9-3 3항) — 사용자가 새 세션에 붙여 넣거나
     스케줄러가 `claude -p`로 띄운다. scope를 안 주면 가장 오래 밀린 scope를 고른다.
     전용 세션은 그 scope를 착지로 명시한다 — 열린 프로젝트의 결속과 무관하다."""
-    st = status(now_ms)
+    st = status(vault, now_ms)
     if not st:
-        return (_transit_prompt(transit_titles())
+        return (_transit_prompt(transit_titles(vault))
                 or "미처분 퇴출 항목과 경유 노드가 없다 — 정돈할 것이 없다.")
     if scope is None:
         scope = max(st, key=lambda s: (st[s]["oldest_days"], st[s]["unsettled"], s))
     elif scope not in st:
-        return (f"{SCOPE}/{scope}에는 미처분 항목이 없다. 있는 scope: "
+        return (f"{vault.scope}/{scope}에는 미처분 항목이 없다. 있는 scope: "
                 + ", ".join(sorted(st)))
-    rows = unsettled(scope)
+    rows = unsettled(vault, scope)
     lines = [
-        f"이 세션은 `{SCOPE}/{scope}`의 **전용 정돈 세션**이다(Mechanism §9-3 3항). "
+        f"이 세션은 `{vault.scope}/{scope}`의 **전용 정돈 세션**이다(Mechanism §9-3 3항). "
         f"본 작업은 없다 — 아래 미처분 퇴출 {len(rows)}건을 전부 처분하고 끝낸다.",
-        f"osk 도구를 부를 때 `space=\"{SCOPE}/{scope}\"`를 명시한다 — 이 세션이 열린 프로젝트의 "
+        f"osk 도구를 부를 때 `space=\"{vault.scope}/{scope}\"`를 명시한다 — 이 세션이 열린 프로젝트의 "
         f"결속과 무관하게 그 scope를 착지로 쓴다. 승인은 우회하지 않는다.",
         "",
     ]
     lines += [_item(r, now_ms) for r in rows]
-    transit = transit_titles()
+    transit = transit_titles(vault)
     if transit:
         lines += ["", "Workbench 경유 노드(정돈 대상 — Workbench 계약 §3): "
                   + " · ".join(f"[[{t}]]" for t in transit), _TRANSIT_EXITS]
-    lines += ["", _exits(scope, python, engine)]
+    lines += ["", _exits(vault, scope, python, engine)]
     return "\n".join(lines)

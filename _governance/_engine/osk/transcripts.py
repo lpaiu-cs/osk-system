@@ -20,6 +20,7 @@ import os
 import re
 from datetime import datetime
 from pathlib import Path
+from . import secrets
 
 IDLE_CLOSE = 12 * 3600  # seconds of silence after which an unfinished Claude turn closes
 
@@ -82,7 +83,6 @@ def _structured(value) -> str:
 
 def _redact(text: str) -> str:
     """Filter decoded string literals without rebuilding JSON objects or keys."""
-    from . import secrets
     decoder = json.JSONDecoder()
     parts, last, cursor = [], 0, 0
     while (cursor := text.find('"', cursor)) >= 0:
@@ -524,256 +524,334 @@ def _rewound(rows: list) -> set:
     return dropped
 
 
-def _claude(rows: list, sid: str, *, dialogue: bool = False, rules: dict | None = None,
-            rewinds: bool = True) -> dict:
-    from .harness.base import injected_only   # the harness package imports this module
-    rows = [(line, r) for line, r in rows if not r.get("isSidechain") and not r.get("agentId")]
+def _own_history(rows: list, sid: str) -> bool:
+    """이 파일이 이 대화의 것인가. 부모의 과거와 자식의 UI 기록만 든 갓 갈라진 파일이면 False이고,
+    이 대화로 이어지지 않는 다른 대화의 행이 섞였으면 ValueError다."""
     identities = {r["sessionId"] for _, r in rows if r.get("sessionId")}
-    if identities != {sid}:
-        own = next((i for i, (_, r) in enumerate(rows) if r.get("sessionId") == sid and r.get("uuid")), None)
-        if sid in identities and own is None:
-            # A freshly forked file can contain only parent history and child UI metadata.
-            return {"rounds": [], "pending_tail": False, "diagnostics": []}
-        ancestors = {r.get("uuid") for _, r in rows[:own] if r.get("uuid")} if own is not None else set()
-        by_uuid = {r["uuid"]: r for _, r in rows[:own] if r.get("uuid")} if own is not None else {}
-        chain, visited = set(), set()
-        cursor = rows[own][1].get("parentUuid") if own is not None else None
-        while cursor in by_uuid and cursor not in visited:
-            visited.add(cursor)
-            ancestor = by_uuid[cursor]
-            chain.add(ancestor.get("sessionId"))
-            cursor = ancestor.get("parentUuid") or ancestor.get("logicalParentUuid")
-        foreign = {r.get("sessionId") for _, r in rows[:own]
-                   if r.get("type") in ("user", "assistant") and r.get("sessionId") != sid}
-        if (own is None or not ancestors or rows[own][1].get("parentUuid") not in ancestors
-                or not foreign.issubset(chain)
-                or any(r.get("sessionId") not in (None, sid) for _, r in rows[own:])):
-            raise ValueError("Claude transcript sessionId does not match a linked ancestor prefix")
-    rounds, diagnostics, users, trace, calls = [], [], [], [], {}
-    native_results = []
-    evidence = []  # (native row timestamp, event) in file order
-    start, final_message, final_line, final_text = None, None, None, False
-    seen = set()
-    # The newer rules apply after `since`; a stored cut closes its turn on every read.
-    since = rules.get("since") if rules else None
-    new = rules is not None and since is None
-    # A new prompt closes the open turn after `prompts_since`, the last round an engine without
-    # that rule tracked (#218): a turn that ends in a tool call has no end_turn to close it.
-    splits = rules is not None and "prompts_since" in rules
-    split = splits and rules["prompts_since"] is None
-    # Rows the harness wrote that are not the user's conversation — a notice it sent as a
-    # prompt (#275), a branch a rewind dropped (#235) — read as such after `harness_since`,
-    # the last round an engine without that rule tracked.
-    marks = rules is not None and "harness_since" in rules
-    mark = marks and rules["harness_since"] is None
-    dropped, rewound = (_rewound(rows) if marks and rewinds else set()), False
-    cuts = set(rules.get("cuts") or ()) if rules else set()
-    now = rules.get("now") if rules else None
-    delivered = {r.get("commandUuid") for _, r in rows if r.get("type") == "queue-operation"
-                 and r.get("operation") == "remove" and r.get("reason") not in (None, "absorbed_mid_turn")}
-    last = None       # (uuid, line, epoch) of the open turn's latest dialogue row
-    resumed = None    # the round an idle close just ended; its later rows continue it
-    continued = None
-    prompt, replied, done = None, False, False  # the open turn's promptId, a reply, its last row ended it
+    if identities == {sid}:
+        return True
+    own = next((i for i, (_, r) in enumerate(rows) if r.get("sessionId") == sid and r.get("uuid")), None)
+    if sid in identities and own is None:
+        return False
+    ancestors = {r.get("uuid") for _, r in rows[:own] if r.get("uuid")} if own is not None else set()
+    by_uuid = {r["uuid"]: r for _, r in rows[:own] if r.get("uuid")} if own is not None else {}
+    chain, visited = set(), set()
+    cursor = rows[own][1].get("parentUuid") if own is not None else None
+    while cursor in by_uuid and cursor not in visited:
+        visited.add(cursor)
+        ancestor = by_uuid[cursor]
+        chain.add(ancestor.get("sessionId"))
+        cursor = ancestor.get("parentUuid") or ancestor.get("logicalParentUuid")
+    foreign = {r.get("sessionId") for _, r in rows[:own]
+               if r.get("type") in ("user", "assistant") and r.get("sessionId") != sid}
+    if (own is None or not ancestors or rows[own][1].get("parentUuid") not in ancestors
+            or not foreign.issubset(chain)
+            or any(r.get("sessionId") not in (None, sid) for _, r in rows[own:])):
+        raise ValueError("Claude transcript sessionId does not match a linked ancestor prefix")
+    return True
 
-    def emit(rid, completion, end_line, **extra):
-        nonlocal users, trace, start, native_results, evidence, new, split, mark, continued, last
+
+def _has_tool_result(content) -> bool:
+    return isinstance(content, list) and any(
+        isinstance(b, dict) and b.get("type") == "tool_result" for b in content)
+
+
+class _ClaudeTurns:
+    """Claude 전사의 행을 차례로 받아 턴을 라운드로 닫는다. 열린 턴에 대해 아는 것이 여기 있다.
+
+    턴은 사용자의 말(`prompted`)로 열리고 응답(`reply`)으로 이어지며, 세 가지로 닫힌다: 최종 응답
+    (`finish`), 끊김(`interrupt` — 저장된 자리나 오랜 침묵), 다음 사용자의 말."""
+
+    def __init__(self, rows: list, sid: str, dialogue: bool, rules: dict | None, rewinds: bool, injected_only):
+        self.sid, self.dialogue, self.rules, self.injected_only = sid, dialogue, rules, injected_only
+        self.rounds, self.diagnostics, self.users, self.trace, self.calls = [], [], [], [], {}
+        self.native_results = []
+        self.evidence = []  # (native row timestamp, event) in file order
+        self.start, self.final_message, self.final_line, self.final_text = None, None, None, False
+        self.seen = set()
+        # The newer rules apply after `since`; a stored cut closes its turn on every read.
+        self.since = rules.get("since") if rules else None
+        self.new = rules is not None and self.since is None
+        # A new prompt closes the open turn after `prompts_since`, the last round an engine without
+        # that rule tracked (#218): a turn that ends in a tool call has no end_turn to close it.
+        self.splits = rules is not None and "prompts_since" in rules
+        self.split = self.splits and rules["prompts_since"] is None
+        # Rows the harness wrote that are not the user's conversation — a notice it sent as a
+        # prompt (#275), a branch a rewind dropped (#235) — read as such after `harness_since`,
+        # the last round an engine without that rule tracked.
+        self.marks = rules is not None and "harness_since" in rules
+        self.mark = self.marks and rules["harness_since"] is None
+        self.dropped, self.rewound = (_rewound(rows) if self.marks and rewinds else set()), False
+        self.cuts = set(rules.get("cuts") or ()) if rules else set()
+        self.now = rules.get("now") if rules else None
+        self.delivered = {r.get("commandUuid") for _, r in rows if r.get("type") == "queue-operation"
+                          and r.get("operation") == "remove" and r.get("reason") not in (None, "absorbed_mid_turn")}
+        self.last = None       # (uuid, line, epoch) of the open turn's latest dialogue row
+        self.resumed = None    # the round an idle close just ended; its later rows continue it
+        self.continued = None
+        # the open turn's promptId, a reply, its last row ended it
+        self.prompt, self.replied, self.done = None, False, False
+
+    def emit(self, rid, completion, end_line, **extra):
         locator = f"claude:{rid}"
-        events = [e for _, e in evidence]
-        found = {"id": rid, "user": "\n\n".join(users),
-                 "agent": "\n\n".join(trace + _tool_evidence(events, locator)), "end_line": end_line,
-                 "completion": completion, "native_results": native_results, **extra}
-        if continued:
-            found["continued_from"] = continued
+        events = [e for _, e in self.evidence]
+        found = {"id": rid, "user": "\n\n".join(self.users),
+                 "agent": "\n\n".join(self.trace + _tool_evidence(events, locator)), "end_line": end_line,
+                 "completion": completion, "native_results": self.native_results, **extra}
+        if self.continued:
+            found["continued_from"] = self.continued
         # A resumed or forked copy rewrites rows in message order, so results
         # that streamed between parallel calls move after them. Row timestamps
         # survive the copy: the original append order is offered only to match
         # a copied prefix, never to capture.
-        if all(t for t, _ in evidence):
-            timed = [e for _, e in sorted(evidence, key=lambda x: x[0])]
-            orders = [o for o in (timed, _interleaved(evidence)) if o != events]
+        if all(t for t, _ in self.evidence):
+            timed = [e for _, e in sorted(self.evidence, key=lambda x: x[0])]
+            orders = [o for o in (timed, _interleaved(self.evidence)) if o != events]
             if orders:
                 found["agent_time_orders"] = list(dict.fromkeys(
-                    "\n\n".join(trace + _tool_evidence(o, locator)) for o in orders))
-        rounds.append(found)
-        users, trace, start, native_results, evidence, continued, last = [], [], None, [], [], None, None
-        new = new or (rules is not None and rid == since)
-        split = split or (splits and rid == rules["prompts_since"])
-        mark = mark or (marks and rid == rules["harness_since"])
+                    "\n\n".join(self.trace + _tool_evidence(o, locator)) for o in orders))
+        self.rounds.append(found)
+        self.users, self.trace, self.start, self.native_results = [], [], None, []
+        self.evidence, self.continued, self.last = [], None, None
+        rules = self.rules
+        self.new = self.new or (rules is not None and rid == self.since)
+        self.split = self.split or (self.splits and rid == rules["prompts_since"])
+        self.mark = self.mark or (self.marks and rid == rules["harness_since"])
         return rid
 
-    def finish():
-        nonlocal final_message, final_line, final_text, resumed
-        if start and final_message and final_text:
-            emit(f"{start}:{final_message}", "completed", final_line)
-            resumed = None
-        final_message, final_line, final_text = None, None, False
+    def finish(self) -> None:
+        if self.start and self.final_message and self.final_text:
+            self.emit(f"{self.start}:{self.final_message}", "completed", self.final_line)
+            self.resumed = None
+        self.final_message, self.final_line, self.final_text = None, None, False
 
-    def interrupt():
+    def interrupt(self) -> None:
         # No final answer will come: close the turn at its latest row, which the cursor keeps.
-        nonlocal resumed
-        resumed = emit(f"{start}:{last[0]}", "interrupted", last[1], cut=last[0])
+        self.resumed = self.emit(f"{self.start}:{self.last[0]}", "interrupted", self.last[1], cut=self.last[0])
 
-    for line, row in rows:
+    def row(self, line: int, row: dict) -> None:
         if row.get("isSidechain") or row.get("agentId"):
-            continue
-        if mark and row.get("uuid") in dropped:
-            rewound = True
-            continue
+            return
+        if self.mark and row.get("uuid") in self.dropped:
+            self.rewound = True
+            return
         typ, msg = row.get("type"), row.get("message", {})
         if not isinstance(msg, dict):
             raise ValueError(f"unsupported Claude message at line {line}")
         # All rows of an end_turn message belong to its response, not just the
         # first row, whose content may be thinking and lack the final answer.
-        if final_message and not (typ == "assistant" and msg.get("id") == final_message):
-            finish()
-        if typ == "attachment" and new and start:
-            words = _queued(row, delivered)
-            uid = row.get("uuid")
-            if words and not (uid and uid in seen):
-                # The message is the turn's latest activity: it moves the idle clock,
-                # and a cut stored at it closes the turn after these words on every read.
-                users.append(words)
-                if uid:
-                    seen.add(uid)
-                    last = (uid, line, _epoch(row))
-                    if uid in cuts:
-                        interrupt()
-            continue
+        if self.final_message and not (typ == "assistant" and msg.get("id") == self.final_message):
+            self.finish()
+        if typ == "attachment" and self.new and self.start:
+            self.queued(line, row)
+            return
         if typ not in ("user", "assistant"):
-            continue
+            return
         uid = row.get("uuid")
         if not uid:
             raise ValueError(f"Claude message without stable uuid at line {line}")
-        if uid in seen:
-            continue
-        seen.add(uid)
+        if uid in self.seen:
+            return
+        self.seen.add(uid)
         content = msg.get("content")
         if not isinstance(content, (str, list)):
             raise ValueError(f"unsupported Claude content at line {line}")
-        tool_result = isinstance(content, list) and any(
-            isinstance(b, dict) and b.get("type") == "tool_result" for b in content)
-        notice = mark and typ == "user" and not tool_result and injected_only(_words(content))
+        self.message(line, row, typ, msg, uid, content)
+
+    def queued(self, line: int, row: dict) -> None:
+        """턴이 도는 동안 사용자가 보낸 말은 그 턴에 든다."""
+        words = _queued(row, self.delivered)
+        uid = row.get("uuid")
+        if words and not (uid and uid in self.seen):
+            # The message is the turn's latest activity: it moves the idle clock,
+            # and a cut stored at it closes the turn after these words on every read.
+            self.users.append(words)
+            if uid:
+                self.seen.add(uid)
+                self.last = (uid, line, _epoch(row))
+                if uid in self.cuts:
+                    self.interrupt()
+
+    def message(self, line: int, row: dict, typ: str, msg: dict, uid, content) -> None:
+        """사용자나 응답의 행 하나."""
+        tool_result = _has_tool_result(content)
+        notice = self.mark and typ == "user" and not tool_result and self.injected_only(_words(content))
         at = _epoch(row)
-        if (new and start and not final_message and last and last[2] is not None and at is not None
-                and at - last[2] >= IDLE_CLOSE):
-            interrupt()
-        if new and not start and resumed and (typ == "assistant" or tool_result):
-            start, continued, resumed = uid, resumed, None
+        self.idle_or_resumed(uid, typ, tool_result, at)
         if isinstance(content, list):
-            kept = []
-            for block in content:
-                if dialogue:
-                    locator = f"claude:{row.get('sessionId', sid)}:{uid}"
-                    if typ == "user" and not tool_result:
-                        locator = f"claude-user:{uid}"
-                    event = _dialogue_event(block, locator) if isinstance(block, dict) else None
-                    if event and event["type"] in {"tool_call_ref", "tool_result_ref"}:
-                        if start:
-                            evidence.append((row.get("timestamp") or "", event))
-                        continue
-                    values = [event] if event is not None else _dialogue_content([block], locator)
-                    if start and (typ != "user" or tool_result):
-                        native_results.extend(locator for v in values if isinstance(v, dict)
-                                              and (v.get("native_result") or isinstance(v.get("content"), dict)
-                                                   and v["content"].get("native_result")))
-                    kept.extend(values)
-                    continue
-                if isinstance(block, dict) and block.get("type") == "tool_use":
-                    calls[block.get("id")] = {"name": block.get("name", ""), "input": block.get("input")}
-                if isinstance(block, dict) and block.get("type") == "tool_result":
-                    call = calls.get(block.get("tool_use_id"))
-                    locator = f"claude:{row.get('sessionId', sid)}:{uid}"
-                    if start and call and (_file_read(call["name"]) or _mixed_output(call["name"])):
-                        native_results.append(locator)
-                    block = {**block, "content": _result_content(call, block.get("content"), locator)}
-                kept.append(block)
-            content = kept
+            content = self.blocks(row, typ, uid, content, tool_result)
         if typ == "user" and not tool_result:
             if row.get("isCompactSummary") or row.get("isMeta"):
+                return
+            self.prompted(row, uid, content, notice)
+        elif self.start:
+            self.reply(line, typ, msg, content)
+        if self.start:
+            self.last = (uid, line, at)
+            self.done = tool_result or (typ == "assistant" and msg.get("stop_reason") in ("end_turn", "stop_sequence"))
+            if uid in self.cuts and not self.final_message:
+                self.interrupt()
+
+    def idle_or_resumed(self, uid, typ: str, tool_result: bool, at) -> None:
+        """오래 조용했던 턴은 이 행 앞에서 끊고, 끊긴 턴의 뒤따르는 행은 그 턴을 잇는다."""
+        if (self.new and self.start and not self.final_message and self.last and self.last[2] is not None
+                and at is not None and at - self.last[2] >= IDLE_CLOSE):
+            self.interrupt()
+        if self.new and not self.start and self.resumed and (typ == "assistant" or tool_result):
+            self.start, self.continued, self.resumed = uid, self.resumed, None
+
+    def blocks(self, row: dict, typ: str, uid, content: list, tool_result: bool) -> list:
+        """내용의 블록들을 남길 꼴로 바꾼다. 도구 호출과 결과는 원본을 가리키는 참조가 된다."""
+        kept = []
+        for block in content:
+            if self.dialogue:
+                kept.extend(self.dialogue_block(row, typ, uid, block, tool_result))
                 continue
-            # Another prompt is another turn. A turn that ended in a tool call (the app's
-            # next-step box, ScheduleWakeup) closes there; an interruption keeps its promptId.
-            # A notice the harness sent as a prompt is neither (#275): an open turn goes on,
-            # and work it starts with no turn open is a round without the user's words.
-            if not notice and split and start and replied and row.get("promptId") not in (None, prompt):
-                emit(f"{start}:{last[0]}", "completed" if done else "interrupted", last[1])
-            if not start:
-                start, resumed, prompt, replied = uid, None, row.get("promptId"), False
-            if not notice:
-                users.append(_dump(content))
-        elif start:
-            replied = True
-            if not dialogue or content:
-                trace.append(f"### {typ}\n\n{_dump(content)}")
-            if typ == "assistant" and msg.get("stop_reason") == "end_turn":
-                final_message, final_line = msg.get("id"), line
-                if not final_message:
-                    raise ValueError(f"Claude end_turn without message id at line {line}")
-                final_text = final_text or (bool(content.strip()) if isinstance(content, str) else any(
-                    isinstance(b, dict) and b.get("type") == "text" and b.get("text", "").strip()
-                    for b in content))
-        if start:
-            last = (uid, line, at)
-            done = tool_result or (typ == "assistant" and msg.get("stop_reason") in ("end_turn", "stop_sequence"))
-            if uid in cuts and not final_message:
-                interrupt()
-    finish()
-    if new and start and now is not None and last and last[2] is not None and now - last[2] >= IDLE_CLOSE:
-        interrupt()
-    # The open turn is not a round, but its user words may be cited (Mechanism §9 9항).
-    return {"rounds": rounds, "pending_tail": bool(start), "diagnostics": diagnostics, "rewound": rewound,
-            "tail": {"id": start, "user": "\n\n".join(users)} if start and users else None}
+            if isinstance(block, dict) and block.get("type") == "tool_use":
+                self.calls[block.get("id")] = {"name": block.get("name", ""), "input": block.get("input")}
+            if isinstance(block, dict) and block.get("type") == "tool_result":
+                call = self.calls.get(block.get("tool_use_id"))
+                locator = f"claude:{row.get('sessionId', self.sid)}:{uid}"
+                if self.start and call and (_file_read(call["name"]) or _mixed_output(call["name"])):
+                    self.native_results.append(locator)
+                block = {**block, "content": _result_content(call, block.get("content"), locator)}
+            kept.append(block)
+        return kept
+
+    def dialogue_block(self, row: dict, typ: str, uid, block, tool_result: bool) -> list:
+        locator = f"claude:{row.get('sessionId', self.sid)}:{uid}"
+        if typ == "user" and not tool_result:
+            locator = f"claude-user:{uid}"
+        event = _dialogue_event(block, locator) if isinstance(block, dict) else None
+        if event and event["type"] in {"tool_call_ref", "tool_result_ref"}:
+            if self.start:
+                self.evidence.append((row.get("timestamp") or "", event))
+            return []
+        values = [event] if event is not None else _dialogue_content([block], locator)
+        if self.start and (typ != "user" or tool_result):
+            self.native_results.extend(locator for v in values if isinstance(v, dict)
+                                       and (v.get("native_result") or isinstance(v.get("content"), dict)
+                                            and v["content"].get("native_result")))
+        return values
+
+    def prompted(self, row: dict, uid, content, notice) -> None:
+        """사용자의 말 — 턴을 열거나, 열린 턴에 든다."""
+        # Another prompt is another turn. A turn that ended in a tool call (the app's
+        # next-step box, ScheduleWakeup) closes there; an interruption keeps its promptId.
+        # A notice the harness sent as a prompt is neither (#275): an open turn goes on,
+        # and work it starts with no turn open is a round without the user's words.
+        if (not notice and self.split and self.start and self.replied
+                and row.get("promptId") not in (None, self.prompt)):
+            self.emit(f"{self.start}:{self.last[0]}", "completed" if self.done else "interrupted", self.last[1])
+        if not self.start:
+            self.start, self.resumed, self.prompt, self.replied = uid, None, row.get("promptId"), False
+        if not notice:
+            self.users.append(_dump(content))
+
+    def reply(self, line: int, typ: str, msg: dict, content) -> None:
+        """열린 턴의 응답이나 도구 결과."""
+        self.replied = True
+        if not self.dialogue or content:
+            self.trace.append(f"### {typ}\n\n{_dump(content)}")
+        if typ == "assistant" and msg.get("stop_reason") == "end_turn":
+            self.final_message, self.final_line = msg.get("id"), line
+            if not self.final_message:
+                raise ValueError(f"Claude end_turn without message id at line {line}")
+            self.final_text = self.final_text or (bool(content.strip()) if isinstance(content, str) else any(
+                isinstance(b, dict) and b.get("type") == "text" and b.get("text", "").strip()
+                for b in content))
+
+    def result(self) -> dict:
+        self.finish()
+        if (self.new and self.start and self.now is not None and self.last and self.last[2] is not None
+                and self.now - self.last[2] >= IDLE_CLOSE):
+            self.interrupt()
+        # The open turn is not a round, but its user words may be cited (Mechanism §9 9항).
+        return {"rounds": self.rounds, "pending_tail": bool(self.start), "diagnostics": self.diagnostics,
+                "rewound": self.rewound,
+                "tail": {"id": self.start, "user": "\n\n".join(self.users)} if self.start and self.users else None}
 
 
-def _codex(rows: list, sid: str, *, dialogue: bool = False) -> dict:
-    identities = {r.get("payload", {}).get("id") for _, r in rows if r.get("type") == "session_meta"}
-    if identities != {sid}:
-        raise ValueError("Codex transcript session_meta.id does not match this conversation")
-    rounds, diagnostics, users, trace, seen, calls = [], [], [], [], set(), {}
-    turn = None
-    user_formats = []
-    resumable, final_seen = None, False
-    evidence, has_native_trace, compaction_seen = [], False, False
+def _claude(rows: list, sid: str, *, dialogue: bool = False, rules: dict | None = None,
+            rewinds: bool = True) -> dict:
+    from .harness.base import injected_only   # the harness package imports this module
+    rows = [(line, r) for line, r in rows if not r.get("isSidechain") and not r.get("agentId")]
+    if not _own_history(rows, sid):
+        # A freshly forked file can contain only parent history and child UI metadata.
+        return {"rounds": [], "pending_tail": False, "diagnostics": []}
+    turns = _ClaudeTurns(rows, sid, dialogue, rules, rewinds, injected_only)
+    for line, row in rows:
+        turns.row(line, row)
+    return turns.result()
 
-    def finish(completion, line, terminal=None):
-        nonlocal resumable
-        inputs = users or ([_dump({"native_trigger": "inputless_after_terminal", **resumable})]
-                           if resumable else [])
+
+def _mirror_text(value: dict, origin: str) -> str | None:
+    """같은 말을 두 봉투가 실어 올 때 둘을 짝짓는 열쇠. 글만 든 것만 짝짓는다 — 다른 것이 든 내용은
+    짐작으로 지우지 않고 그대로 둔다."""
+    if origin == "legacy":
+        if isinstance(value.get("message"), str) and not any(
+                v for k, v in value.items() if k != "message"):
+            return value["message"]
+        return None
+    content = value["content"]
+    if (set(value) <= {"id", "content"} and len(content) == 1
+            and isinstance(content[0], dict) and content[0].get("type") == "text"
+            and isinstance(content[0].get("text"), str)
+            and not any(v for k, v in content[0].items() if k not in {"type", "text"})):
+        return content[0]["text"]
+    return None
+
+
+class _CodexTurns:
+    """Codex 전사의 행을 차례로 받아 턴을 라운드로 닫는다. 열린 턴에 대해 아는 것이 여기 있다.
+
+    턴은 `task_started`로 열리고 `task_complete`(`completed`)나 `turn_aborted`(`aborted`)로 닫힌다. 닫히지
+    않은 채 다음 턴이 열리면 끊긴 것이다(`started`)."""
+
+    def __init__(self, sid: str, dialogue: bool):
+        self.sid, self.dialogue = sid, dialogue
+        self.rounds, self.diagnostics, self.users, self.trace, self.seen, self.calls = [], [], [], [], set(), {}
+        self.turn = None
+        self.user_formats = []
+        self.resumable, self.final_seen = None, False
+        self.evidence, self.has_native_trace, self.compaction_seen = [], False, False
+
+    def open(self, turn) -> None:
+        """턴 하나의 것을 비운다. `turn`은 새로 열린 턴이거나, 닫힌 뒤의 None이다."""
+        self.turn, self.users, self.trace = turn, [], []
+        self.evidence, self.has_native_trace, self.compaction_seen = [], False, False
+        self.user_formats.clear()
+
+    def has_trace(self):
+        return self.has_native_trace if self.dialogue else self.trace
+
+    def finish(self, completion, line, terminal=None) -> bool:
+        inputs = self.users or ([_dump({"native_trigger": "inputless_after_terminal", **self.resumable})]
+                                if self.resumable else [])
         if not inputs:
             return False
-        if turn not in seen:
-            rounds.append({"id": turn, "user": "\n\n".join(inputs),
-                           "agent": "\n\n".join(trace + _tool_evidence(evidence, f"codex:{sid}:{turn}")
-                                                 + ([_dump(_terminal(terminal) if dialogue else terminal)] if terminal else [])),
-                           "end_line": line, "completion": completion})
-            seen.add(turn)
+        if self.turn not in self.seen:
+            self.rounds.append({
+                "id": self.turn, "user": "\n\n".join(inputs),
+                "agent": "\n\n".join(self.trace + _tool_evidence(self.evidence, f"codex:{self.sid}:{self.turn}")
+                                      + ([_dump(_terminal(terminal) if self.dialogue else terminal)] if terminal else [])),
+                "end_line": line, "completion": completion})
+            self.seen.add(self.turn)
         if completion in ("failed", "aborted", "interrupted"):
-            if users:
+            if self.users:
                 # Prior input is context, not proof that this is the same task.
-                resumable = {"previous_input_turn": turn, "previous_input": users[:]}
+                self.resumable = {"previous_input_turn": self.turn, "previous_input": self.users[:]}
         else:
-            resumable = None
+            self.resumable = None
         return True
 
-    def add_user(value, origin):
+    def add_user(self, value: dict, origin: str) -> None:
         # Some harness versions emit both envelopes. Pair only plain-text
         # mirrors, one for one; preserve the legacy bytes for captured prefixes.
         # Rich or unrecognized content stays intact rather than being guessed away.
-        key = None
-        if origin == "legacy":
-            if isinstance(value.get("message"), str) and not any(
-                    v for k, v in value.items() if k != "message"):
-                key = value["message"]
-        else:
-            content = value["content"]
-            if (set(value) <= {"id", "content"} and len(content) == 1
-                    and isinstance(content[0], dict) and content[0].get("type") == "text"
-                    and isinstance(content[0].get("text"), str)
-                    and not any(v for k, v in content[0].items() if k not in {"type", "text"})):
-                key = content[0]["text"]
-        if dialogue:
-            locator = f"codex:{sid}:{turn}:user"
+        key = _mirror_text(value, origin)
+        if self.dialogue:
+            locator = f"codex:{self.sid}:{self.turn}:user"
             content = _dialogue_content(value.get("content", value.get("message", "")), locator)
             attachments = [v for k in ("images", "local_images") for v in value.get(k, [])]
             if attachments:
@@ -784,122 +862,168 @@ def _codex(rows: list, sid: str, *, dialogue: bool = False) -> dict:
             rendered = _dump(value)
         other = "native" if origin == "legacy" else "legacy"
         if key is not None:
-            for i, (previous, previous_key) in enumerate(user_formats):
+            for i, (previous, previous_key) in enumerate(self.user_formats):
                 if previous == other and previous_key == key:
                     if origin == "legacy":
-                        users[i] = rendered
-                    user_formats[i] = ("paired", key)
+                        self.users[i] = rendered
+                    self.user_formats[i] = ("paired", key)
                     return
-        users.append(rendered)
-        user_formats.append((origin, key))
+        self.users.append(rendered)
+        self.user_formats.append((origin, key))
 
-    for line, row in rows:
+    def row(self, line: int, row: dict) -> None:
         typ, p = row.get("type"), row.get("payload", {})
         if not isinstance(p, dict):
             raise ValueError(f"unsupported Codex payload at line {line}")
         event = p.get("type")
-        if typ == "event_msg" and event == "task_started":
-            if turn and (users or (has_native_trace if dialogue else trace)):
-                if not finish("interrupted", line - 1, {
-                        "type": "superseded", "turn_id": turn, "next_turn_id": p.get("turn_id")}):
-                    diagnostics.append(f"unfinished Codex turn {turn}")
-            turn, users, trace = p.get("turn_id"), [], []
-            evidence, has_native_trace, compaction_seen = [], False, False
-            final_seen = False
-            user_formats.clear()
-        elif typ == "turn_context" and not turn:
-            turn = p.get("turn_id")
-        elif typ == "compacted" and turn:
-            compaction_seen = True
-        elif typ == "event_msg" and event == "user_message" and turn:
-            add_user({k: v for k, v in p.items() if k != "type"}, "legacy")
-        elif (typ == "event_msg" and event == "item_completed" and turn
+        if typ == "event_msg":
+            self.event(line, p, event)
+        elif typ == "turn_context" and not self.turn:
+            self.turn = p.get("turn_id")
+        elif typ == "compacted" and self.turn:
+            self.compaction_seen = True
+        elif typ == "response_item" and self.turn:
+            self.response(line, p, event)
+
+    def event(self, line: int, p: dict, event) -> None:
+        if event == "task_started":
+            self.started(line, p)
+        elif event == "user_message" and self.turn:
+            self.add_user({k: v for k, v in p.items() if k != "type"}, "legacy")
+        elif (event == "item_completed" and self.turn
               and isinstance(p.get("item"), dict) and p["item"].get("type") == "UserMessage"):
-            if p.get("turn_id") != turn or p.get("thread_id") != sid:
-                raise ValueError(f"Codex user item identity mismatch at line {line}")
-            item = p["item"]
-            if isinstance(item.get("content"), list) and item["content"]:
-                add_user({k: v for k, v in item.items() if k != "type"}, "native")
-        elif typ == "response_item" and turn:
-            meta = p.get("internal_chat_message_metadata_passthrough") or {}
-            if meta.get("turn_id") not in (None, turn):
-                raise ValueError(f"Codex response identity mismatch at line {line}")
-            goal = (event == "message" and p.get("role") == "user"
-                    and meta.get("content_item_kinds") == ["goal.internal_context"])
-            delivered = (event == "function_call_output" and not p.get("call_id")
-                         and p.get("namespace") == "codex_app"
-                         and p.get("name") in {"automation_update", "send_message_to_thread"}
-                         and meta.get("turn_id") == turn
-                         and (p["name"] != "send_message_to_thread" or not users and not resumable))
-            if goal or delivered:
-                # These are native execution triggers, not new human requests. A turn
-                # that already had input or resumable context reads as before, so its
-                # tracked hash holds; only the formerly untrackable turn is new.
-                trigger = ({"content": _dialogue_content(p.get("content", p.get("output", "")),
-                                                        f"codex:{sid}:{turn}:trigger")} if dialogue else {"item": p})
-                kind = "goal" if goal else "heartbeat" if p["name"] == "automation_update" else "thread_message"
-                users.append(_dump({"native_trigger": kind, **trigger}))
-                user_formats.append(("trigger", None))
-                continue
-            if event == "message" and p.get("role") == "assistant" and p.get("phase") == "final_answer":
-                final_seen = True  # A quiet heartbeat may intentionally finish with empty text.
-            if dialogue:
-                has_native_trace = has_native_trace or event != "message" or p.get("role") == "assistant"
-                entry = _dialogue_event(p, f"codex:{sid}:{turn}:{p.get('call_id') or p.get('id') or 'assistant'}")
-                if entry is not None:
-                    if entry["type"] in {"tool_call_ref", "tool_result_ref"}:
-                        evidence.append(entry)
-                    else:
-                        trace.append(_dump(entry))
-                continue
-            # event_msg user/agent text mirrors response_item. Keep native tool
-            # items and assistant responses once; never mistake tool output for
-            # the human's next prompt. No truncation of content or tool results.
-            if event in ("function_call", "custom_tool_call"):
-                arguments = p.get("arguments", p.get("input"))
-                try:
-                    arguments = json.loads(arguments) if isinstance(arguments, str) else arguments
-                except ValueError:
-                    pass
-                calls[p.get("call_id")] = {"name": p.get("name", ""), "input": arguments}
-            elif event in ("function_call_output", "custom_tool_call_output"):
-                p = {**p, "output": _result_content(calls.get(p.get("call_id")), p.get("output"),
-                                                    f"codex:{sid}:{turn}:{p.get('call_id')}")}
-            if event != "message" or p.get("role") == "assistant":
-                trace.append(_dump(p))
-        elif typ == "event_msg" and event == "task_complete":
-            if not turn or p.get("turn_id") != turn:
-                raise ValueError(f"Codex completion turn_id mismatch at line {line}")
-            if dialogue and not trace and str(p.get("last_agent_message") or "").strip():
-                trace.append(_dump({"type": "message", "role": "assistant", "phase": "final_answer",
-                                    "content": p["last_agent_message"]}))
-            # task_complete is authoritative; final_answer alone never commits.
-            if (compaction_seen and not users and not trace and not has_native_trace
-                    and not p.get("error") and not p.get("last_agent_message")):
-                pass  # Native maintenance completion has no dialogue to capture.
-            elif p.get("error"):
-                if not finish("failed", line, p):
-                    diagnostics.append(f"missing input for failed Codex turn {turn}")
-            elif (users or resumable) and (has_native_trace if dialogue else trace) and (
-                    str(p.get("last_agent_message") or "").strip() or final_seen):
-                finish("completed", line, p if not p.get("last_agent_message") else None)
+            self.user_item(line, p)
+        elif event == "task_complete":
+            self.completed(line, p)
+        elif event == "turn_aborted" and self.turn:
+            self.aborted(line, p)
+
+    def started(self, line: int, p: dict) -> None:
+        if self.turn and (self.users or self.has_trace()):
+            if not self.finish("interrupted", line - 1, {
+                    "type": "superseded", "turn_id": self.turn, "next_turn_id": p.get("turn_id")}):
+                self.diagnostics.append(f"unfinished Codex turn {self.turn}")
+        self.open(p.get("turn_id"))
+        self.final_seen = False
+
+    def user_item(self, line: int, p: dict) -> None:
+        if p.get("turn_id") != self.turn or p.get("thread_id") != self.sid:
+            raise ValueError(f"Codex user item identity mismatch at line {line}")
+        item = p["item"]
+        if isinstance(item.get("content"), list) and item["content"]:
+            self.add_user({k: v for k, v in item.items() if k != "type"}, "native")
+
+    def trigger(self, p: dict, event, meta: dict) -> str | None:
+        """이 항목이 사람의 말이 아니라 턴을 일으킨 것이면 그 종류."""
+        if (event == "message" and p.get("role") == "user"
+                and meta.get("content_item_kinds") == ["goal.internal_context"]):
+            return "goal"
+        if (event == "function_call_output" and not p.get("call_id")
+                and p.get("namespace") == "codex_app"
+                and p.get("name") in {"automation_update", "send_message_to_thread"}
+                and meta.get("turn_id") == self.turn
+                and (p["name"] != "send_message_to_thread" or not self.users and not self.resumable)):
+            return "heartbeat" if p["name"] == "automation_update" else "thread_message"
+        return None
+
+    def response(self, line: int, p: dict, event) -> None:
+        meta = p.get("internal_chat_message_metadata_passthrough") or {}
+        if meta.get("turn_id") not in (None, self.turn):
+            raise ValueError(f"Codex response identity mismatch at line {line}")
+        kind = self.trigger(p, event, meta)
+        if kind:
+            # These are native execution triggers, not new human requests. A turn
+            # that already had input or resumable context reads as before, so its
+            # tracked hash holds; only the formerly untrackable turn is new.
+            trigger = ({"content": _dialogue_content(p.get("content", p.get("output", "")),
+                                                    f"codex:{self.sid}:{self.turn}:trigger")}
+                       if self.dialogue else {"item": p})
+            self.users.append(_dump({"native_trigger": kind, **trigger}))
+            self.user_formats.append(("trigger", None))
+            return
+        if event == "message" and p.get("role") == "assistant" and p.get("phase") == "final_answer":
+            self.final_seen = True  # A quiet heartbeat may intentionally finish with empty text.
+        if self.dialogue:
+            self.dialogue_item(p, event)
+        else:
+            self.traced_item(p, event)
+
+    def dialogue_item(self, p: dict, event) -> None:
+        self.has_native_trace = self.has_native_trace or event != "message" or p.get("role") == "assistant"
+        entry = _dialogue_event(p, f"codex:{self.sid}:{self.turn}:{p.get('call_id') or p.get('id') or 'assistant'}")
+        if entry is not None:
+            if entry["type"] in {"tool_call_ref", "tool_result_ref"}:
+                self.evidence.append(entry)
             else:
-                diagnostics.append(f"incomplete content for completed Codex turn {turn}")
-            turn, users, trace = None, [], []
-            evidence, has_native_trace, compaction_seen = [], False, False
-            user_formats.clear()
-        elif typ == "event_msg" and event == "turn_aborted" and turn:
-            if p.get("turn_id") and p["turn_id"] != turn:
-                raise ValueError(f"Codex abort turn_id mismatch at line {line}")
-            # Native abort is a terminal record, not successful work.
-            if not finish("aborted", line, p) and (has_native_trace if dialogue else trace):
-                diagnostics.append(f"missing input for aborted Codex turn {turn}")
-            turn, users, trace = None, [], []
-            evidence, has_native_trace, compaction_seen = [], False, False
-            user_formats.clear()
-    return {"rounds": rounds, "pending_tail": bool(users) or bool(turn) or bool(diagnostics),
-            "diagnostics": diagnostics,
-            "tail": {"id": turn, "user": "\n\n".join(users)} if turn and users else None}
+                self.trace.append(_dump(entry))
+
+    def traced_item(self, p: dict, event) -> None:
+        # event_msg user/agent text mirrors response_item. Keep native tool
+        # items and assistant responses once; never mistake tool output for
+        # the human's next prompt. No truncation of content or tool results.
+        if event in ("function_call", "custom_tool_call"):
+            arguments = p.get("arguments", p.get("input"))
+            try:
+                arguments = json.loads(arguments) if isinstance(arguments, str) else arguments
+            except ValueError:
+                pass
+            self.calls[p.get("call_id")] = {"name": p.get("name", ""), "input": arguments}
+        elif event in ("function_call_output", "custom_tool_call_output"):
+            p = {**p, "output": _result_content(self.calls.get(p.get("call_id")), p.get("output"),
+                                                f"codex:{self.sid}:{self.turn}:{p.get('call_id')}")}
+        if event != "message" or p.get("role") == "assistant":
+            self.trace.append(_dump(p))
+
+    def maintenance(self, p: dict) -> bool:
+        """Native maintenance completion has no dialogue to capture."""
+        return bool(self.compaction_seen and not self.users and not self.trace and not self.has_native_trace
+                    and not p.get("error") and not p.get("last_agent_message"))
+
+    def answered(self, p: dict) -> bool:
+        return bool((self.users or self.resumable) and self.has_trace() and (
+            str(p.get("last_agent_message") or "").strip() or self.final_seen))
+
+    def completed(self, line: int, p: dict) -> None:
+        if not self.turn or p.get("turn_id") != self.turn:
+            raise ValueError(f"Codex completion turn_id mismatch at line {line}")
+        if self.dialogue and not self.trace and str(p.get("last_agent_message") or "").strip():
+            self.trace.append(_dump({"type": "message", "role": "assistant", "phase": "final_answer",
+                                     "content": p["last_agent_message"]}))
+        # task_complete is authoritative; final_answer alone never commits.
+        if self.maintenance(p):
+            pass
+        elif p.get("error"):
+            if not self.finish("failed", line, p):
+                self.diagnostics.append(f"missing input for failed Codex turn {self.turn}")
+        elif self.answered(p):
+            self.finish("completed", line, p if not p.get("last_agent_message") else None)
+        else:
+            self.diagnostics.append(f"incomplete content for completed Codex turn {self.turn}")
+        self.open(None)
+
+    def aborted(self, line: int, p: dict) -> None:
+        if p.get("turn_id") and p["turn_id"] != self.turn:
+            raise ValueError(f"Codex abort turn_id mismatch at line {line}")
+        # Native abort is a terminal record, not successful work.
+        if not self.finish("aborted", line, p) and self.has_trace():
+            self.diagnostics.append(f"missing input for aborted Codex turn {self.turn}")
+        self.open(None)
+
+    def result(self) -> dict:
+        return {"rounds": self.rounds,
+                "pending_tail": bool(self.users) or bool(self.turn) or bool(self.diagnostics),
+                "diagnostics": self.diagnostics,
+                "tail": {"id": self.turn, "user": "\n\n".join(self.users)} if self.turn and self.users else None}
+
+
+def _codex(rows: list, sid: str, *, dialogue: bool = False) -> dict:
+    identities = {r.get("payload", {}).get("id") for _, r in rows if r.get("type") == "session_meta"}
+    if identities != {sid}:
+        raise ValueError("Codex transcript session_meta.id does not match this conversation")
+    turns = _CodexTurns(sid, dialogue)
+    for line, row in rows:
+        turns.row(line, row)
+    return turns.result()
 
 
 # Kiro `turn_end.stopReason` → completion. Only end_turn is success; the rest keep their

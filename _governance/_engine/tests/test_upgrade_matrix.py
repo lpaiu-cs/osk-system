@@ -105,6 +105,7 @@ RELEASES = {
     "v5.4.1": "f3224fb1d20fbc6184ff9d7a2fd789394ab99f4a",
     "v5.4.2": "de5335774248873747a4628613a12b43559ab97a",
     "v5.5.0": "ed6376023055947292b9a467d8442bc18f975f87",
+    "v5.6.0": "e177556d1d33e89546c18f2f30d2c640de4b6d51",
 }
 LAYOUTS = {"=": "= ", "bare": "", "00_": "00_"}
 # (start, layout) -> the release whose fresh install gave the vault that layout
@@ -169,11 +170,14 @@ CELLS = {
     ("v5.5.0", "00_"): None,
     ("v5.5.0", "="): "v3.20.0",
     ("v5.5.0", "bare"): "v3.20.1",
+    ("v5.6.0", "00_"): None,
+    ("v5.6.0", "="): "v3.20.0",
+    ("v5.6.0", "bare"): "v3.20.1",
 }
 # Per PR: the oldest updater (no gate, no baseline, legacy roots), the newest
 # release on its shipped layout, and the newest release on the legacy layout
 # (most early vaults). The release workflow runs every cell (OSK_MATRIX=full).
-PR_CELLS = [("v3.20.0", "="), ("v5.5.0", "00_"), ("v5.5.0", "=")]
+PR_CELLS = [("v3.20.0", "="), ("v5.6.0", "00_"), ("v5.6.0", "=")]
 # How each release's own docs make a vault. Until v3.22 the README said "clone
 # and switch to your own remote" and nothing recorded a release baseline, so the
 # first update stops on "engine drift" and tells the user to rerun with --adopt.
@@ -294,6 +298,16 @@ def _load_hook():
     return mod
 
 
+def _vault(fn) -> tuple:
+    """From v6 the engine's functions take the vault as their first argument, module by module.
+    Pass it to the ones that do — an older engine has no such value."""
+    import inspect
+    if next(iter(inspect.signature(fn).parameters), None) != "vault":
+        return ()
+    from osk.vault import Vault
+    return (Vault.open(),)
+
+
 def _drive_content(cfg: dict) -> dict:
     """Use the vault the way an agent and its user do, with this engine only."""
     sys.path.insert(0, str(Path.cwd() / "_governance/_engine"))
@@ -317,7 +331,7 @@ def _drive_content(cfg: dict) -> dict:
         return r if r.get("ok") else ok("create_node", **kw)
 
     def state(region):
-        return approvals.state(region)
+        return approvals.state(*_vault(approvals.state), region)
 
     if cfg["phase"] == "A":
         out["key"] = _load_hook().session_key(cfg["work"])
@@ -329,7 +343,7 @@ def _drive_content(cfg: dict) -> dict:
         # From v5.2 a write only binds W1; the user names it the primary scope (`routing primary`).
         from osk import write
         if hasattr(write, "set_primary"):
-            write.set_primary(key, "W1", "matrix")
+            write.set_primary(*_vault(write.set_primary), key, "W1", "matrix")
         # From v5.0 an engine stores no dialogue on its own: it cites a turn once one exists (phase B).
         raw1 = (ok("append_raw", key, "matrix-log", "How do we keep vaults alive?",
                    "Update them with their own updater and check everything.")
@@ -475,18 +489,18 @@ def _drive_user(cfg: dict) -> dict:
     import mcp_server as m
     from osk import approvals
     region, path = cfg["region"], Path.cwd() / cfg["node"]
-    out = {"before": approvals.state(region)}
+    out = {"before": approvals.state(*_vault(approvals.state), region)}
     approved = path.read_bytes()
     r = m.update_node("Delta", old_text="confirmed twice", new_text="edited after the update")
     out["edit"] = bool(r.get("ok")) or r
-    out["pending"] = approvals.state(region)
+    out["pending"] = approvals.state(*_vault(approvals.state), region)
     _cli("revert", region, "--reason", "matrix revert")
-    out["reverted"] = approvals.state(region)
+    out["reverted"] = approvals.state(*_vault(approvals.state), region)
     out["restored"] = path.read_bytes() == approved
     r = m.update_node("Delta", old_text="confirmed twice", new_text="confirmed after the update")
     out["edit2"] = bool(r.get("ok")) or r
     _cli("approve", region, "--reason", "matrix approval after update")
-    out["approved"] = approvals.state(region)
+    out["approved"] = approvals.state(*_vault(approvals.state), region)
     return out
 
 

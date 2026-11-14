@@ -14,8 +14,9 @@ from __future__ import annotations
 import argparse, hashlib, json, os, re, subprocess, sys, tempfile
 from pathlib import Path
 
-from .core import ROOT, now_iso
+from .core import now_iso
 from . import publish
+from .vault import Vault
 
 ATTESTATION = "release.json"
 VERSION_RE = r"^v\d+\.\d+\.\d+$"        # 릴리스·태그·updater 자동 탐색의 공통 계약
@@ -109,32 +110,6 @@ def build_attestation(root: Path, version: str, ref: str = "HEAD") -> dict:
     return {"version": version, "at": now_iso(), "files": files}
 
 
-def _validate_at(root: Path) -> list[str]:
-    """release는 **자신이 릴리스하는 트리**를 그 트리의 **엔진으로** 검증한다.
-
-    데이터만 스냅샷을 보고 검증기 코드는 원본 작업 트리에서 import하면, 선언
-    도중 외부가 엔진을 고쳤을 때 "스냅샷을 그 스냅샷의 규칙으로 검증했다"가
-    성립하지 않는다. 그래서 `PYTHONPATH`도 스냅샷 안의 엔진을 가리킨다.
-    (validate는 core.ROOT 전역에 묶이므로 별도 프로세스여야 한다 —
-    fixture_approval_lifecycle와 같은 선례.)"""
-    engine = root / "_governance" / "_engine"
-    if not (engine / "osk").is_dir():
-        return [f"스냅샷에 엔진이 없다 — 검증 불성립: {engine}"]
-    code = ("import json; from osk import validate; r = validate.run(); "
-            "print(json.dumps({'v': r['verdict'], "
-            "'f': [list(x)[0] for x in r['fail']]}))")
-    env = dict(os.environ, OSK_VAULT_ROOT=str(root), PYTHONPATH=str(engine))
-    r = subprocess.run([sys.executable, "-c", code], capture_output=True,
-                       text=True, env=env, cwd=engine, timeout=120)
-    if not r.stdout.strip():
-        return [f"검증기 실행 실패: {r.stderr.strip()[-300:]}"]
-    try:
-        rep = json.loads(r.stdout.strip().splitlines()[-1])
-    except Exception:
-        return [f"검증기 출력 파싱 실패: {r.stdout[-200:]!r}"]
-    return [] if rep["v"] == "PASS" else [f"검증기 {rep['v']}: {'; '.join(rep['f'])}"]
-
-
 def guards(root: Path, base: str) -> list[str]:
     """선언의 전제를 **고정 커밋 스냅샷 `base`에서** 검사한다.
 
@@ -160,14 +135,14 @@ def guards(root: Path, base: str) -> list[str]:
         try:
             items = [(snap / rel, rel) for rel in tracked_files(snap)]
             errs += publish.guard_secrets(items)
-            errs += _validate_at(snap)
+            errs += publish.validate_at(snap)
         finally:
             _git(root, "worktree", "remove", "--force", str(snap), timeout=120)
     return errs
 
 
-def run(version: str, apply: bool = False, root: Path | None = None) -> dict:
-    root = root or ROOT
+def run(vault: Vault, version: str, apply: bool = False, root: Path | None = None) -> dict:
+    root = root or vault.root
     # 정확히 vX.Y.Z만 — updater의 자동 탐색(같은 정규식)이 인정하는 형식이어야
     # 릴리스가 영영 후보에서 누락되지 않고, git이 거부하는 태그도 원천 차단된다.
     if not re.match(VERSION_RE, version):
@@ -317,6 +292,7 @@ def run(version: str, apply: bool = False, root: Path | None = None) -> dict:
 
 
 def main(argv=None):
+    vault = Vault.open()
     ap = argparse.ArgumentParser(
         prog="osk-release",
         description="정식 릴리스 선언 — 기본은 보고, 선언은 --apply (비대화형 지원)")
@@ -324,7 +300,7 @@ def main(argv=None):
     ap.add_argument("--apply", action="store_true")
     a = ap.parse_args(argv)
     try:
-        rep = run(a.version, a.apply)
+        rep = run(vault, a.version, a.apply)
     except ReleaseError as e:
         sys.exit(f"[중단] {e}")
     print(json.dumps(rep, ensure_ascii=False, indent=2))

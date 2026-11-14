@@ -14,6 +14,7 @@ pin 기록은 노출하지 않는다. 지정·해제·승인·반려의 발의�
 승인뿐이다(§6-2 8항).
 """
 from __future__ import annotations
+import functools
 import inspect
 import re
 import sys
@@ -27,14 +28,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from mcp.server.fastmcp import FastMCP  # noqa: E402
 # 도구 함수명이 모듈명을 가리지 않게 별칭으로 들여온다 — `def search(...)`가
 # 모듈 전역의 `search`를 재결속하면 `search.Searcher`가 죽는다(7차 치명).
-from osk import (contract, epoch, graph, integration, raw, rechecks,  # noqa: E402
-                 update_check, validate, write)
+# 서버가 뜬 뒤에 디스크에서 새로 읽는 엔진 모듈이 늘면 안 된다 — 도는 프로세스는 뜬 시각의 코드를
+# 쥔다(`osk.epoch`). 그래서 쓰는 모듈은 함수 안이 아니라 여기서 읽는다. 구조 시험의 `late_loads`가 지킨다.
+from osk import (contract, distillation, epoch, graph, organization, prose, raw, rechecks,  # noqa: E402
+                 update_check, validate, write, cluster_gate, node_checks, node_moves, nodefile,
+                 conversation_cite, placement)
 from osk.harness import runs as hook_runs  # noqa: E402
 # 도구명이 모듈명을 가린다 — search와 같은 이유로 별칭 import.
 from osk import scope_memory as scope_memory_mod  # noqa: E402
 from osk import search as search_mod  # noqa: E402
-from osk.core import (DRAFTER_RE, ROOT, StaleEngineError,  # noqa: E402
-                      posix_rel, sha256_bytes)
+from osk.core import DRAFTER_RE, StaleEngineError, posix_rel, sha256_bytes  # noqa: E402
+from osk.vault import Vault  # noqa: E402
 
 # 계약이 정한 집합을 스키마가 그대로 든다 — 강제와 교육과 발견이 한 번에
 # 이뤄진다(술어는 헌법 8조 5항, 충돌 유형은 Mechanism §4 3항의 목록이며,
@@ -55,6 +59,13 @@ _index = None
 _fingerprint: tuple[str, str] | None = None
 
 
+@functools.cache
+def _vault() -> Vault:
+    """이 서버가 맡은 저장소 — 한 번 연다. 서버는 뜨기 전에 열고(아래 `__main__`), 모듈로 읽힌 때는 처음
+    쓸 때 연다. 색인 캐시(`_index`)와 수명이 같다."""
+    return Vault.open()
+
+
 def _vault_fingerprint() -> tuple[tuple[str, str], bool]:
     """전체·노드의 (상대경로, mtime_ns, size) digest 쌍과 관측 불확실 여부.
     순수 이동·개명도 경로가 바뀌므로 감지된다(파일 정본에서 재계산 원칙).
@@ -72,7 +83,7 @@ def _vault_fingerprint() -> tuple[tuple[str, str], bool]:
     되어 창이 닫힌 뒤에도 무엇과도 맞지 않는다. 믿을지 말지는 호출부가 정한다."""
     import hashlib
     errors = []
-    entries, racy = graph.index_signature(errors)
+    entries, racy = graph.index_signature(_vault(), errors)
     h = hashlib.sha256()
     for rel, mtime_ns, size, kind, target in entries:
         h.update(f"{rel}|{mtime_ns}|{size}|{kind}|{target}\n".encode())
@@ -82,7 +93,7 @@ def _vault_fingerprint() -> tuple[tuple[str, str], bool]:
     else:
         nodes = hashlib.sha256()
         for rel, mtime_ns, size, kind, target in entries:
-            if graph.is_node_home(kind):
+            if placement.is_node_home(kind):
                 nodes.update(f"{rel}|{mtime_ns}|{size}|{kind}|{target}\n".encode())
         node_key = nodes.hexdigest()
     # Evidence still invalidates the name map. Only unchanged node contracts
@@ -101,7 +112,7 @@ def _idx():
                 and _fingerprint is not None and fp[1] == _fingerprint[1]):
             _index.refresh_nonnode()
         else:
-            _index = graph.Index()
+            _index = graph.Index(_vault())
             _searcher = None
         if not _index.complete:
             _searcher = None
@@ -116,7 +127,7 @@ def _s():
     global _searcher
     idx = _idx()
     if _searcher is None:
-        _searcher = search_mod.Searcher(idx)
+        _searcher = search_mod.Searcher(_vault(), idx)
     return _searcher
 
 
@@ -195,7 +206,7 @@ def search(query: str, k: Annotated[int, Field(ge=1, le=50)] = 8,
     # `session`의 결속 scope가 순위 자질이 된다(시행령 §8 3항 locality). 쓰는 법은 세션 시작
     # 문구가 가르치므로 설명에는 싣지 않는다(상주 예산, validate.SCHEMA_BUDGET).
     global _searched
-    hits = _s().view_search(query, k, write.bindings(session) if session else None)
+    hits = _s().view_search(query, k, write.bindings(_vault(), session) if session else None)
     _searched = True
     return hits
 
@@ -215,7 +226,7 @@ def read_node(name: str, view: str | None = None) -> dict:
     if len(matches) > 1:
         return {"error": f"같은 이름의 노드가 {len(matches)}개다 "
                          f"— 어느 것인지 정해지지 않는다: "
-                         f"{[str(p.relative_to(ROOT)) for p, _k in matches]} (먼저 고쳐라)"}
+                         f"{[str(p.relative_to(_vault().root)) for p, _k in matches]} (먼저 고쳐라)"}
     hit = matches[0] if matches else None
     if not hit:
         # 쓰기 응답은 id를 돌려준다 — 그것을 핸들로 잡은 호출자에게
@@ -255,7 +266,7 @@ def read_node(name: str, view: str | None = None) -> dict:
     try:
         raw = hit[0].read_bytes()
         n = contract.parse_bytes(hit[0], raw)
-    except Exception as e:
+    except (OSError, ValueError) as e:
         return {"error": f"파싱 실패 — 수동 확인 필요: {name} ({e})"}
     # 경로는 POSIX 표기로 낸다 — 도구마다 구분자가 갈리면 ref를 손으로
     # 조립하는 호출자가 혼선을 겪는다(감사 지적). 규칙·ref 표기도 전부 슬래시다.
@@ -266,12 +277,12 @@ def read_node(name: str, view: str | None = None) -> dict:
     h = sha256_bytes(raw)
     _SEEN[n.id] = rechecks.state(raw)
     if view is not None:
-        return {"name": hit[0].stem, "path": posix_rel(hit[0], ROOT), "id": n.id,
+        return {"name": hit[0].stem, "path": posix_rel(hit[0], _vault().root), "id": n.id,
                 "summary": str(n.meta.get("summary", "")),
                 # Distinct from a CAS token: excerpts cannot authorize full replacement.
                 "view_hash": "view:" + h, "partial": True,
                 "body_chars": len(n.body), **_node_view(n.body, view)}
-    return {"name": hit[0].stem, "path": posix_rel(hit[0], ROOT), "id": n.id,
+    return {"name": hit[0].stem, "path": posix_rel(hit[0], _vault().root), "id": n.id,
             "meta": {k: str(v) for k, v in n.meta.items()},
             "hash": h,
             "body": n.body}
@@ -293,9 +304,9 @@ def _dup_id_error(paths: list[str]) -> dict:
 def _node_view(body: str, view: str) -> dict:
     if view != "outline" and not re.fullmatch(r"[0-9]{1,10}:[0-9]{1,10}", view):
         # 본문 인용 — 그 자리와 앞뒤 문단. 큰 노드의 앵커 편집이 연결어까지 고치게 한다(#273).
-        hits, windows = write.anchor_windows(body, view)
-        if hits == 0 and (spaced := write._space_numeric_tags(view)) != view:
-            hits, windows = write.anchor_windows(body, spaced)  # 저장본의 태그 방어(#292)와 같게
+        hits, windows = nodefile.anchor_windows(body, view)
+        if hits == 0 and (spaced := prose.space_numeric_tags(view)) != view:
+            hits, windows = nodefile.anchor_windows(body, spaced)  # 저장본의 태그 방어(#292)와 같게
         if hits != 1:
             return {"error": "인용이 본문에 없다 — 공백·줄바꿈까지 그대로 옮겨라" if not hits else
                     f"인용이 본문에 {hits}곳 맞는다 — 더 길게 인용하거나 views를 범위로 읽어라",
@@ -341,34 +352,34 @@ def read_cited(ref: str | None = None, space: str | None = None,
     if through is not None or conversation is not None:
         if not (through and conversation) or ref or space or view != "review":
             return {"ok": False, "violations": ["a review range read takes conversation and through only (view=review)"]}
-        return _guard(integration.read_review, conversation, through, query)
+        return _guard(conversation_cite.read_review, _vault(), conversation, through, query)
     if ref and raw.is_native(ref):
-        return _guard(lambda: {"ok": True, **integration.read_turns([ref], max_chars, view, query)["turns"][0]})
+        return _guard(lambda: {"ok": True, **conversation_cite.read_turns(_vault(), [ref], max_chars, view, query)["turns"][0]})
     if ref:
-        return _guard(raw.read_round, ref, max_chars, view, query)
-    return _guard(raw.list_records, space)
+        return _guard(raw.read_round, _vault(), ref, max_chars, view, query)
+    return _guard(raw.list_records, _vault(), space)
 
 
 def _hook_sections(session: str, include) -> dict:
     """훅이 한도 때문에 접은 블록 — 훅이 실었을 글 그대로 돌려준다(`osk.hook_text`)."""
-    from osk import core, evictions, organization
-    scope, scopes = write.resolve_session(session), write.bound_scopes(session)
+    from osk import core, evictions
+    scope, scopes = write.resolve_session(_vault(), session), write.bound_scopes(_vault(), session)
     out = {}
     for name in dict.fromkeys(include):
         try:
             if name == "recovery":
-                out[name] = scope_memory_mod.recovery_block(session)
+                out[name] = scope_memory_mod.recovery_block(_vault(), session)
             elif name == "tidy":
-                parts = (evictions.hook_parts(scope, sys.executable, str(Path(__file__).resolve().parent))
+                parts = (evictions.hook_parts(_vault(), scope, sys.executable, str(Path(__file__).resolve().parent))
                          if scope else {"banner": "", "block": ""})
                 out[name] = "\n\n".join(p for p in (parts["banner"], parts["block"]) if p)
             elif not scopes:
                 out[name] = ""
             else:
-                with core.mutation_lock():
-                    jobs = organization.pending(scopes, limit=1, record=False)
-                out[name] = "\n\n".join(t for t in (organization.hook_prompt(jobs),
-                                                   organization.bindings_prompt(session)) if t)
+                with core.mutation_lock(_vault()):
+                    jobs = organization.pending(_vault(), scopes, limit=1, record=False)
+                out[name] = "\n\n".join(t for t in (organization.hook_prompt(_vault(), jobs),
+                                                   organization.bindings_prompt(_vault(), session)) if t)
         except Exception as e:                  # 조망은 죽지 않는다(시행령 §11)
             out[name] = f"{type(e).__name__}: {e}"
     return out
@@ -383,8 +394,8 @@ def overview(session: str | None = None, include: list[HookSection] | None = Non
     `include`=훅 `[osk 접음]` 줄이 알려 준 블록 → `included`."""
     idx = _idx()
     out = {
-        "clusters": write._cluster_names(),
-        "open_cases": write._open_cases(),
+        "clusters": cluster_gate.cluster_names(_vault()),
+        "open_cases": node_checks.open_cases(_vault()),
         "broken": sorted(getattr(idx, "broken", None) or {}),
         "nodes": len(idx.nodes),
         **_engine_state(),
@@ -396,7 +407,7 @@ def overview(session: str | None = None, include: list[HookSection] | None = Non
         hit = getattr(idx, "recheck_report", None)
         if _fingerprint is None or not hit or hit[0] != _fingerprint:
             missed = rechecks.misses
-            rc = rechecks.report(idx)
+            rc = rechecks.report(_vault(), idx)
             hit = idx.recheck_report = (_fingerprint if rechecks.misses == missed else None, rc)
         rc = hit[1]
     except Exception as e:                      # 조망은 죽지 않는다(시행령 §11)
@@ -406,8 +417,8 @@ def overview(session: str | None = None, include: list[HookSection] | None = Non
     try:
         # 새 릴리스는 있을 때만 싣는다 — 훅이 없는 하네스도 이 길로 알게 된다. 확인이
         # 낡았으면 기다리지 않고 분리 프로세스로 띄운다(osk.update_check).
-        update_check.ensure_fresh()
-        up = update_check.surface()
+        update_check.ensure_fresh(_vault())
+        up = update_check.surface(_vault())
     except Exception as e:
         up = {"error": f"{type(e).__name__}: {e}"}
     if up:
@@ -416,20 +427,19 @@ def overview(session: str | None = None, include: list[HookSection] | None = Non
         try:
             # 세션 시작 훅이 이 호출을 안내한다 — 그 뒤에 불렸으면 훅 문맥이 모델에
             # 닿았다고 `doctor`가 짐작한다(기기 로컬 기록, osk.harness.runs).
-            hook_runs.record_overview(session)
+            hook_runs.record_overview(_vault(), session)
         except Exception:
             pass
         # 별칭 해소 결과(`canonical_session`)는 싣지 않는다 — Mechanism §6-2
         # 6항이 "이름의 정본을 정하는 것은 사용자의 일이므로 별칭은 표면에
         # 노출하지 않는다"고 못박는다. 착지 판단에는 `session_scope`로 족하다.
-        out["bindings"] = write.bindings(session)
+        out["bindings"] = write.bindings(_vault(), session)
         out["session_scope"] = out["bindings"]["primary"]
         if out["session_scope"]:
             # 새 노드의 자리는 이 트리에서 주제를 덮는 가장 깊은 군집이다(시행령 §3 8항)
-            from osk import organization
             try:
-                out["hub_tree"] = organization.hub_tree(
-                    organization._scope_path(out["session_scope"]), idx)
+                out["hub_tree"] = organization.hub_tree(_vault(),
+                    organization.scope_path(_vault(), out["session_scope"]), idx)
             except (OSError, ValueError):
                 pass
         if include:
@@ -437,10 +447,19 @@ def overview(session: str | None = None, include: list[HookSection] | None = Non
     return out
 
 
+def published_tools() -> list[dict]:
+    """등록부가 내놓는 도구의 이름·설명·스키마 — 검증기의 표면 린트가 읽는다(`validate.surface_lint`).
+
+    등록부를 직접 읽는다 — `list_tools()`는 코루틴이라 서버 자신의 이벤트 루프 안에서 `asyncio.run`으로 부를
+    수 없다. 이 목록은 `run_validators` 도구로도 읽히므로 동기 경로여야 한다."""
+    return [{"name": name, "description": tool.description, "inputSchema": tool.parameters}
+            for name, tool in sorted(mcp._tool_manager._tools.items())]
+
+
 @mcp.tool()
 def run_validators() -> dict:
     """전역 검증(중복 id·위상·대장 손상·파싱 실패). 보고만 하며 수정하지 않는다."""
-    return validate.run()
+    return validate.run(_vault(), published_tools)
 
 
 # ── 쓰기 (osk.write 단일 통로) ───────────────────────────────────────────
@@ -462,11 +481,10 @@ def create_node(title: Title, summary: Summary, body: str, drafter: Drafter,
     if not _searched:
         return {"ok": False, "violations": [SEARCH_FIRST]}
     if distill is not None:
-        from osk import distillation
-        return _guard(distillation.create_node, distill, title=title,
+        return _guard(distillation.create_node, _vault(), distill, title=title,
                       summary=summary, body=body, drafter=drafter,
                       session=session, space=space, edges=edges, settle=settle)
-    return _guard(write.create_node, title, summary, body, drafter,
+    return _guard(write.create_node, _vault(), title, summary, body, drafter,
                   session, space, edges, settle)
 
 
@@ -487,14 +505,13 @@ def update_node(name: str, body: str | None = None,
     처분 결과: `settlement`. `distill`은 `create_node`와 같다.
     저장 후 연결만 재개: `distill={resume:키}`."""
     if distill is not None:
-        from osk import distillation
         # 주지 않은 `rechecked`는 싣지 않는다 — 요청 결속이 이 인자 이전의 작업과 같게 남는다
         extra = {} if rechecked is None else {"rechecked": rechecked}
-        return _guard(distillation.update_node, distill, name=name, body=body,
+        return _guard(distillation.update_node, _vault(), distill, name=name, body=body,
                       expect_hash=expect_hash, summary=summary, add_edges=add_edges,
                       remove_edges=remove_edges, old_text=old_text,
                       new_text=new_text, settle=settle, **extra, _seen=_SEEN)
-    return _guard(write.update_node, name, body, expect_hash, summary,
+    return _guard(write.update_node, _vault(), name, body, expect_hash, summary,
                   add_edges, remove_edges, old_text, new_text, settle, rechecked,
                   _seen=_SEEN)
 
@@ -506,7 +523,7 @@ def move_nodes(names: list[str], dest_space: str) -> dict:
     군집이면 만들어지되 허브는 없다. 허브는 거부하니 군집째는 `move_cluster`다.
     응답의 `hub_links`가 **양쪽** 허브에서 뺄 것(`remove`)과 더할 것(`add`)을
     준다 — 둘 다 해야 도달이 산다. `crossed_scope`가 오면 먼저 읽어라."""
-    return _guard(write.move_nodes, names, dest_space)
+    return _guard(node_moves.move_nodes, _vault(), names, dest_space)
 
 
 @mcp.tool()
@@ -514,7 +531,7 @@ def move_cluster(name: str, dest_parent: str) -> dict:
     """하위 군집을 폴더째 옮긴다 — `name`은 그 군집(=허브)의 이름, `dest_parent`
     는 새 부모(`clusters`). 아래 군집도 함께 가며 최상위는 못 건넌다.
     `hub_links`는 `move_nodes`와 같다."""
-    return _guard(write.move_cluster, name, dest_parent)
+    return _guard(node_moves.move_cluster, _vault(), name, dest_parent)
 
 
 @mcp.tool()
@@ -524,7 +541,7 @@ def record_candidate(type: CandidateType,
     """충돌 후보 상정 — 사용자 심의를 요청한다. 같은 근거가 이미 있으면 기존
     기록을 돌려주므로 재호출이 안전하다. `nodes`는 서로 다른 둘 이상의 노드
     이름이다."""
-    return _guard(write.record_candidate, type, nodes, reason)
+    return _guard(write.record_candidate, _vault(), type, nodes, reason)
 
 
 @mcp.tool()
@@ -534,7 +551,7 @@ def cite_round(conversation: str, quote: str | None = None, turn: str | None = N
     quote(사용자 발화 일부)·turn(ID, -1=최신)으로 고르면 엔진이 발화를 옮긴다 —
     전문을 보내지 않는다. note=요지, user=원본 없을 때만. 같은 턴은 같은 round_ref.
     coordinate=관측 줄 좌표."""
-    return _guard(integration.cite, conversation, quote, turn, note, user=user)
+    return _guard(conversation_cite.cite, _vault(), conversation, quote, turn, note, user=user)
 
 
 @mcp.tool()
@@ -550,8 +567,8 @@ def scope_memory(session: str, text: str | None = None,
     `session`은 `create_node`와 같은 값, `space`는 `00_Scope/<이름>` **두 마디**만.
     상한 1500자."""
     if text is None and edits is None:
-        return _guard(scope_memory_mod.read, session, space)
-    return _guard(scope_memory_mod.replace, session, text, expect_hash, space,
+        return _guard(scope_memory_mod.read, _vault(), session, space)
+    return _guard(scope_memory_mod.replace, _vault(), session, text, expect_hash, space,
                   edits)
 
 
@@ -587,4 +604,5 @@ _apply_prune()
 
 
 if __name__ == "__main__":
+    _vault()      # 열 수 없는 저장소(같은 공간의 폴더가 둘)에서는 뜨지 않는다 — 떠서 도구마다 실패하지 않는다
     mcp.run()

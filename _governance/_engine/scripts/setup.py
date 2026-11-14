@@ -21,15 +21,19 @@ import venv
 from pathlib import Path
 
 ENGINE = Path(__file__).resolve().parents[1]
-# 엔진(core.ROOT)과 같은 규칙 — 환경이 vault를 가리키면 그것, 아니면 이 파일의 자리.
-ROOT = Path(os.environ.get("OSK_VAULT_ROOT") or ENGINE.parents[1])
 # 서버가 기동할 때 import하는 것 — doctor의 등록 해석기 점검(_PROBE)과 같은 기준이다.
 PROBE = ("import sys; assert sys.version_info >= (3, 11); import mcp.server.fastmcp, pydantic, "
          "yaml, rank_bm25; from zoneinfo import ZoneInfo; ZoneInfo('Asia/Seoul')")
 
 
-def venv_python() -> Path:
-    return ROOT / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+def vault_root() -> Path:
+    """엔진(`osk.vault.default_root`)과 같은 규칙 — 환경이 vault를 가리키면 그것, 아니면 이 파일의 자리.
+    엔진은 의존성 없이는 import되지 않으므로 여기서 따로 정한다."""
+    return Path(os.environ.get("OSK_VAULT_ROOT") or ENGINE.parents[1])
+
+
+def venv_python(root: Path) -> Path:
+    return root / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 
 
 def ready(py: Path) -> bool:
@@ -42,11 +46,11 @@ def ready(py: Path) -> bool:
         return False
 
 
-def prepare(py: Path) -> None:
+def prepare(root: Path, py: Path) -> None:
     """`.venv`를 만들고(없으면) 의존성을 설치한다 — CI가 검증한 판(constraints.txt)으로."""
     if not py.is_file():
-        print(f"osk: {ROOT / '.venv'}를 만든다", file=sys.stderr)
-        venv.EnvBuilder(with_pip=True).create(ROOT / ".venv")
+        print(f"osk: {root / '.venv'}를 만든다", file=sys.stderr)
+        venv.EnvBuilder(with_pip=True).create(root / ".venv")
     cmd = [str(py), "-m", "pip", "install", "-r", str(ENGINE / "requirements.txt")]
     if (ENGINE / "constraints.txt").is_file():
         cmd += ["-c", str(ENGINE / "constraints.txt")]
@@ -59,18 +63,19 @@ def main() -> int:
     if sys.version_info < (3, 11):
         sys.exit("osk에는 Python 3.11 이상이 필요하다 — 3.11 이상의 python으로 다시 실행한다")
     args = sys.argv[1:]
-    py = venv_python()
+    root = vault_root()
+    py = venv_python(root)
     if not ready(py):
         if not {"--apply", "--interactive"} & set(args):
             state = "incomplete" if py.is_file() else "missing"
-            out = {"ok": False, "venv": str(ROOT / ".venv"), "state": state,
+            out = {"ok": False, "venv": str(root / ".venv"), "state": state,
                    "next": "--apply로 부르면 .venv를 만들고 의존성을 설치한 뒤 계획을 보인다"}
             sys.stdout.buffer.write((json.dumps(out, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
             return 0
-        prepare(py)
-    env = {**os.environ, "OSK_VAULT_ROOT": str(ROOT), "PYTHONPATH": str(ENGINE), "PYTHONUTF8": "1"}
+        prepare(root, py)
+    env = {**os.environ, "OSK_VAULT_ROOT": str(root), "PYTHONPATH": str(ENGINE), "PYTHONUTF8": "1"}
     module = ["osk.cli", "doctor", *args[1:]] if args[:1] == ["doctor"] else ["osk.setup", *args]
-    return subprocess.run([str(py), "-m", *module], env=env, cwd=str(ROOT)).returncode
+    return subprocess.run([str(py), "-m", *module], env=env, cwd=str(root)).returncode
 
 
 if __name__ == "__main__":

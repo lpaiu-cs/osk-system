@@ -6,7 +6,7 @@
 
 이 모듈이 남기는 것은 두 가지다:
 - 구체제 서명 기록부의 **판독**(사료 열람·감사): records()·latest_by_node().
-- 서명과 무관한 **판독 헬퍼**: 파일의 id 해석(_id_of·locate_by_id), 사건 헤더
+- 서명과 무관한 **판독 헬퍼**: 파일의 id 해석(id_of), 사건 헤더
   파싱(parse_case). 이들은 write·graph·validate가 공유한다.
 
 대장·사건부에 적힌 **경로와 사건 번호는 신뢰 밖 입력**이다(다기기 병합).
@@ -16,27 +16,28 @@ from __future__ import annotations
 import functools
 from pathlib import Path
 
-from .core import SIGNATURES, ledger_read
+from .core import ledger_read
 from . import contract
+from .vault import Vault
 
 
-def records() -> list[dict]:
+def records(vault: Vault) -> list[dict]:
     """구체제 서명 기록부 판독 — 사료 열람·감사 전용."""
-    return ledger_read(SIGNATURES)
+    return ledger_read(vault.signatures)
 
 
-def latest_by_node() -> dict[str, dict]:
+def latest_by_node(vault: Vault) -> dict[str, dict]:
     """노드별 마지막 서명 기록(사료 요약). 판정에는 쓰지 않는다 — 서명은
     더 이상 효력의 근거가 아니다."""
     out: dict[str, dict] = {}
-    for r in records():
+    for r in records(vault):
         n = r.get("node")
         if n:
             out[n] = r
     return out
 
 
-def _id_of(p: Path) -> str | None:
+def id_of(p: Path) -> str | None:
     """파일의 id — 계약 파서 한 갈래로만 읽는다. 정규식 파서를 따로 두면
     따옴표 표기처럼 계약은 통과하는 노드가 판정에서만 미아가 된다."""
     import yaml
@@ -45,25 +46,6 @@ def _id_of(p: Path) -> str | None:
     except (OSError, ValueError, AttributeError, yaml.YAMLError):
         return None
     return i or None
-
-
-def locate_by_id(node_id: str) -> Path | None:
-    """현재 vault에서 id로 노드 파일을 찾는다 — 경로 이동은 동일성을 깨지
-    않으므로(경로는 상태) id 해석이 정본이다.
-
-    같은 id가 둘 이상이면 **고르지 않고 `None`을 낸다.** 구판은 첫 일치에서
-    멈춰, `by_id`(뒤가 이긴다)·`read_node`와 서로 다른 파일을 가리켰다 —
-    id 해석의 동점 규칙이 세 갈래로 갈려 있었다. 지금 이 함수의 생산
-    호출자는 없지만, 규칙이 갈린 채로 두면 다음 호출자가 그 함정을 다시
-    연다. 서명 판정에서 `None`은 fail-closed(=`unsigned`)로 떨어진다."""
-    from . import graph
-    hit = None
-    for p, _k in graph.iter_nodes():
-        if _id_of(p) == node_id:
-            if hit is not None:
-                return None       # 모호 — 표면이 임의로 한쪽을 택하지 않는다
-            hit = p
-    return hit
 
 
 # 로더는 처음 판독할 때 만든다 — yaml의 import는 20 ms 남짓이라 사건을 읽지 않는
@@ -105,6 +87,6 @@ def parse_case(case_path: Path) -> dict | None:
     import yaml
     try:
         data = yaml.load(head, Loader=_strict_loader())
-    except (yaml.YAMLError, TypeError):
+    except Exception:      # 격리: 로더가 무엇을 내든 읽지 못한 머리다
         return None
     return data if isinstance(data, dict) else None
