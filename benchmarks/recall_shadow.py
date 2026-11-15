@@ -4,9 +4,10 @@
 프롬프트를 질의로 삼아 미리 싣는다. 싣기 전에 잴 수 있는 것이 있다: 지난 대화에서 에이전트가 읽거나
 고친 노드를, 그 턴을 연 사용자의 말만으로 검색이 찾았겠는가.
 
-    python benchmarks/recall_shadow.py --vault <저장소> [--projects ~/.claude/projects] [--json 결과.json]
+    python benchmarks/recall_shadow.py --vault <저장소> [--projects ~/.claude/projects] [--json 결과.json] [--all]
 
-- 읽는 것: Claude Code의 전사(저장소 밖)와 저장소의 노드. 저장소에 남기는 것은 없다 — 색인이 `.osk/`에
+- 읽는 것: Claude Code의 전사(저장소 밖)와 저장소의 노드. 전사는 이 저장소의 대화 커서가 있는 대화의 것만
+  읽는다 — `--all`이면 커서가 없는 대화의 것도 읽는다. 저장소에 남기는 것은 없다 — 색인이 `.osk/`에
   잠깐 두었다 지우는 탐침 파일은 엔진이 검색할 때마다 하는 일이다.
 - 내는 것: 수뿐이다. 질의도 노드의 이름도 내지 않는다 — 전사에는 사용자의 대화가 있다.
 - 한 턴: 사용자의 말에서 다음 사용자의 말까지다. 그 사이에 osk 도구로 읽은(`read_node`) 노드와
@@ -24,14 +25,14 @@
 - 지금의 저장소로 잰다. 그때의 저장소가 아니다. 그 뒤에 생긴 노드가 함께 겨루고, 이름이 바뀐 노드는
   "지금 검색 대상에 없는 이름"으로 빠진다.
 - 실제 검색은 세션의 결속(그 프로젝트의 scope)을 순위에 넣는다. 넣지 않은 수와 넣은 수를 함께 낸다. 결속은
-  저장소의 대화 커서가 적어 둔 세션의 지금 결속이다 — 커서가 없는 대화의 턴은 결속 없이 잰다. 에이전트의
+  저장소의 대화 커서가 적어 둔 세션의 지금 결속이다 — 결속에 scope가 없는 대화의 턴은 결속 없이 잰다. 에이전트의
   검색은 `session`을 실었던 것만 그 결속을 넣어 다시 돌린다.
-- 전사가 어느 저장소의 것인지는 가리지 않는다 — 한 기계에서 저장소를 둘 쓰면 섞인다. 이 저장소의 커서가 있는
-  대화의 턴 수를 함께 낸다(`in_conversations_this_vault_recorded`). 커서는 이 저장소의 경로(`root`)가 적힌 것만
-  센다. `--recorded-only`는 그 대화의 턴만 잰다 — 저장소를 둘 쓰는 기계에서 쓴다.
+- 전사의 소속은 대화 커서로 가른다. 커서는 이 저장소의 경로(`root`)가 적힌 것만 센다. 커서가 없는
+  대화는 기본에서 빠지고, `--all`로 함께 재면 어느 저장소의 것인지 확인되지 않는 턴이 섞인다. 잰 턴 가운데
+  커서가 있는 대화의 턴 수를 함께 낸다(`in_conversations_this_vault_recorded`).
 - 호출의 결과는 보지 않는다 — 받아들여지지 않은 `read_node`·`update_node`도 쓰인 것으로 센다. 에이전트가 그
-  노드를 찾아 쓰려 한 턴이기 때문이다. 2026-11-15의 운영 기록에서 이 셈법으로 들고 나는 것은 쓰인 이름
-  5,642건 가운데 7건이었다.
+  노드를 찾아 쓰려 한 턴이기 때문이다. 2026-11-15의 운영 기록(전사 전체)에서 이 셈법으로 들고 나는 것은 쓰인
+  이름 5,642건 가운데 7건이었다.
 - 쓰인 노드는 에이전트가 한 일이지 했어야 할 일이 아니다. 찾지 못해 읽지 않은 노드는 여기에 없다.
 - Claude Code의 전사만 읽는다.
 """
@@ -135,11 +136,15 @@ def _rows(path: Path):
                 continue
 
 
-def samples(projects: Path) -> tuple[list[dict], int]:
+def samples(projects: Path, only=None) -> tuple[list[dict], int]:
     """전사들의 턴. 이어 받은 세션은 앞부분을 원본과 같은 uuid로 가지므로 턴은 uuid마다 한 번만 센다 — 도중에
-    끊긴 사본은 원본의 앞부분이라, 쓴 노드가 더 많은 쪽을 남긴다. uuid가 없는 행의 턴은 합치지 않는다."""
+    끊긴 사본은 원본의 앞부분이라, 쓴 노드가 더 많은 쪽을 남긴다. uuid가 없는 행의 턴은 합치지 않는다.
+
+    `only`(대화 id의 모음)를 주면 그 밖의 전사는 읽지 않는다 — 합치기 전에 거르므로 남는 사본은 그 안의 것이다."""
     kept, files = {}, 0
     for path in sorted(projects.glob("*/*.jsonl")):
+        if only is not None and path.stem not in only:
+            continue
         files += 1
         for turn in turns(_rows(path)):
             key = turn["id"] or object()
@@ -307,13 +312,12 @@ def main(argv=None) -> int:
     ap.add_argument("--projects", type=Path, default=Path.home() / ".claude" / "projects")
     ap.add_argument("--max-query-chars", type=int, default=2000)
     ap.add_argument("--json", type=Path, help="결과를 이 파일에도 쓴다")
-    ap.add_argument("--recorded-only", action="store_true", help="이 저장소의 대화 커서가 있는 대화의 턴만 잰다")
+    ap.add_argument("--all", action="store_true",
+                    help="커서가 없는 대화의 전사도 잰다 — 어느 저장소의 것인지 확인되지 않는다")
     a = ap.parse_args(argv)
-    found, files = samples(a.projects)
     vault = Vault.open(a.vault)
     local_of = bindings_by_conversation(vault)
-    if a.recorded_only:
-        found = [t for t in found if t["conversation"] in local_of]
+    found, files = samples(a.projects, None if a.all else local_of)
     report = {"transcripts": files, **measure(search.Searcher(vault), found, a.max_query_chars, local_of)}
     text = json.dumps(report, ensure_ascii=False, indent=2)
     if a.json:
