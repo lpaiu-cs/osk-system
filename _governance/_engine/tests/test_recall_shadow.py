@@ -49,13 +49,14 @@ ROWS = [
 
 
 class Stub:
-    """질의마다 정해 둔 차례를 돌려주는 검색기."""
+    """질의마다 정해 둔 차례를 돌려주는 검색기. 질의마다 넘어온 결속을 `seen`에 적는다."""
 
     def __init__(self, ranking: dict):
-        self.ranking = ranking
+        self.ranking, self.seen = ranking, {}
         self.paths = [(name, None, SimpleNamespace(id=f"id-{name}")) for name in "ABCDE"]
 
     def view_search(self, query, k=8, local=None):
+        self.seen[query] = local
         ranking = self.ranking.get((query, "bound") if local else query) or self.ranking.get(query, "")
         return [{"id": f"id-{name}"} for name in ranking][:k]
 
@@ -66,14 +67,15 @@ def problems() -> list[str]:
     if [t["query"] for t in found] != ["첫 질문", "넷째 질문"]:
         bad.append(f"turns: queries {[t['query'] for t in found]}")
     first = found[0] if found else {}
-    if (first.get("read"), first.get("updated"), first.get("searches")) != (["A", "C"], ["[[B]]"], ["agent query"]):
+    if (first.get("read"), first.get("updated"), first.get("searches")) \
+            != (["A", "C"], ["[[B]]"], [("agent query", False)]):
         bad.append(f"turns: first turn {first.get('read')} {first.get('updated')} {first.get('searches')}")
 
     # 앞 턴의 것: 넷째 턴의 바로 앞 사용자의 말은 노드를 쓰지 않은 둘째 질문이고, 에이전트가 바로 앞에 한 말과
-    # 앞 턴들이 쓰거나 만든 노드가 따라온다. 첫 턴에는 앞의 말이 없다.
+    # 앞 턴들이 쓰거나 만든 노드가 호출한 차례대로 따라온다. 첫 턴에는 앞의 말이 없다.
     last = found[-1] if found else {}
     if (last.get("previous"), last.get("reply"), last.get("earlier"), first.get("reply")) \
-            != ("둘째 질문", "에이전트의 답", ["A", "New", "C", "[[B]]", "New"], None):
+            != ("둘째 질문", "에이전트의 답", ["A", "[[B]]", "New", "New", "C"], None):
         bad.append(f"turns: carried {last.get('previous')} {last.get('reply')} {last.get('earlier')}")
 
     # 첫 턴: A는 둘째, B는 없음, C는 첫째. 넷째 턴: A가 넷째. 에이전트의 검색은 A만 찾는다.
@@ -90,7 +92,7 @@ def problems() -> list[str]:
     replied = report["recall"]["prompt + end of the agent's last reply"]
     if (replied["@1"], replied["@3"]) != (0.0, 0.25):
         bad.append(f"measure: with the agent's reply {replied}")
-    # 검색 없이: 넷째 턴의 A는 앞 턴들이 쓴 노드 가운데 셋째로 최근이다(B, C, A — New는 지금 검색 대상에 없다).
+    # 검색 없이: 넷째 턴의 A는 앞 턴들이 쓴 노드 가운데 셋째로 최근이다(C, B, A — New는 지금 검색 대상에 없다).
     carried = report["carried_from_earlier_turns"]
     if (carried["@1"], carried["@3"]) != (0.0, 0.25) or report["either@8"]["prompt or carried"] != 0.75:
         bad.append(f"measure: carried {carried} {report['either@8']}")
@@ -126,22 +128,53 @@ def problems() -> list[str]:
     if report["turns"]["with_a_binding"] != 0:
         bad.append("measure: a binding counted without bindings")
 
+    # 커서가 있는 대화(결속이 없는 것도)의 턴을 따로 센다. 에이전트의 검색은 session을 실었던 것에만 결속을 넘긴다.
+    binding = {"scopes": ["s"], "primary": "s"}
+    mixed = [{"query": "q", "read": ["A"], "updated": [], "conversation": conversation,
+              "searches": [(f"bound {conversation}", True), (f"plain {conversation}", False)]}
+             for conversation in ("c1", "c2", "c3")]
+    seen = rs.measure(stub, mixed, 2000, {"c1": binding, "c2": None})
+    if (seen["turns"]["in_conversations_this_vault_recorded"], seen["turns"]["with_a_binding"]) != (2, 1):
+        bad.append(f"measure: conversations this vault recorded {seen['turns']}")
+    if [stub.seen[f"{how} {c}"] for how in ("bound", "plain") for c in ("c1", "c2", "c3")] \
+            != [binding, None, None, None, None, None]:
+        bad.append(f"measure: bindings passed to the agent's searches {stub.seen}")
+
+    # 최근의 차례는 호출한 차례다: read A → update B → read C 다음 턴이 C를 쓰면 C가 가장 최근이다.
+    order = list(rs.turns([user("t1"), calls(("read_node", {"name": "A"}), ("update_node", {"name": "B"})),
+                           calls(("read_node", {"name": "C"})), user("t2"), calls(("read_node", {"name": "C"}))]))
+    if rs.measure(stub, order, 2000)["carried_from_earlier_turns"]["@1"] != 0.25:
+        bad.append(f"measure: carried in call order {order[-1].get('earlier')}")
+
     # 지금 검색 대상에 없는 이름은 따로 센다. 쓰인 노드가 하나도 남지 않은 턴은 재지 않는다.
     gone = rs.measure(stub, [{"query": "q", "read": ["없는 노드"], "updated": [], "searches": []}], 2000)
     if (gone["used_nodes"]["names_not_searchable_now"], gone["turns"]["not_measurable"]) != (1, 1):
         bad.append(f"measure: unknown names {gone['used_nodes']} {gone['turns']}")
 
-    # 이어 받은 세션은 앞부분을 사본으로 가진다 — 같은 턴은 한 번만 센다.
-    with tempfile.TemporaryDirectory() as tmp:
-        for name in ("a", "b"):
-            folder = Path(tmp) / "project"
-            folder.mkdir(exist_ok=True)
-            (folder / f"{name}.jsonl").write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in ROWS)
-                                                  + "찢긴 줄\n", encoding="utf-8")
-        both, files = rs.samples(Path(tmp))
-        if (len(both), files) != (2, 2):
-            bad.append(f"samples: {len(both)} turns from {files} files")
+    bad += _copies()
     return bad
+
+
+def _turn(uuid, *names, text="같은 말"):
+    return [user(text, **({"uuid": uuid} if uuid else {})), calls(*[("read_node", {"name": n}) for n in names])]
+
+
+def _copies() -> list[str]:
+    """이어 받은 세션의 사본은 원본과 같은 uuid를 가진다 — uuid마다 한 번만 세고, 도중에 끊긴 사본보다 쓴 노드가
+    많은 쪽을 남긴다. uuid가 다르면 말과 노드가 같아도 따로 센다. uuid가 없는 턴은 합치지 않는다."""
+    files = {"a": _turn("u1", "A") + _turn("u2", "A") + _turn("u3", "A") + _turn("u5", "A", "B") + _turn(None, "C"),
+             "b": _turn("u1", "A") + _turn("u4", "A") + _turn("u3", "A", "B") + _turn("u5", "A") + _turn(None, "C")}
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp) / "project"
+        folder.mkdir()
+        for name, rows in files.items():
+            (folder / f"{name}.jsonl").write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows)
+                                                  + "찢긴 줄\n", encoding="utf-8")
+        found, count = rs.samples(Path(tmp))
+    got = sorted((t["id"] or "-", t["conversation"], tuple(t["read"])) for t in found)
+    want = [("-", "a", ("C",)), ("-", "b", ("C",)), ("u1", "a", ("A",)), ("u2", "a", ("A",)),
+            ("u3", "b", ("A", "B")), ("u4", "b", ("A",)), ("u5", "a", ("A", "B"))]
+    return [] if (got, count) == (want, 2) else [f"samples: {got} from {count} files"]
 
 
 def main() -> int:
