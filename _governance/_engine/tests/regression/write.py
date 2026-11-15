@@ -650,7 +650,10 @@ def test_evidence_line_format_on_write():
         r = _w(write.update_node, VAULT, "regr-evfmt", old_text="본문", new_text="고친 본문")
         check("이미 있던 틀린 줄은 무관한 수정을 막지 않고 응답에 실린다",
               r["ok"] and r.get("malformed_evidence") == [bads[1]], r)
-        fixed = "- 2026-11-07 · `https://example.com/pr/12` · 반례 — 고친 줄"
+        r = _w(write.update_node, VAULT, "regr-evfmt", old_text=bads[1], new_text=f"{bads[1]}\n{bads[1]}")
+        check("이미 있던 틀린 줄과 같은 줄을 하나 더 더하면 거부한다",
+              not r["ok"] and r["violations"].count(f"형식이 다른 관측 줄: {bads[1][:60]}") == 1, r)
+        fixed ="- 2026-11-07 · `https://example.com/pr/12` · 반례 — 고친 줄"
         r = _w(write.update_node, VAULT, "regr-evfmt", old_text=bads[1], new_text=fixed)
         check("틀린 줄을 바르게 고치면 받고 목록이 빈다", r["ok"] and "malformed_evidence" not in r, r)
     finally:

@@ -4,6 +4,7 @@
 Mechanism §6-2 4항)을 본다. 쓰기(`write`)와 이동(`node_moves`)이 같은 검사를 쓴다."""
 from __future__ import annotations
 import os, re, tempfile
+from collections import Counter
 from pathlib import Path
 from .core import ID_RE, CASE_RE, sha256_file
 from . import contract, evidence, graph, nodefile, rechecks, placement, topology
@@ -91,8 +92,9 @@ EVIDENCE_FORMAT = ("관측 줄의 꼴은 `- YYYY-MM-DD · `좌표` · 지지|조
 def new_malformed(body: str, previous_body: str | None) -> list[str]:
     """이번 쓰기가 더하거나 고친 형식 위반 관측 줄. 이미 있던 줄은 막지 않는다 —
     남이 만든 위반 때문에 내 쓰기가 막히면 안 된다(설계 D10). 그 줄은 응답이 알린다."""
-    old = set(evidence.malformed(previous_body or ""))
-    errs = [f"형식이 다른 관측 줄: {line[:60]}" for line in evidence.malformed(body) if line not in old]
+    # 줄의 수로 견준다 — 이미 있던 위반 줄과 같은 줄을 하나 더 더한 것도 이번 쓰기가 더한 것이다
+    added = Counter(evidence.malformed(body)) - Counter(evidence.malformed(previous_body or ""))
+    errs = [f"형식이 다른 관측 줄: {line[:60]}" for line in added.elements()]
     return errs + [EVIDENCE_FORMAT] if errs else []
 
 
