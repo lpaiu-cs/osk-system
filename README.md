@@ -395,3 +395,6 @@ simplification — is in the [v6 roadmap](docs/v6-roadmap.md) (in Korean).
 ## License
 
 [MIT](LICENSE)
+
+The governing documents (the Constitution, the Bylaws, and their archives) are the work of lpaiu-cs. They are
+distributed under the same MIT license as the rest of the repository.
