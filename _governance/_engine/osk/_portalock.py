@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import errno
+import time
 
 try:
     import fcntl
@@ -27,8 +28,8 @@ _REGION = 1      # 선두 1바이트 — 잠금 참여자 전원이 공유하는
 # append와 전역 쓰기 잠금이 통째로 멈춘다. 이 파일이 없애려는 무한대기와
 # 정확히 같은 실패 형태다.
 #
-# 실측(Windows 11 CRT): LK_LOCK은 1초 간격 10회 재시도 뒤 EDEADLOCK(36),
-# LK_NBLCK은 즉시 EACCES(13). 런타임에 따라 LK_LOCK도 EACCES로 오므로 둘 다 본다.
+# 실측(Windows 11 CRT): LK_NBLCK은 경합이면 즉시 EACCES(13)이다. 옛 대기의 LK_LOCK은 1초 간격
+# 10회 재시도 뒤 EDEADLOCK(36)이었다 — 런타임에 따라 다르게 올 수 있으므로 둘 다 경합으로 본다.
 _CONTENTION = {getattr(errno, "EDEADLOCK", errno.EDEADLK), errno.EACCES}
 
 
@@ -44,15 +45,17 @@ def lock_exclusive(f, blocking: bool = True) -> None:
         if not blocking:
             msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, _REGION)
             return
-        # LK_LOCK은 1초 간격 10회만 재시도하고 실패한다 — POSIX flock의 무기한
-        # 대기와 맞추려면 성공할 때까지 다시 건다. 단 **경합일 때만**이다.
+        # POSIX flock의 무기한 대기와 맞추려면 성공할 때까지 다시 건다. 단 **경합일 때만**이다.
+        # LK_LOCK은 1초 간격으로만 다시 걸어 짧게 쥔 잠금도 1초를 기다렸다(1.5초 쥔 잠금을 2.06초에
+        # 얻었다, #320) — LK_NBLCK를 20 ms 간격으로 다시 건다(같은 잠금을 1.53초에 얻었다).
         while True:
             try:
-                msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, _REGION)
+                msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, _REGION)
                 return
             except OSError as e:
                 if e.errno not in _CONTENTION:
                     raise           # EBADF·EINVAL 등은 재시도로 낫지 않는다
+                time.sleep(0.02)
     finally:
         f.seek(pos)
 

@@ -573,10 +573,19 @@ def ledger_read(path: Path) -> list[dict]:
     올리는 것은 둘뿐이다 — 읽지 못하면 `OSError`, 읽었는데 기록으로 해석되지 않으면 `LedgerDamage`."""
     if not path.exists():
         return []
-    try:
-        text = path.read_text(encoding="utf-8")
-    except UnicodeDecodeError as e:
-        raise _not_utf8(path, e) from e
+    # Windows의 바이트 구간 잠금은 강제 잠금이다 — 대장에 잇는 프로세스(`ledger_extend`)가 첫 바이트를 쥔
+    # 동안 읽기는 PermissionError다. 쥐는 시간은 짧으므로 잠깐씩 다시 읽는다(#320). 가장 큰 대장(성장
+    # 기록부 28.9 MB)에서 잰 쥐는 시간이 264 ms였다. 예산(1.88초)을 다 쓰면 그 예외를 그대로 올린다.
+    for wait in (0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, None):
+        try:
+            text = path.read_text(encoding="utf-8")
+            break
+        except UnicodeDecodeError as e:
+            raise _not_utf8(path, e) from e
+        except PermissionError:
+            if os.name != "nt" or wait is None:
+                raise
+            time.sleep(wait)
     return _parse_lines(text, path)
 
 

@@ -16,6 +16,7 @@ from regression.ledger import (
     test_anchor_no_order_fallback, test_conflict_candidates, test_conflicts_open_case_path, test_conflicts_semantics,
     test_cycle_normalization, test_fingerprint_move, test_fork_failclosed_and_reseal,
     test_jsonl_readers_line_separators, test_ledger_corruption_resilience, test_ledger_damage_is_a_kind,
+    test_ledger_read_waits_out_append_lock,
     test_ledger_line_boundaries, test_ledger_row_shape, test_ledger_schema_segment, test_ledger_separators_candidate,
     test_ledger_separators_move, test_path_reuse, test_rid_monotone, test_ridless_unsign_not_swallowed,
     test_root_confinement_and_kst, test_same_ms_chain_signed, test_structural_damage
@@ -224,7 +225,8 @@ if __name__ == "__main__":
                test_publish_binds_checked_bytes,
                test_publish_validator_uses_snapshot, test_publish_external_engine_preserves_manifest,
                test_validate_at_uses_snapshot_engine, test_publish_preserves_mapped_dot_directories,
-               test_ledger_damage_is_a_kind, test_node_parse_raises_only_its_kinds,
+               test_ledger_damage_is_a_kind, test_ledger_read_waits_out_append_lock,
+               test_node_parse_raises_only_its_kinds,
                test_validate_at_reads_only_a_report, test_validate_suite_survives_a_crashing_check,
                test_review_packet_sets_aside_a_mistyped_entry, test_every_cli_command_has_its_handler,
                 test_write_edge_coordinates, test_node_heading_edge_coordinates,
