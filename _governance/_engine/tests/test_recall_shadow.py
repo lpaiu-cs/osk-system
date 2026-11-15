@@ -151,8 +151,25 @@ def problems() -> list[str]:
     if (gone["used_nodes"]["names_not_searchable_now"], gone["turns"]["not_measurable"]) != (1, 1):
         bad.append(f"measure: unknown names {gone['used_nodes']} {gone['turns']}")
 
-    bad += _copies()
+    bad += _copies() + _cursors()
     return bad
+
+
+def _cursors() -> list[str]:
+    """커서는 이 저장소의 경로(`root`)가 적힌 것만 센다 — git 디렉터리를 나눠 쓰는 다른 저장소의 커서는 빠진다."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / ".git").mkdir()
+        for name, where in (("here", root.resolve()), ("there", root.resolve() / "other")):
+            (root / ".git" / f"osk-integration-{name}.json").write_text(json.dumps(
+                {"harness": "claude", "session": name, "conversation_id": f"c-{name}", "root": str(where)}),
+                encoding="utf-8")
+        real, rs.routing.bindings = rs.routing.bindings, lambda vault, session: {"scopes": [session]}
+        try:
+            got = rs.bindings_by_conversation(SimpleNamespace(root=root))
+        finally:
+            rs.routing.bindings = real
+    return [] if got == {"c-here": {"scopes": ["here"]}} else [f"bindings_by_conversation: {got}"]
 
 
 def _turn(uuid, *names, text="같은 말"):
