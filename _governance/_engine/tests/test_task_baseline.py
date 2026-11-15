@@ -62,6 +62,7 @@ CASES = [
     ("reject", {"보안 점검": (tb.SECURITY, "취약점을 다루는 군집")}, [True, False]),          # 허브는 그 노드가 아니다
     ("domain", {"웹훅 장애": (PAY, f"웹훅이 몰렸다. [[{tb.JITTER}]]")}, [True, True]),
     ("domain", {"웹훅 장애": (PAY, "웹훅이 몰렸다. 무작위를 섞었다")}, [True, False]),
+    ("domain", {"웹훅 장애": (PAY, f"웹훅이 몰렸다. {tb.JITTER}는 규칙을 따랐다")}, [True, False]),   # 제목만 말했다
     ("domain", {tb.JITTER: ("00_Domain/분산 시스템", "지터를 섞는다. 결제 웹훅에서 겪었다")}, [False, False]),
 ]
 

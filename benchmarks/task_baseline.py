@@ -232,7 +232,7 @@ def _reject(before, after, new, changed, run):
 
 def _domain(before, after, new, changed, run):
     kept = [text for space, text in {**new, **changed}.values() if space.startswith("00_Scope") and "웹훅" in text]
-    return {"Scope에 남겼다": bool(kept), "Domain의 노드에 기댔다": any(JITTER in text for text in kept)}
+    return {"Scope에 남겼다": bool(kept), "Domain의 노드에 기댔다": any(f"[[{JITTER}]]" in text for text in kept)}
 
 
 def _recall_apply(before, after, new, changed, run):

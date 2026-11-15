@@ -27,7 +27,8 @@
   저장소의 대화 커서가 적어 둔 세션의 지금 결속이다 — 커서가 없는 대화의 턴은 결속 없이 잰다. 에이전트의
   검색은 `session`을 실었던 것만 그 결속을 넣어 다시 돌린다.
 - 전사가 어느 저장소의 것인지는 가리지 않는다 — 한 기계에서 저장소를 둘 쓰면 섞인다. 이 저장소의 커서가 있는
-  대화의 턴 수를 함께 낸다(`in_conversations_this_vault_recorded`).
+  대화의 턴 수를 함께 낸다(`in_conversations_this_vault_recorded`). 커서는 이 저장소의 경로(`root`)가 적힌 것만
+  센다. `--recorded-only`는 그 대화의 턴만 잰다 — 저장소를 둘 쓰는 기계에서 쓴다.
 - 호출의 결과는 보지 않는다 — 받아들여지지 않은 `read_node`·`update_node`도 쓰인 것으로 센다. 에이전트가 그
   노드를 찾아 쓰려 한 턴이기 때문이다. 2026-11-15의 운영 기록에서 이 셈법으로 들고 나는 것은 쓰인 이름
   5,642건 가운데 7건이었다.
@@ -159,7 +160,8 @@ def bindings_by_conversation(vault: Vault) -> dict:
         except (OSError, ValueError):
             continue
         session = state.get("session") if isinstance(state, dict) else None
-        if not isinstance(session, str) or state.get("harness") != "claude":
+        if not isinstance(session, str) or state.get("harness") != "claude" \
+                or state.get("root") != str(vault.root.resolve()):         # 커서는 저장소의 경로로 가른다
             continue
         if session not in by_session:
             by_session[session] = routing.bindings(vault, session)
@@ -305,11 +307,14 @@ def main(argv=None) -> int:
     ap.add_argument("--projects", type=Path, default=Path.home() / ".claude" / "projects")
     ap.add_argument("--max-query-chars", type=int, default=2000)
     ap.add_argument("--json", type=Path, help="결과를 이 파일에도 쓴다")
+    ap.add_argument("--recorded-only", action="store_true", help="이 저장소의 대화 커서가 있는 대화의 턴만 잰다")
     a = ap.parse_args(argv)
     found, files = samples(a.projects)
     vault = Vault.open(a.vault)
-    report = {"transcripts": files,
-              **measure(search.Searcher(vault), found, a.max_query_chars, bindings_by_conversation(vault))}
+    local_of = bindings_by_conversation(vault)
+    if a.recorded_only:
+        found = [t for t in found if t["conversation"] in local_of]
+    report = {"transcripts": files, **measure(search.Searcher(vault), found, a.max_query_chars, local_of)}
     text = json.dumps(report, ensure_ascii=False, indent=2)
     if a.json:
         a.json.write_text(text + "\n", encoding="utf-8")
