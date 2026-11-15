@@ -2,12 +2,12 @@
 
 러너(`tests/test_regression.py`)가 정해진 순서로 돌린다. 따로 돌리는 파일이 아니다."""
 from __future__ import annotations
-import json, os, shutil, subprocess, sys, tempfile
+import json, os, shutil, subprocess, sys, tempfile, time
 from pathlib import Path
 from unittest import mock
 
 from regression.support import (
-    check, ENGINE, MINI, node_text, _raises, rmtree_force, ROOT, VAULT, _vault_at, _w, wipe_sig
+    check, ENGINE, MINI, node_text, _raises, rmtree_force, ROOT, skip, VAULT, _vault_at, _w, wipe_sig
 )
 from osk import cli, core, graph, validate, write, topology  # noqa: E402
 import osk.signatures as S  # noqa: E402
@@ -666,6 +666,57 @@ def test_conflict_candidates():
     check("후보 해소 후 기준선 복귀",
           not any("duplication" in x and "regr-dup" in x
                   for x in validate.conflict_candidates(graph.Index(VAULT))))
+
+
+_HOLD = ("import msvcrt, sys, time\n"
+         "f = open(sys.argv[1], 'a+', encoding='utf-8'); f.seek(0)\n"
+         "msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1); print('HOLDING', flush=True)\n"
+         "time.sleep(float(sys.argv[2])); f.seek(0); msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)\n")
+
+
+def test_ledger_read_waits_out_append_lock():
+    """Windows의 바이트 구간 잠금은 강제 잠금이다 — 대장에 잇는 프로세스(`ledger_extend`)가 첫 바이트를 쥔
+    동안 잠금 없는 읽기는 PermissionError였다(#320). `ledger_read`는 잠깐씩 다시 읽고(예산 1.88초),
+    `lock_exclusive`의 대기는 짧은 간격으로 다시 건다(LK_LOCK은 1초 간격이다)."""
+    if os.name != "nt":
+        skip("대장 읽기가 추가 중인 프로세스의 잠금을 기다린다", "Windows 강제 잠금 전용")
+        return
+    from osk import _portalock
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "ledger.jsonl"
+        p.write_text('{"rid": "x"}\n', encoding="utf-8")
+
+        def held(seconds):     # 자식이 첫 바이트를 쥔 뒤에 돌아온다
+            proc = subprocess.Popen([sys.executable, "-c", _HOLD, str(p), str(seconds)],
+                                    stdout=subprocess.PIPE, text=True)
+            proc.stdout.readline()
+            return proc
+
+        def read():
+            start = time.monotonic()
+            try:
+                got = core.ledger_read(p)
+            except PermissionError as e:
+                got = e
+            return got, time.monotonic() - start
+
+        proc = held(0.4)
+        got, _ = read()
+        proc.wait()
+        check("잠금을 0.4초 쥔 동안의 대장 읽기는 기다렸다가 기록을 돌려준다", got == [{"rid": "x"}], got)
+        proc = held(2.5)
+        got, took = read()
+        proc.wait()
+        check("재시도 예산보다 오래 쥐면 다 기다린 뒤 PermissionError를 그대로 올린다",
+              isinstance(got, PermissionError) and took > 1.5, f"{got!r} {took:.2f}s")
+        proc = held(0.3)
+        start = time.monotonic()
+        with open(p, "a+", encoding="utf-8") as f:
+            _portalock.lock_exclusive(f)
+            waited = time.monotonic() - start
+            _portalock.unlock(f)
+        proc.wait()
+        check("0.3초 쥔 잠금을 기다린 lock_exclusive는 0.9초 안에 얻는다", waited < 0.9, f"{waited:.2f}s")
 
 
 def test_ledger_damage_is_a_kind():
