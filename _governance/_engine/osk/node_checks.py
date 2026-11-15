@@ -84,10 +84,23 @@ def check_edges(vault: Vault, edges: dict | None, idx, *, adding: bool = True) -
     return errs
 
 
+EVIDENCE_FORMAT = ("관측 줄의 꼴은 `- YYYY-MM-DD · `좌표` · 지지|조건|반례 — 내용`이다(시행령 §1 5항). "
+                   "대화 근거의 좌표는 cite_round가 돌려준 coordinate를 쓴다")
+
+
+def new_malformed(body: str, previous_body: str | None) -> list[str]:
+    """이번 쓰기가 더하거나 고친 형식 위반 관측 줄. 이미 있던 줄은 막지 않는다 —
+    남이 만든 위반 때문에 내 쓰기가 막히면 안 된다(설계 D10). 그 줄은 응답이 알린다."""
+    old = set(evidence.malformed(previous_body or ""))
+    errs = [f"형식이 다른 관측 줄: {line[:60]}" for line in evidence.malformed(body) if line not in old]
+    return errs + [EVIDENCE_FORMAT] if errs else []
+
+
 def validate_render(vault: Vault, path: Path, meta: dict, body: str,
-                     idx) -> tuple[bytes, list[str]]:
+                     idx, previous_body: str | None = None) -> tuple[bytes, list[str]]:
     """**렌더된 바이트를 되읽어** 검증한다 — 쓰려던 것이 아니라 쓸 것을
-    검증해야 한다(7차 중대 A). 직렬화가 깨뜨린 것은 dict 검사로는 안 보인다."""
+    검증해야 한다(7차 중대 A). 직렬화가 깨뜨린 것은 dict 검사로는 안 보인다.
+    `previous_body`는 고치기 전 본문이다 — 만들기는 없다."""
     data = nodefile.render(meta, body)
     fd, tmp = tempfile.mkstemp(suffix=".md")
     try:
@@ -117,7 +130,7 @@ def validate_render(vault: Vault, path: Path, meta: dict, body: str,
         return out
     if _norm(back.meta) != _norm(meta):
         return data, [f"직렬화 왕복 불일치 — 쓰지 않았다: {sorted(back.meta)} vs {sorted(meta)}"]
-    return data, _validate_node(vault, path, back, body, idx)
+    return data, _validate_node(vault, path, back, body, idx) + new_malformed(body, previous_body)
 
 
 def _validate_node(vault: Vault, path: Path, node, body: str, idx) -> list[str]:
@@ -244,6 +257,8 @@ def reference_feedback(vault: Vault, path, meta, body, idx, previous=None) -> di
     refs = topology.reference_review(vault, node, idx, previous)
     out = {"dangling": sorted({r["ref"].split("#", 1)[0] for r in refs
                                if r["resolution"] == "dangling"})}
+    if bad := evidence.malformed(body):      # 이미 있던 위반 — 새 위반은 validate_render가 거부했다
+        out["malformed_evidence"] = bad
     if refs:
         out["reference_review"] = {
             "status": "pending", "items": refs,

@@ -613,7 +613,7 @@ def update_node_locked(vault: Vault, name: str, body: str | None = None,
     if not only_conflicts:
         meta["updated"] = _stamp or now_kst()
 
-    data, errs = node_checks.validate_render(vault, path, meta, new_body, idx)
+    data, errs = node_checks.validate_render(vault, path, meta, new_body, idx, n.body)
     if errs:
         raise WriteError("계약·위상 위반 — 쓰지 않았다", errs)
     if settle is not None:
