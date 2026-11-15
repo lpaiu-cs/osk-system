@@ -17,7 +17,8 @@
 읽을 때의 한계:
 
 - 모델의 사용량이 든다. 같은 과업도 실행마다 다르다 — 횟수가 적으면 수의 폭이 넓다.
-- 끝난 실행은 다시 돌지 않는다(`runs/<과업>-<번>/stream.jsonl`이 있으면 그것을 읽는다).
+- 끝난 실행은 다시 돌지 않는다(`runs/<과업>-<번>/stream.jsonl`이 있으면 그것을 읽는다). 그래서 바탕에 판·모델·
+  과업 파일의 해시를 적어 두고(`base/commit`), 하나라도 다르면 그 작업 폴더를 받지 않는다.
 - 훅이 띄우는 분리 작업자는 끈다(`OSK_HOOK_WORKER=0`) — 실행이 끝난 뒤에 저장소를 고치는 것이 없게 한다.
 - 실행의 전사는 Claude Code의 전사 폴더에서 실행 폴더로 옮긴다 — 남겨 두면 지난 기록을 읽는 계기
   (`recall_shadow.py`)가 그것을 사용자의 대화로 센다. 도중에 끊은 실행의 전사는 그 폴더에 남는다.
@@ -26,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import hashlib
 import io
 import json
 import os
@@ -97,13 +99,19 @@ def _inside(action: str, vault: Path, python: str) -> bytes:
     return _sh(python, str(Path(__file__).resolve()), "--inside", action, str(vault), python, env=env, cwd=vault)
 
 
-def build(work: Path, ref: str, python: str) -> None:
+def stamp(commit: str, model: str) -> str:
+    """바탕의 표시 — 잴 판, 모델, 과업 파일의 sha256 앞 12자. 같아야 지난 실행을 다시 쓴다."""
+    digest = hashlib.sha256(Path(__file__).with_name("task_fixture.json").read_bytes()).hexdigest()[:12]
+    return f"{commit} {model} {digest}"
+
+
+def build(work: Path, ref: str, python: str, model: str) -> None:
     """잴 판의 트리와 고정 내용으로 저장소와 프로젝트 폴더를 세운다 — 실행마다 이것을 베낀다."""
     vault, project, mark = work / "base/vault", work / "base" / FIXTURE["session"], work / "base/commit"
-    commit = _sh("git", "-C", str(ROOT), "rev-parse", f"{ref}^{{commit}}").decode().strip()
+    want = stamp(_sh("git", "-C", str(ROOT), "rev-parse", f"{ref}^{{commit}}").decode().strip(), model)
     if mark.exists():                        # 다 세운 바탕만 이 표시를 가진다
-        if mark.read_text(encoding="utf-8") != commit:
-            raise SystemExit(f"이 작업 폴더의 바탕은 다른 판이다 — 판마다 다른 폴더에서 잰다: {work}")
+        if mark.read_text(encoding="utf-8") != want:
+            raise SystemExit(f"이 작업 폴더의 바탕은 다른 판·모델·과업 내용이다 — 그것마다 다른 폴더에서 잰다: {work}")
         return
     project.mkdir(parents=True)
     (project / "README.md").write_text(f"# {FIXTURE['session']}\n", encoding="utf-8")
@@ -113,7 +121,7 @@ def build(work: Path, ref: str, python: str) -> None:
         _commit(folder, "처음")
     _inside("seed", vault, python)
     _commit(vault, "fixture")
-    mark.write_text(commit, encoding="utf-8")
+    mark.write_text(want, encoding="utf-8")
 
 
 def _commit(folder: Path, message: str) -> None:
@@ -198,12 +206,15 @@ def _reached(title: str, calls: list) -> bool:
 
 
 def _refine(before, after, new, changed, run):
-    return {"그 노드를 고쳤다": "0.5%" in after.get(WATCH, ("", ""))[1], "새 노드를 만들지 않았다": not new}
+    text = after.get(WATCH, ("", ""))[1]
+    return {"그 노드를 고쳤다": "0.5%" in text, "새 노드를 만들지 않았다": not new,
+            "옛 규칙의 문장을 남기지 않았다": "1%를 넘으면" not in text}       # 옛 값을 이력으로 적는 것은 된다
 
 
 def _update(before, after, new, changed, run):
-    return {"그 노드를 고쳤다": "dry-run" in after.get(STAGING, ("", ""))[1].lower(),
-            "새 노드를 만들지 않았다": not new}
+    text = after.get(STAGING, ("", ""))[1]
+    return {"그 노드를 고쳤다": "dry-run" in text.lower(), "새 노드를 만들지 않았다": not new,
+            "옛 규칙의 문장을 남기지 않았다": "눌러야 돈다" not in text}
 
 
 def _record(before, after, new, changed, run):
@@ -286,7 +297,7 @@ def main() -> int:
     parser.add_argument("--python", default=sys.executable, help="MCP 서버와 훅을 돌릴 파이썬(mcp가 깔린 것)")
     args = parser.parse_args()
     work = args.work.resolve()
-    build(work, args.ref, args.python)
+    build(work, args.ref, args.python, args.model)
     before, report = nodes(work / "base/vault"), {}
     for task in args.task or FIXTURE["tasks"]:
         scores = []

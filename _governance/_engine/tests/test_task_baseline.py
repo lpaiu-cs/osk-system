@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -40,16 +41,21 @@ ROWS = [
 STREAM = "".join(json.dumps(row) + "\n" for row in ROWS) + "찢긴 줄\n"
 
 DEPLOY, BOOKING, PAY = "00_Scope/harbor/배포", "00_Scope/harbor/예약", "00_Scope/harbor/결제"
-BEFORE = {tb.STAGING: (DEPLOY, "사람이 승인해야 돈다"), tb.WATCH: (DEPLOY, "1%를 넘으면 되돌린다"),
+BEFORE = {tb.STAGING: (DEPLOY, "승인 버튼을 눌러야 돈다"), tb.WATCH: (DEPLOY, "1%를 넘으면 되돌린다"),
           tb.JITTER: ("00_Domain/분산 시스템", "지터를 섞는다")}
 QUIET = {"calls": [], "answer": "", "turns": 1, "seconds": 1, "finished": True}
 # (과업, 끝난 저장소에서 달라진 노드, 기대하는 검사의 값)
 CASES = [
-    ("refine", {tb.WATCH: (DEPLOY, "5xx 비율이 0.5%를 넘으면 되돌린다")}, [True, True]),
-    ("refine", {"되돌리는 기준": (DEPLOY, "0.5%")}, [False, False]),
-    ("update", {tb.STAGING: (DEPLOY, "CI의 Dry-Run이 통과하면 돈다")}, [True, True]),
-    ("update", {tb.STAGING: (DEPLOY, "CI의 dry-run이 통과하면 돈다"), "새 절차": (DEPLOY, "dry-run")}, [True, False]),
-    ("update", {"새 절차": (DEPLOY, "dry-run")}, [False, False]),
+    ("refine", {tb.WATCH: (DEPLOY, "5xx 비율이 0.5%를 넘으면 되돌린다")}, [True, True, True]),
+    ("refine", {"되돌리는 기준": (DEPLOY, "0.5%")}, [False, False, False]),
+    ("refine", {tb.WATCH: (DEPLOY, "0.5%를 넘으면 되돌린다. 1%를 넘으면 되돌린다")}, [True, True, False]),  # 덧붙이기만
+    ("refine", {tb.WATCH: (DEPLOY, "0.5%를 넘으면 되돌린다. 1%에서 0.5%로 낮췄다")}, [True, True, True]),   # 옛 값은 이력
+    ("update", {tb.STAGING: (DEPLOY, "CI의 Dry-Run이 통과하면 돈다")}, [True, True, True]),
+    ("update", {tb.STAGING: (DEPLOY, "CI의 dry-run이 통과하면 돈다"), "새 절차": (DEPLOY, "dry-run")},
+     [True, False, True]),
+    ("update", {"새 절차": (DEPLOY, "dry-run")}, [False, False, False]),
+    ("update", {tb.STAGING: (DEPLOY, "승인 버튼을 눌러야 돈다. CI의 dry-run도 돈다")}, [True, True, False]),
+    ("update", {tb.STAGING: (DEPLOY, "dry-run이 통과하면 돈다. 예전에는 승인 버튼을 눌러야 돌았다")}, [True, True, True]),
     ("record", {"알림": (BOOKING, "24시간 전에 한 번\n\n# 관측\n- 1edc#1")}, [True, True, True]),
     ("record", {"알림": (PAY, "24시간 전에 한 번")}, [True, False, False]),
     ("reject", {"보안 점검": (tb.SECURITY, "# 보안 점검"), "분기 점검": (tb.SECURITY, "취약점을 본다")}, [True, True]),
@@ -103,6 +109,10 @@ def problems() -> list[str]:
         bad.append(f"summary: {got}")
     if set(tb.CHECKS) != set(tb.FIXTURE["tasks"]):
         bad.append("과업과 채점의 이름이 다르다")
+    # 바탕의 표시는 판·모델·과업 파일의 해시를 함께 적는다 — 어느 하나가 다르면 build가 그 폴더를 받지 않는다.
+    digest = hashlib.sha256(Path(tb.__file__).with_name("task_fixture.json").read_bytes()).hexdigest()[:12]
+    if tb.stamp("abc", "m1") != f"abc m1 {digest}":
+        bad.append(f"stamp: {tb.stamp('abc', 'm1')}")
     return bad
 
 
