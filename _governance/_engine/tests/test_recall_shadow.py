@@ -188,10 +188,15 @@ def _copies() -> list[str]:
             (folder / f"{name}.jsonl").write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows)
                                                   + "찢긴 줄\n", encoding="utf-8")
         found, count = rs.samples(Path(tmp))
+        inside, read = rs.samples(Path(tmp), {"b"})     # `only` 밖의 전사는 읽지 않는다 — u5는 b의 사본이 남는다
     got = sorted((t["id"] or "-", t["conversation"], tuple(t["read"])) for t in found)
     want = [("-", "a", ("C",)), ("-", "b", ("C",)), ("u1", "a", ("A",)), ("u2", "a", ("A",)),
             ("u3", "b", ("A", "B")), ("u4", "b", ("A",)), ("u5", "a", ("A", "B"))]
-    return [] if (got, count) == (want, 2) else [f"samples: {got} from {count} files"]
+    only = sorted((t["id"] or "-", t["conversation"], tuple(t["read"])) for t in inside)
+    want_only = [("-", "b", ("C",)), ("u1", "b", ("A",)), ("u3", "b", ("A", "B")), ("u4", "b", ("A",)),
+                 ("u5", "b", ("A",))]
+    bad = [] if (got, count) == (want, 2) else [f"samples: {got} from {count} files"]
+    return bad + ([] if (only, read) == (want_only, 1) else [f"samples only: {only} from {read} files"])
 
 
 def main() -> int:
