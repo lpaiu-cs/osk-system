@@ -4,29 +4,35 @@
 프롬프트를 질의로 삼아 미리 싣는다. 싣기 전에 잴 수 있는 것이 있다: 지난 대화에서 에이전트가 읽거나
 고친 노드를, 그 턴을 연 사용자의 말만으로 검색이 찾았겠는가.
 
-    python benchmarks/recall_shadow.py --vault <저장소> [--projects ~/.claude/projects] [--json 결과.json]
+    python benchmarks/recall_shadow.py --vault <저장소> [--projects ~/.claude/projects] [--json 결과.json] [--all]
 
-- 읽는 것: Claude Code의 전사(저장소 밖)와 저장소의 노드. 저장소에 남기는 것은 없다 — 색인이 `.osk/`에
+- 읽는 것: Claude Code의 전사(저장소 밖)와 저장소의 노드. 전사는 이 저장소의 대화 커서가 있는 대화의 것만
+  읽는다 — `--all`이면 커서가 없는 대화의 것도 읽는다. 저장소에 남기는 것은 없다 — 색인이 `.osk/`에
   잠깐 두었다 지우는 탐침 파일은 엔진이 검색할 때마다 하는 일이다.
 - 내는 것: 수뿐이다. 질의도 노드의 이름도 내지 않는다 — 전사에는 사용자의 대화가 있다.
 - 한 턴: 사용자의 말에서 다음 사용자의 말까지다. 그 사이에 osk 도구로 읽은(`read_node`) 노드와
   고친(`update_node`) 노드가 "쓰인 노드"다. 그 턴에 새로 만든 노드는 세지 않는다. 이어 받은 세션의 전사는
   앞부분을 원본과 같은 uuid로 가지므로, 턴은 그 턴을 연 사용자 행의 uuid마다 한 번만 센다.
 - 질의: 사용자의 말에서 하네스가 끼워 넣은 알림을 뺀 것이다. 앞에서 `--max-query-chars`자까지 쓴다.
+- 질의를 만드는 법을 견준다(`QUERIES`): 사용자의 말 그대로, 바로 앞 사용자의 말을 더한 것, 에이전트가 바로
+  앞에 한 말의 끝을 더한 것, 저장소에서 드문 낱말만 남긴 것.
+- 검색 없이 재는 것 하나 — 쓰인 노드가 그 대화의 앞 턴들이 쓴 노드 가운데 몇째로 최근이었는가
+  (`carried_from_earlier_turns`, 도구를 호출한 차례로 센다). 앞 턴에 쓴 노드는 에이전트가 이미 아는 노드다. 그래서 그 대화에서 처음 쓰인
+  노드만 따로도 센다(`first_use_in_the_conversation`) — 회상이 보탤 수 있는 몫은 거기다.
 
 읽을 때의 한계:
 
 - 지금의 저장소로 잰다. 그때의 저장소가 아니다. 그 뒤에 생긴 노드가 함께 겨루고, 이름이 바뀐 노드는
   "지금 검색 대상에 없는 이름"으로 빠진다.
 - 실제 검색은 세션의 결속(그 프로젝트의 scope)을 순위에 넣는다. 넣지 않은 수와 넣은 수를 함께 낸다. 결속은
-  저장소의 대화 커서가 적어 둔 세션의 지금 결속이다 — 커서가 없는 대화의 턴은 결속 없이 잰다. 에이전트의
+  저장소의 대화 커서가 적어 둔 세션의 지금 결속이다 — 결속에 scope가 없는 대화의 턴은 결속 없이 잰다. 에이전트의
   검색은 `session`을 실었던 것만 그 결속을 넣어 다시 돌린다.
-- 전사가 어느 저장소의 것인지는 가리지 않는다 — 한 기계에서 저장소를 둘 쓰면 섞인다. 이 저장소의 커서가 있는
-  대화의 턴 수를 함께 낸다(`in_conversations_this_vault_recorded`). 커서는 이 저장소의 경로(`root`)가 적힌 것만
-  센다. `--recorded-only`는 그 대화의 턴만 잰다 — 저장소를 둘 쓰는 기계에서 쓴다.
+- 전사의 소속은 대화 커서로 가른다. 커서는 이 저장소의 경로(`root`)가 적힌 것만 센다. 커서가 없는
+  대화는 기본에서 빠지고, `--all`로 함께 재면 어느 저장소의 것인지 확인되지 않는 턴이 섞인다. 잰 턴 가운데
+  커서가 있는 대화의 턴 수를 함께 낸다(`in_conversations_this_vault_recorded`).
 - 호출의 결과는 보지 않는다 — 받아들여지지 않은 `read_node`·`update_node`도 쓰인 것으로 센다. 에이전트가 그
-  노드를 찾아 쓰려 한 턴이기 때문이다. 2026-11-15의 운영 기록에서 이 셈법으로 들고 나는 것은 쓰인 이름
-  5,642건 가운데 7건이었다.
+  노드를 찾아 쓰려 한 턴이기 때문이다. 2026-11-15의 운영 기록(전사 전체)에서 이 셈법으로 들고 나는 것은 쓰인
+  이름 5,642건 가운데 7건이었다.
 - 쓰인 노드는 에이전트가 한 일이지 했어야 할 일이 아니다. 찾지 못해 읽지 않은 노드는 여기에 없다.
 - Claude Code의 전사만 읽는다.
 """
@@ -49,6 +55,9 @@ OSK_TOOL = re.compile(r"mcp__osk[\w-]*__(read_node|update_node|create_node|searc
 KS = (1, 3, 5, 8, 20)
 AGENT_K = 8                      # 표면의 `search`가 기본으로 돌려주는 수
 SIZES = (("under 20", 0, 20), ("20 to 59", 20, 60), ("60 to 199", 60, 200), ("200 or more", 200, 10 ** 9))
+HISTORY = 200                    # 한 전사에서 기억해 두는 앞 턴의 노드 이름 수
+RARE = 12                        # "드문 낱말" 질의에 남기는 낱말 수 — 첫 시도의 값이다
+REPLY = 500                      # 에이전트의 앞 답에서 질의에 붙이는 끝부분의 글자 수 — 첫 시도의 값이다
 
 
 def _words(content) -> str | None:
@@ -70,13 +79,17 @@ def _calls(content):
 
 
 def turns(rows):
-    """노드를 쓴 턴마다 `{id, query, read, updated, searches}`. 그 턴에 만든 노드는 쓰인 것에서 뺀다.
+    """노드를 쓴 턴마다 `{id, query, previous, reply, earlier, read, updated, searches}`.
 
-    `id`는 턴을 연 사용자 행의 uuid, `searches`는 `(질의, session을 실었나)`다."""
-    turn = None
+    `id`는 턴을 연 사용자 행의 uuid, `previous`는 그 전사에서 바로 앞 사용자의 말, `reply`는 그 턴 바로 앞에서
+    에이전트가 한 마지막 말이고, `earlier`는 앞 턴들이 쓰거나 만든 노드의 이름이다(호출한 차례대로, 끝이 가장
+    최근). `searches`는 `(질의, session을 실었나)`다. 그 턴에 만든 노드는 쓰인 것에서 뺀다."""
+    turn, last_query, last_reply, history = None, None, None, []
 
-    def closed(t):
+    def close(t):
         used = {kind: [n for n in t[kind] if n not in t["created"]] for kind in ("read", "updated")}
+        history.extend(t["order"])
+        del history[:-HISTORY]
         return {**t, **used} if used["read"] or used["updated"] else None
 
     for row in rows:
@@ -87,23 +100,31 @@ def turns(rows):
             text = _words(message.get("content"))
             if text is None or not text.strip() or base.injected_only(text):
                 continue
-            if turn and closed(turn):
-                yield closed(turn)
-            turn = {"id": row.get("uuid"), "query": base.GOAL.sub("", base.INJECTED.sub("", text)).strip(),
-                    "read": [], "updated": [], "created": set(), "searches": []}
-        elif row.get("type") == "assistant" and turn is not None:
-            for tool, args in _calls(message.get("content")):
+            done = close(turn) if turn else None
+            if done:
+                yield done
+            query = base.GOAL.sub("", base.INJECTED.sub("", text)).strip()
+            turn = {"id": row.get("uuid"), "query": query, "previous": last_query, "reply": last_reply,
+                    "earlier": list(history), "read": [], "updated": [], "created": set(), "searches": [],
+                    "order": []}
+            last_query = query
+        elif row.get("type") == "assistant":
+            last_reply = (_words(message.get("content")) or "").strip() or last_reply
+            for tool, args in _calls(message.get("content")) if turn is not None else ():
                 value = args.get({"search": "query", "create_node": "title"}.get(tool, "name"))
                 if not isinstance(value, str) or not value.strip():
                     continue
                 if tool == "search":
                     turn["searches"].append((value, bool(args.get("session"))))
-                elif tool == "create_node":
+                    continue
+                turn["order"].append(value.strip())             # 읽고 고치고 만든 이름 — 호출한 차례대로
+                if tool == "create_node":
                     turn["created"].add(value.strip())
                 else:
                     turn["read" if tool == "read_node" else "updated"].append(value.strip())
-    if turn and closed(turn):
-        yield closed(turn)
+    done = close(turn) if turn else None
+    if done:
+        yield done
 
 
 def _rows(path: Path):
@@ -115,11 +136,15 @@ def _rows(path: Path):
                 continue
 
 
-def samples(projects: Path) -> tuple[list[dict], int]:
+def samples(projects: Path, only=None) -> tuple[list[dict], int]:
     """전사들의 턴. 이어 받은 세션은 앞부분을 원본과 같은 uuid로 가지므로 턴은 uuid마다 한 번만 센다 — 도중에
-    끊긴 사본은 원본의 앞부분이라, 쓴 노드가 더 많은 쪽을 남긴다. uuid가 없는 행의 턴은 합치지 않는다."""
+    끊긴 사본은 원본의 앞부분이라, 쓴 노드가 더 많은 쪽을 남긴다. uuid가 없는 행의 턴은 합치지 않는다.
+
+    `only`(대화 id의 모음)를 주면 그 밖의 전사는 읽지 않는다 — 합치기 전에 거르므로 남는 사본은 그 안의 것이다."""
     kept, files = {}, 0
     for path in sorted(projects.glob("*/*.jsonl")):
+        if only is not None and path.stem not in only:
+            continue
         files += 1
         for turn in turns(_rows(path)):
             key = turn["id"] or object()
@@ -149,88 +174,134 @@ def bindings_by_conversation(vault: Vault) -> dict:
     return out
 
 
-def measure(searcher, found: list[dict], max_chars: int, local_of: dict | None = None) -> dict:
-    """쓰인 노드마다, 사용자의 말로 한 검색에서 그 노드가 몇째였는가. `local_of`를 주면 결속을 넣은 순위도 잰다."""
+def _rare(searcher, text: str) -> str:
+    """글의 낱말 가운데 저장소에서 가장 드문 것 `RARE`개 — 흔한 말을 덜어 낸 질의."""
+    idf = getattr(getattr(searcher, "bm25", None), "idf", None)
+    if not idf:
+        return text
+    tokens = [t for t in dict.fromkeys(search._tokens(text)) if t in idf]
+    return " ".join(sorted(tokens, key=lambda t: -idf[t])[:RARE])
+
+
+# 질의를 만드는 법 — 이름과 `(검색기, 턴) -> 질의`. 첫째가 기준이다(사용자의 말 그대로).
+QUERIES = {
+    "prompt": lambda s, t: t["query"],
+    "prompt + previous prompt": lambda s, t: f'{t["query"]}\n{t.get("previous") or ""}',
+    "prompt + end of the agent's last reply": lambda s, t: f'{t["query"]}\n{(t.get("reply") or "")[-REPLY:]}',
+    "rare words of the prompt": lambda s, t: _rare(s, t["query"]),
+    "rare words of prompt + previous": lambda s, t: _rare(s, f'{t["query"]}\n{t.get("previous") or ""}'),
+}
+
+
+def _pairs(searcher, found: list[dict], max_chars: int, local_of: dict | None) -> tuple[list[dict], dict]:
+    """쓰인 노드마다 한 줄 — 질의마다의 순위, 앞 턴들이 쓴 노드 가운데 몇째로 최근인가, 에이전트의 검색이 찾았나."""
     by_name = {stem: node.id for stem, _path, node in searcher.paths}
     known = set(by_name.values())
-    ranks, kinds, pulled, lengths = [], [], [], []      # 쓰인 노드마다: 순위, 읽음·고침, 에이전트의 검색이 찾았나
-    bound_ranks, bound_turns = [], 0                    # 결속을 넣은 검색의 순위 — 결속을 모르는 턴은 위와 같다
-    sizes = []                                          # 쓰인 노드마다: 그 턴의 질의 길이(자)
-    unknown = unsearchable = with_agent_search = in_vault = 0
-    any_hit = {k: 0 for k in KS}
+    rows, counts = [], {"unknown": 0, "not_measurable": 0, "measured": 0, "agent_search": 0, "bound": 0,
+                        "in_vault": 0}
+
+    def resolve(name):
+        name = name.removeprefix("[[").removesuffix("]]").strip()
+        return by_name.get(name) or (name if name in known else None)
+
+    def ranked(query, local=None):
+        return [h["id"] for h in searcher.view_search(query[:max_chars], max(KS), local)] if query.strip() else []
+
+    def place(ids, node_id):
+        return ids.index(node_id) + 1 if node_id in ids else None
+
     for turn in found:
         used = {}
         for kind in ("read", "updated"):                  # 읽고 고친 노드는 고친 것으로 센다
             for name in turn[kind]:
-                name = name.removeprefix("[[").removesuffix("]]").strip()
-                node_id = by_name.get(name) or (name if name in known else None)
+                node_id = resolve(name)
                 if node_id:
                     used[node_id] = kind
                 else:
-                    unknown += 1
-        query = turn["query"][:max_chars]
-        if not used or not query:
-            unsearchable += 1
+                    counts["unknown"] += 1
+        if not used or not turn["query"][:max_chars]:
+            counts["not_measurable"] += 1
             continue
-        lengths.append(len(query))
-        hits = [h["id"] for h in searcher.view_search(query, max(KS))]
         local = (local_of or {}).get(turn.get("conversation"))
-        in_vault += turn.get("conversation") in (local_of or {})
+        counts["measured"] += 1
+        counts["bound"] += bool(local)
+        counts["in_vault"] += turn.get("conversation") in (local_of or {})
+        counts["agent_search"] += bool(turn["searches"])
+        lists = {name: ranked(make(searcher, turn), local) for name, make in QUERIES.items()}
+        plain = ranked(turn["query"]) if local else lists["prompt"]
+        recent = list(dict.fromkeys(filter(None, map(resolve, reversed(turn.get("earlier") or [])))))
         agent = {h["id"] for q, bound in turn["searches"]                 # 결속은 session을 실었던 검색에만
                  for h in searcher.view_search(q, AGENT_K, local if bound else None)}
-        with_agent_search += bool(turn["searches"])
-        here = [hits.index(node_id) + 1 if node_id in hits else None for node_id in used]
-        if local:
-            bound_turns += 1
-            hits = [h["id"] for h in searcher.view_search(query, max(KS), local)]
-        bound_ranks += [hits.index(node_id) + 1 if node_id in hits else None for node_id in used]
-        sizes += [len(query)] * len(used)
-        ranks += here
-        kinds += list(used.values())
-        pulled += [node_id in agent if turn["searches"] else None for node_id in used]   # None: 검색이 없던 턴
-        best = min((r for r in here if r), default=None)
-        for k in KS:
-            any_hit[k] += best is not None and best <= k
-    turns_measured, pairs = len(lengths), len(ranks)
-    searched = [p for p in pulled if p is not None]
+        for node_id, kind in used.items():
+            rows.append({"turn": counts["measured"], "kind": kind, "size": len(turn["query"][:max_chars]),
+                         "plain": place(plain, node_id), "carry": place(recent, node_id),
+                         "agent": node_id in agent if turn["searches"] else None,
+                         **{name: place(ids, node_id) for name, ids in lists.items()}})
+    return rows, counts
 
-    def recall(k, kind=None, of=ranks):
-        chosen = [r for r, x in zip(of, kinds) if kind in (None, x)]
-        return round(sum(r is not None and r <= k for r in chosen) / len(chosen), 4) if chosen else None
 
-    def by_size(of):
-        """질의 길이의 구간마다 상위 8건의 회수 — 짧은 지시("진행해")가 수를 끌어내리는지 본다."""
-        out = {}
-        for label, low, high in SIZES:
-            chosen = [r for r, n in zip(of, sizes) if low <= n < high]
-            out[label] = {"pairs": len(chosen),
-                          "recall@8": round(sum(r is not None and r <= 8 for r in chosen) / len(chosen), 4)
-                          if chosen else None}
-        return out
+def _share(rows: list[dict], hit) -> float | None:
+    return round(sum(map(hit, rows)) / len(rows), 4) if rows else None
 
-    bound = {} if local_of is None else {"with_session_bindings": {
-        "turns_with_a_binding": bound_turns,
-        "recall_by_prompt": {f"@{k}": recall(k, of=bound_ranks) for k in KS},
-        "recall_by_prompt_read": {f"@{k}": recall(k, "read", bound_ranks) for k in KS},
-        "recall_by_prompt_updated": {f"@{k}": recall(k, "updated", bound_ranks) for k in KS}}}
+
+def _at(rows: list[dict], field: str) -> dict:
+    return {f"@{k}": _share(rows, lambda r, k=k: r[field] is not None and r[field] <= k) for k in KS}
+
+
+def _within(r: dict, field: str) -> bool:
+    return r[field] is not None and r[field] <= AGENT_K
+
+
+def _top(rows: list[dict]) -> dict:
+    """질의를 만드는 법마다 상위 8건의 회수."""
+    return {name: _share(rows, lambda r, n=name: _within(r, n)) for name in QUERIES}
+
+
+def _by_size(rows: list[dict]) -> dict:
+    """사용자의 말의 길이 구간마다 상위 8건의 회수 — 짧은 지시("진행해")가 수를 끌어내리는지, 무엇이 메우는지 본다."""
+    out = {}
+    for label, low, high in SIZES:
+        chosen = [r for r in rows if low <= r["size"] < high]
+        out[label] = {"pairs": len(chosen), f"recall@{AGENT_K}": _top(chosen)}
+    return out
+
+
+def _agent(rows: list[dict]) -> dict:
+    """에이전트가 그 턴에 스스로 한 검색이 찾은 몫 — 같은 쌍에서 사용자의 말이 찾은 몫과 나란히."""
+    searched = [r for r in rows if r["agent"] is not None]
+    return {"pairs_in_turns_with_a_search": len(searched), f"@{AGENT_K}": _share(searched, lambda r: r["agent"]),
+            f"prompt@{AGENT_K}_on_those_pairs": _share(searched, lambda r: _within(r, "prompt"))}
+
+
+def measure(searcher, found: list[dict], max_chars: int, local_of: dict | None = None) -> dict:
+    """쓰인 노드가 상위 몇 건 안에 드는가 — 질의를 만드는 법마다, 그리고 검색 없이 앞 턴의 노드를 다시 싣는다면."""
+    rows, counts = _pairs(searcher, found, max_chars, local_of)
+    fresh = [r for r in rows if r["carry"] is None]          # 그 대화에서 처음 쓰인 노드 — 회상이 보탤 수 있는 몫이다
+    turns_hit = {k: len({r["turn"] for r in rows if r["prompt"] is not None and r["prompt"] <= k}) for k in KS}
+    sizes = [r["size"] for r in {r["turn"]: r for r in rows}.values()]
     return {
-        **bound,
-        "turns": {"with_used_nodes": len(found), "measured": turns_measured, "not_measurable": unsearchable,
-                  "in_conversations_this_vault_recorded": in_vault, "with_an_agent_search": with_agent_search},
-        "used_nodes": {"pairs": pairs, "read": kinds.count("read"), "updated": kinds.count("updated"),
-                       "names_not_searchable_now": unknown},
-        "recall_by_prompt": {f"@{k}": recall(k) for k in KS},
-        "recall_by_prompt_read": {f"@{k}": recall(k, "read") for k in KS},
-        "recall_by_prompt_updated": {f"@{k}": recall(k, "updated") for k in KS},
-        "turns_with_any_used_node": {f"@{k}": round(any_hit[k] / turns_measured, 4) if turns_measured else None
-                                     for k in KS},
-        "mrr": round(sum(1 / r for r in ranks if r) / pairs, 4) if pairs else None,
-        "found_by_the_agents_own_search": {
-            "pairs_in_turns_with_a_search": len(searched),
-            f"@{AGENT_K}": round(sum(searched) / len(searched), 4) if searched else None},
-        "query_chars": {"median": int(statistics.median(lengths)) if lengths else None,
-                        "max_used": max_chars},
-        "by_query_chars": by_size(ranks if local_of is None else bound_ranks),
+        "turns": {"with_used_nodes": len(found), "measured": counts["measured"],
+                  "not_measurable": counts["not_measurable"], "with_a_binding": counts["bound"],
+                  "in_conversations_this_vault_recorded": counts["in_vault"],
+                  "with_an_agent_search": counts["agent_search"]},
+        "used_nodes": {"pairs": len(rows), "read": sum(r["kind"] == "read" for r in rows),
+                       "updated": sum(r["kind"] == "updated" for r in rows),
+                       "names_not_searchable_now": counts["unknown"]},
+        "recall": {name: _at(rows, name) for name in QUERIES},
+        "recall_without_bindings": {"prompt": _at(rows, "plain")},
+        "recall_by_kind": {kind: {"prompt": _at([r for r in rows if r["kind"] == kind], "prompt")}
+                           for kind in ("read", "updated")},
+        "carried_from_earlier_turns": _at(rows, "carry"),
+        f"either@{AGENT_K}": {f"{name} or carried": _share(rows, lambda r, n=name: _within(r, n) or _within(r, "carry"))
+                              for name in QUERIES},
+        "first_use_in_the_conversation": {"pairs": len(fresh), "recall": {name: _at(fresh, name) for name in QUERIES},
+                                          "found_by_the_agents_own_search": _agent(fresh)},
+        "turns_with_any_used_node": {f"@{k}": round(turns_hit[k] / counts["measured"], 4) if counts["measured"]
+                                     else None for k in KS},
+        "mrr": round(sum(1 / r["prompt"] for r in rows if r["prompt"]) / len(rows), 4) if rows else None,
+        "found_by_the_agents_own_search": _agent(rows),
+        "by_query_chars": _by_size(rows),
+        "query_chars": {"median": int(statistics.median(sizes)) if sizes else None, "max_used": max_chars},
         "searchable_nodes": len(searcher.paths),
     }
 
@@ -241,13 +312,12 @@ def main(argv=None) -> int:
     ap.add_argument("--projects", type=Path, default=Path.home() / ".claude" / "projects")
     ap.add_argument("--max-query-chars", type=int, default=2000)
     ap.add_argument("--json", type=Path, help="결과를 이 파일에도 쓴다")
-    ap.add_argument("--recorded-only", action="store_true", help="이 저장소의 대화 커서가 있는 대화의 턴만 잰다")
+    ap.add_argument("--all", action="store_true",
+                    help="커서가 없는 대화의 전사도 잰다 — 어느 저장소의 것인지 확인되지 않는다")
     a = ap.parse_args(argv)
-    found, files = samples(a.projects)
     vault = Vault.open(a.vault)
     local_of = bindings_by_conversation(vault)
-    if a.recorded_only:
-        found = [t for t in found if t["conversation"] in local_of]
+    found, files = samples(a.projects, None if a.all else local_of)
     report = {"transcripts": files, **measure(search.Searcher(vault), found, a.max_query_chars, local_of)}
     text = json.dumps(report, ensure_ascii=False, indent=2)
     if a.json:
