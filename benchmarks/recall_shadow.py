@@ -10,7 +10,8 @@
   잠깐 두었다 지우는 탐침 파일은 엔진이 검색할 때마다 하는 일이다.
 - 내는 것: 수뿐이다. 질의도 노드의 이름도 내지 않는다 — 전사에는 사용자의 대화가 있다.
 - 한 턴: 사용자의 말에서 다음 사용자의 말까지다. 그 사이에 osk 도구로 읽은(`read_node`) 노드와
-  고친(`update_node`) 노드가 "쓰인 노드"다. 그 턴에 새로 만든 노드는 세지 않는다.
+  고친(`update_node`) 노드가 "쓰인 노드"다. 그 턴에 새로 만든 노드는 세지 않는다. 이어 받은 세션의 전사는
+  앞부분을 원본과 같은 uuid로 가지므로, 턴은 그 턴을 연 사용자 행의 uuid마다 한 번만 센다.
 - 질의: 사용자의 말에서 하네스가 끼워 넣은 알림을 뺀 것이다. 앞에서 `--max-query-chars`자까지 쓴다.
 
 읽을 때의 한계:
@@ -18,14 +19,19 @@
 - 지금의 저장소로 잰다. 그때의 저장소가 아니다. 그 뒤에 생긴 노드가 함께 겨루고, 이름이 바뀐 노드는
   "지금 검색 대상에 없는 이름"으로 빠진다.
 - 실제 검색은 세션의 결속(그 프로젝트의 scope)을 순위에 넣는다. 넣지 않은 수와 넣은 수를 함께 낸다. 결속은
-  저장소의 대화 커서가 적어 둔 세션의 지금 결속이다 — 커서가 없는 대화의 턴은 결속 없이 잰다.
+  저장소의 대화 커서가 적어 둔 세션의 지금 결속이다 — 커서가 없는 대화의 턴은 결속 없이 잰다. 에이전트의
+  검색은 `session`을 실었던 것만 그 결속을 넣어 다시 돌린다.
+- 전사가 어느 저장소의 것인지는 가리지 않는다 — 한 기계에서 저장소를 둘 쓰면 섞인다. 이 저장소의 커서가 있는
+  대화의 턴 수를 함께 낸다(`in_conversations_this_vault_recorded`).
+- 호출의 결과는 보지 않는다 — 받아들여지지 않은 `read_node`·`update_node`도 쓰인 것으로 센다. 에이전트가 그
+  노드를 찾아 쓰려 한 턴이기 때문이다. 2026-11-15의 운영 기록에서 이 셈법으로 들고 나는 것은 쓰인 이름
+  5,642건 가운데 7건이었다.
 - 쓰인 노드는 에이전트가 한 일이지 했어야 할 일이 아니다. 찾지 못해 읽지 않은 노드는 여기에 없다.
 - Claude Code의 전사만 읽는다.
 """
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import re
 import statistics
@@ -63,7 +69,9 @@ def _calls(content):
 
 
 def turns(rows):
-    """노드를 쓴 턴마다 `{query, read, updated, searches}`. 그 턴에 만든 노드는 쓰인 것에서 뺀다."""
+    """노드를 쓴 턴마다 `{id, query, read, updated, searches}`. 그 턴에 만든 노드는 쓰인 것에서 뺀다.
+
+    `id`는 턴을 연 사용자 행의 uuid, `searches`는 `(질의, session을 실었나)`다."""
     turn = None
 
     def closed(t):
@@ -80,7 +88,7 @@ def turns(rows):
                 continue
             if turn and closed(turn):
                 yield closed(turn)
-            turn = {"query": base.GOAL.sub("", base.INJECTED.sub("", text)).strip(),
+            turn = {"id": row.get("uuid"), "query": base.GOAL.sub("", base.INJECTED.sub("", text)).strip(),
                     "read": [], "updated": [], "created": set(), "searches": []}
         elif row.get("type") == "assistant" and turn is not None:
             for tool, args in _calls(message.get("content")):
@@ -88,7 +96,7 @@ def turns(rows):
                 if not isinstance(value, str) or not value.strip():
                     continue
                 if tool == "search":
-                    turn["searches"].append(value)
+                    turn["searches"].append((value, bool(args.get("session"))))
                 elif tool == "create_node":
                     turn["created"].add(value.strip())
                 else:
@@ -107,21 +115,23 @@ def _rows(path: Path):
 
 
 def samples(projects: Path) -> tuple[list[dict], int]:
-    """전사들의 턴. 이어 받은 세션은 앞부분을 사본으로 가지므로 같은 턴은 한 번만 센다."""
-    seen, found, files = set(), [], 0
+    """전사들의 턴. 이어 받은 세션은 앞부분을 원본과 같은 uuid로 가지므로 턴은 uuid마다 한 번만 센다 — 도중에
+    끊긴 사본은 원본의 앞부분이라, 쓴 노드가 더 많은 쪽을 남긴다. uuid가 없는 행의 턴은 합치지 않는다."""
+    kept, files = {}, 0
     for path in sorted(projects.glob("*/*.jsonl")):
         files += 1
         for turn in turns(_rows(path)):
-            key = hashlib.sha256(json.dumps([turn["query"], turn["read"], turn["updated"]],
-                                            ensure_ascii=False).encode()).hexdigest()
-            if key not in seen:
-                seen.add(key)
-                found.append({**turn, "conversation": path.stem})
-    return found, files
+            key = turn["id"] or object()
+            old = kept.get(key)
+            if old is None or len(turn["read"] + turn["updated"]) > len(old["read"] + old["updated"]):
+                kept[key] = {**turn, "conversation": path.stem}
+    return list(kept.values()), files
 
 
 def bindings_by_conversation(vault: Vault) -> dict:
-    """대화마다 그 세션의 결속 — 저장소의 대화 커서가 적어 둔 세션 키로 읽는다. 실제 검색이 순위에 넣는 것이다."""
+    """대화마다 그 세션의 결속 — 저장소의 대화 커서가 적어 둔 세션 키로 읽는다. 실제 검색이 순위에 넣는 것이다.
+
+    커서가 있는 대화는 모두 돌려준다. 결속에 scope가 없으면 값은 None이다."""
     out, by_session = {}, {}
     for cursor in core.local_lock_path("x", vault.root).parent.glob("osk-integration-*.json"):
         try:
@@ -133,8 +143,7 @@ def bindings_by_conversation(vault: Vault) -> dict:
             continue
         if session not in by_session:
             by_session[session] = routing.bindings(vault, session)
-        if by_session[session]["scopes"]:
-            out[state.get("conversation_id")] = by_session[session]
+        out[state.get("conversation_id")] = by_session[session] if by_session[session]["scopes"] else None
     return out
 
 
@@ -145,7 +154,7 @@ def measure(searcher, found: list[dict], max_chars: int, local_of: dict | None =
     ranks, kinds, pulled, lengths = [], [], [], []      # 쓰인 노드마다: 순위, 읽음·고침, 에이전트의 검색이 찾았나
     bound_ranks, bound_turns = [], 0                    # 결속을 넣은 검색의 순위 — 결속을 모르는 턴은 위와 같다
     sizes = []                                          # 쓰인 노드마다: 그 턴의 질의 길이(자)
-    unknown = unsearchable = with_agent_search = 0
+    unknown = unsearchable = with_agent_search = in_vault = 0
     any_hit = {k: 0 for k in KS}
     for turn in found:
         used = {}
@@ -163,10 +172,12 @@ def measure(searcher, found: list[dict], max_chars: int, local_of: dict | None =
             continue
         lengths.append(len(query))
         hits = [h["id"] for h in searcher.view_search(query, max(KS))]
-        agent = {h["id"] for q in turn["searches"] for h in searcher.view_search(q, AGENT_K)}
+        local = (local_of or {}).get(turn.get("conversation"))
+        in_vault += turn.get("conversation") in (local_of or {})
+        agent = {h["id"] for q, bound in turn["searches"]                 # 결속은 session을 실었던 검색에만
+                 for h in searcher.view_search(q, AGENT_K, local if bound else None)}
         with_agent_search += bool(turn["searches"])
         here = [hits.index(node_id) + 1 if node_id in hits else None for node_id in used]
-        local = (local_of or {}).get(turn.get("conversation"))
         if local:
             bound_turns += 1
             hits = [h["id"] for h in searcher.view_search(query, max(KS), local)]
@@ -203,7 +214,7 @@ def measure(searcher, found: list[dict], max_chars: int, local_of: dict | None =
     return {
         **bound,
         "turns": {"with_used_nodes": len(found), "measured": turns_measured, "not_measurable": unsearchable,
-                  "with_an_agent_search": with_agent_search},
+                  "in_conversations_this_vault_recorded": in_vault, "with_an_agent_search": with_agent_search},
         "used_nodes": {"pairs": pairs, "read": kinds.count("read"), "updated": kinds.count("updated"),
                        "names_not_searchable_now": unknown},
         "recall_by_prompt": {f"@{k}": recall(k) for k in KS},
