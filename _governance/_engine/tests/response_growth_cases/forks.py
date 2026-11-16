@@ -678,6 +678,12 @@ class ForkCases:
                 json.dumps({'type':'assistant','sessionId':'own','uuid':'a1','message':{'role':'assistant','id':'m1','stop_reason':'end_turn','content':[{'type':'text','text':'one-off answer'}]}}) + '\\n')
             assert conversation_capture.capture(VAULT, 'claude','own',str(native),'own')['ok']
             job = integration.prompt(VAULT, 'claude','own',include_organization=False,max_rounds=3)
+            # 정기 실행이 살아 있으면 조직 검토와 재검토는 그쪽이 맡는다. 없을 때만 fork가 맡는다.
+            for daily, scopes in ((True, []), (False, ['W1'])):
+                planned = {}
+                with patch.object(growth_ledger, 'daily_active', return_value=daily):
+                    growth._fork_scope(VAULT, job, planned, 3)
+                assert [j['scope'] for j in planned['organization_jobs']] == scopes, (daily, planned)
             source_cwd = VAULT.root / 'project'
             source_cwd.mkdir()
             script = packet_worker(change="assert Path.cwd().name == 'project'".replace('Path.cwd()', '__import__(\"pathlib\").Path.cwd()'))

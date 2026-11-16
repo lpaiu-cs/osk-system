@@ -421,11 +421,28 @@ def _organization(vault, jobs: list, keep: int, ident=None, *, startup: bool = F
                  on_shown=(lambda: conversation_state.note_shown(vault, *ident, "organization", mark)) if ident else None)
 
 
+def _organizes(vault) -> bool:
+    """대화 안 검토가 조직 검토를 함께 맡는가 — fork와 같은 규칙으로(`growth._fork_scope`), 정기 실행이
+    없을 때만. 정기 실행이 있으면 그쪽이 맡는다. 대화 검토와 같은 턴에 실으면 대화 검토에 밀려 판정
+    없이 남는다. 대장을 읽지 못하면 지금처럼 싣는다 — 맡을 곳이 없어지지 않게."""
+    from osk import growth_ledger
+    try:
+        return not growth_ledger.daily_active(vault)
+    except (OSError, ValueError):   # 기록부를 읽지 못했거나(OSError) 깨졌다(LedgerDamage)
+        return True
+
+
+def _review_prompt(vault, harness: str, sid: str) -> dict:
+    """대화 안 검토의 지시문. 조직 검토 작업은 고르기만 하고 블록은 따로 싣는다(`_organization`)."""
+    from osk import integration
+    return integration.prompt(vault, harness, sid, organization_in_text=False, include_organization=_organizes(vault))
+
+
 def _organization_jobs(vault, key: str) -> list:
     """세션 시작의 조직 검토 — 포착 대기와 따로 고른다(짧은 대화도 시작에서 착수할 수 있다)."""
     from osk import core, organization, write
     scopes = write.bound_scopes(vault, key)     # 주된 scope부터, 없으면 결속 순서대로(§9-3 1항)
-    if not scopes:
+    if not scopes or not _organizes(vault):
         return []
     with core.mutation_lock(vault):
         return organization.pending(vault, scopes, limit=1, record=True)
@@ -508,7 +525,7 @@ def capture_blocks(vault, env: dict, key: str, *, startup: bool = False):
     넘겼다(#192). 저장된 커서로 세고, 새 턴의 포착과 CLI 판정은 분리 작업자가 한다
     (`response_growth.defer`). 세션 시작은 대화의 착지만 고정하고(`conversation_capture.hook_land`)
     마지막 포착 때의 대기를 싣는다 — 그 뒤의 턴은 작업자가 포착해 다음 입력부터 보인다."""
-    from osk import integration, response_growth, conversation_capture
+    from osk import response_growth, conversation_capture
     from osk.hook_text import Block
     ident = None
     try:
@@ -551,7 +568,7 @@ def capture_blocks(vault, env: dict, key: str, *, startup: bool = False):
         if startup:
             if not captured["pending"]:
                 return [warning, _start_organization(vault, key, ident)], ident
-            st = integration.prompt(vault, harness, sid, organization_in_text=False)
+            st = _review_prompt(vault, harness, sid)
             return [warning, _conversation(vault, st, 70), _organization(vault, st["organization_jobs"], 60, ident, startup=True,
                                                                   shown_tree=st.get("hub_tree", ""))], ident
         overdue_switch = selected['changed'] and cadence['unreviewed_prompts'] >= conversation_capture.SOFT
@@ -567,7 +584,7 @@ def capture_blocks(vault, env: dict, key: str, *, startup: bool = False):
                      + ("이번엔 단독 턴이어도 된다. " if cadence["hard"] or
                         overdue_switch and cadence['unreviewed_prompts'] >= conversation_capture.HARD else
                         "다음 도구 호출에 함께 실어 검토하라 — 검토만을 위한 턴을 따로 쓰지 마라. "))
-        st = integration.prompt(vault, harness, sid, organization_in_text=False)
+        st = _review_prompt(vault, harness, sid)
         blocks = [warning, lead, _conversation(vault, st, 95),
                   _organization(vault, st["organization_jobs"], 60, ident, shown_tree=st.get("hub_tree", ""))]
     except conversation_capture.SubagentEvent:
