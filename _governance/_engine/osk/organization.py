@@ -249,12 +249,20 @@ def _unresolved(current: dict, intentional: list) -> list:
             if not (item["relation"] == "Link" and _ref_key(item) in accepted)]
 
 
-def _complete(scope: str, state: dict, current: dict) -> bool:
-    """신호가 없으면 끝났다 — 배선 문제, 옮기다 만 것, 긴 노드의 남은 구간, 미해결 참조, 본문이 빈 노드. 마지막
-    검토의 snapshot과 견주지 않는다. 그러면 신호와 무관한 쓰기도 scope를 다시 열었다."""
+def _complete(scope: str, state: dict, current: dict, lost: list) -> bool:
+    """신호가 없으면 끝났다 — 배선 문제, 옮기다 만 것, 긴 노드의 남은 구간, 미해결 참조, 본문이 빈 노드, 고른 뒤
+    사라진 노드(`_lost`). 마지막 검토의 snapshot과 견주지 않는다. 그러면 신호와 무관한 쓰기도 scope를 다시 열었다."""
     intentional = state["reviews"].get(scope, {}).get("intentional", [])
     return not (current["issues"] or current["pending_moves"] or _remaining(current, state)
-                or _unresolved(current, intentional) or _bodiless(current))
+                or _unresolved(current, intentional) or _bodiless(current) or lost)
+
+
+def _lost(state: dict, current: dict, idx) -> list[str]:
+    """고른 계획에 적힌 노드 가운데 저장소 어디에도 없는 것. 다른 scope로 옮겨 간 노드는 살아 있으니 세지 않는다.
+    허브의 링크까지 함께 사라진 노드는 배선도 참조도 어긋나지 않아, 여기서 잡지 않으면 아무도 보지 못한다."""
+    prior = next((p for p in state["plans"].values() if p["scope"] == current["scope"]), {"nodes": []})
+    here = {n["id"] for n in current["nodes"]}
+    return sorted(n["id"] for n in prior["nodes"] if n["id"] not in here and n["id"] not in idx.by_id)
 
 
 def _bodiless(current: dict) -> bool:
@@ -296,7 +304,7 @@ def pending(vault: Vault, scopes=None, limit: int = 3, *, idx=None, record: bool
         missing_ids = sorted({n["id"] for n in prior["nodes"]} - {n["id"] for n in current["nodes"]}) if prior else []
         if missing_ids:
             current["missing_ids"] = missing_ids
-        if _complete(scope, state, current):
+        if _complete(scope, state, current, _lost(state, current, idx)):
             continue
         remaining = _remaining(current, state)
         sizes = {n["id"]: n["body_chars"] for n in current["nodes"]}
@@ -310,7 +318,7 @@ def pending(vault: Vault, scopes=None, limit: int = 3, *, idx=None, record: bool
         current["coverage"] = {"remaining": len(remaining), "total": len(current.pop("units"))}
         if len(offered) < len(remaining):
             current["coverage"]["handoff"] = len(remaining) - len(offered)
-        current["reason"] = "hub wiring, references, unfinished moves, empty bodies or long-node ranges need organization review"
+        current["reason"] = "wiring, references, moves, empty or vanished nodes, or long-node ranges need review"
         current["review_command"] = "python -m osk.cli organization review (UTF-8 JSON stdin)"
         if unfinished or missing_ids:
             current["key"] = prior["key"]
@@ -448,10 +456,11 @@ def status(vault: Vault, job: dict, idx=None) -> dict:
     # 이 key의 검토 행을 요구한다 — 그래야 작업자가 쓰기로 신호를 다 없앤 실행에서도 결과 묶음(결속 판정
     # 포함)이 적용된다(`growth_reviews.needs_review`). 다른 경로로 신호가 사라진 작업은 그 실행에서만
     # pending이고, 신호가 없으니 `pending()`이 다시 고르지 않는다.
+    idx = _index(vault) if idx is None else idx
     current = snapshot(vault, job["scope"], idx)
     state = load_state(vault)
     row = state["reviews"].get(job["scope"], {})
-    good = row.get("key") == job["key"] and _complete(job["scope"], state, current)
+    good = row.get("key") == job["key"] and _complete(job["scope"], state, current, _lost(state, current, idx))
     return {"key": job["key"], "scope": job["scope"],
             "status": "complete" if good else "pending", "snapshot": current["snapshot"],
             "remaining_units": len(_remaining(current, state))}

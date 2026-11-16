@@ -36,7 +36,7 @@ release.
 - **A governance document changed.** Mechanism §9-4 (continuing review of references and organization),
   paragraphs 3, 4 and 5. The organization review belongs to the daily growth run, and it looks only at scopes
   with a signal: hub wiring problems, unresolved references, unfinished moves, a knowledge node whose body is
-  empty, or ranges of long nodes. Approve the change to the governance region when you apply the update.
+  empty, a selected node that has vanished from the vault, or ranges of long nodes. Approve the change to the governance region when you apply the update.
 - **Write responses changed shape.** The MCP `update_node` response carries `edges` only when the call
   changed edges. The `distillation` in `create_node` and `update_node` responses carries the key, the status
   and, for a step that is not finished, what is left. Scripts that read those fields from the response need a

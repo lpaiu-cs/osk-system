@@ -155,7 +155,7 @@ def problems() -> list[str]:
     if (gone["used_nodes"]["names_not_searchable_now"], gone["turns"]["not_measurable"]) != (1, 1):
         bad.append(f"measure: unknown names {gone['used_nodes']} {gone['turns']}")
 
-    bad += _views() + _copies() + _cursors()
+    bad += _views() + _first_use() + _copies() + _cursors()
     return bad
 
 
@@ -206,6 +206,20 @@ def _views() -> list[str]:
     if (cut["@20"], cut["@300"]) != (agent["@20"], agent["@300"]) or short["recall"]["prompt"]["@300"] != 0:
         bad.append(f"views: 질의 길이 제한 {cut} {short['recall']['prompt']}")
     return bad
+
+
+def _first_use() -> list[str]:
+    """처음 쓰임은 대화 전체로 가린다 — 앞에서 쓴 노드는 그 사이에 다른 노드를 HISTORY개 넘게 써도 처음이 아니다
+    (#398 리뷰). 최근 HISTORY개만 기억하는 것은 최근 순위를 매기는 데에만 쓴다."""
+    many = [f"g{i}" for i in range(rs.HISTORY + 5)]
+    stub = Stub({"u1": _put(n1=1), "u3": _put(n1=1)})
+    stub.paths = [(name, None, SimpleNamespace(id=f"id-{name}")) for name in ["n1"] + many]
+    rows = [user("u1"), calls(("read_node", {"name": "n1"})),
+            user("u2"), calls(*[("read_node", {"name": name}) for name in many]),
+            user("u3"), calls(("read_node", {"name": "n1"}))]
+    report = rs.measure(stub, list(rs.turns(rows)), 2000)
+    fresh = report["first_use_in_the_conversation"]["pairs"]
+    return [] if fresh == 1 + len(many) else [f"first use: 처음 쓰인 쌍 {fresh}, 기대 {1 + len(many)}"]
 
 
 def _cursors() -> list[str]:
