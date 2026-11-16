@@ -1,5 +1,4 @@
 """Storage migration checks in an isolated vault; no live vault or GUI claims."""
-import copy
 import os
 from pathlib import Path
 import sys
@@ -177,7 +176,7 @@ def main():
         target = root / out["path"]
         saved = target.read_bytes()
         assert "derived-from" not in contract.parse(target).meta
-        historic = copy.deepcopy(out["distillation"])
+        historic = D.status(VAULT, "legacy-proof")
         historic["sources"][0].update(ref=ref, path="00_Scope/W1/_raw/proof.md")
         raw.migrate(VAULT, apply=True)
         assert target.read_bytes() == saved

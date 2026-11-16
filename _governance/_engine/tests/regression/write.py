@@ -590,6 +590,10 @@ def test_edge_target_normalization():
     r3 = _w(write.update_node, VAULT, "regr-norm", remove_edges={"derived-from": tid})
     check("id 제거가 유효하다",
           r3["ok"] and tid not in (r3["edges"]["derived-from"] or []), r3)
+    # 연결을 건드리지 않은 호출에 연결 목록을 되울리면 응답이 대화에 쌓인다
+    r4 = _w(write.update_node, VAULT, "regr-norm", old_text="본문", new_text="본문 고침")
+    check("앵커 치환만 한 응답에는 연결 목록이 없다", r4["ok"] and "edges" not in r4, r4)
+    check("연결을 고친 응답에는 연결 목록이 있다", "edges" in r1 and "edges" in r3, (r1, r3))
     for nm in ("regr-norm", "regr-norm-t"):
         (ROOT / f"00_Scope/W1/{nm}.md").unlink(missing_ok=True)
 

@@ -245,6 +245,10 @@ class OrganizationTests(unittest.TestCase):
             text = 'Durable qualified conclusion. ' * 600
             a = node('Large', text)
             assert a['organization_advice']['read_view'] == 'outline', a
+            # 긴 노드를 고칠 때마다 붙는 안내다 — 짧게 두고 자세한 기준은 검토 지시문이 싣는다.
+            # 길이가 삭제의 근거가 아니라는 말은 남는다
+            assert len(a['organization_advice']['instruction']) <= 100, a
+            assert '삭제의 근거가 아니다' in a['organization_advice']['instruction'], a
             p = VAULT.root / a['path']
             assert contract.parse(p).body.strip() == text.strip()
             current = organization.snapshot(VAULT, 'W1')
