@@ -603,7 +603,7 @@ def update_node_locked(vault: Vault, name: str, body: str | None = None,
         res = {"ok": True, "no_change": True, "name": name,
                "path": posix_rel(path, vault.root), "id": n.id,
                "new_hash": sha256_file(path),
-               "edges": node_checks.edge_report(n),
+               **_edge_echo(n, add_edges, remove_edges),
                **node_checks.reference_feedback(vault, path, n.meta, n.body, idx, n), **rc_note}
         if rc_again:     # 바꿀 것 없이 점검을 적었다 — 점검 완료(unchanged)
             res.update(rechecks.after_write(vault, idx, path, n.meta, before=rc_before.keys(),
@@ -628,7 +628,7 @@ def update_node_locked(vault: Vault, name: str, body: str | None = None,
     out = {"ok": True, "name": name, "path": posix_rel(path, vault.root),
            "id": n.id, "new_hash": sha256_bytes(data),
            "updated_kept": only_conflicts,
-           "edges": node_checks.edge_report(contract.Node(path=path, meta=meta, body=new_body)),
+           **_edge_echo(contract.Node(path=path, meta=meta, body=new_body), add_edges, remove_edges),
            **node_checks.reference_feedback(vault, path, meta, new_body, idx, n), **rc_note}
     out.update(rechecks.after_write(vault, idx, path, meta, before=rc_before.keys(),
                                     prior=rc_prior, rechecked=rc_again,
@@ -647,6 +647,13 @@ def update_node_locked(vault: Vault, name: str, body: str | None = None,
     if replaced_summary is not None:
         out["replaced_summary"] = replaced_summary
     return evictions.after_node_write(vault, out, settle, "merged", path.stem)
+
+
+def _edge_echo(node, add_edges, remove_edges) -> dict:
+    """`update_node` 응답의 연결 목록 — 연결을 건드린 호출에만 싣는다. 본문만 고친 호출에
+    바꾸지 않은 목록을 되울리면 응답이 대화에 남아 턴마다 다시 읽힌다. 보존(`distill`)이
+    다는 출처도 `add_edges`로 들어오므로 여기에 걸린다."""
+    return {"edges": node_checks.edge_report(node)} if add_edges or remove_edges else {}
 
 
 def _dropped(old_body: str, new_body: str) -> list[str]:
