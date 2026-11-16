@@ -485,6 +485,7 @@ def guidance() -> str:
             "미해석 PE는 실제 근거로 수리하고, 탐색 질문 Link는 개별 사유로 유지할 수 있다. "
             "분화 시 실제 하위 군집·허브·구성원을 만들고 hub_links 양쪽을 반영한다. "
             "중단 시 같은 ID의 현재 위치부터 확인해 남은 작업을 이어라. "
+            "missing_ids가 실린 작업은 완료를 받지 않는다 — 판정한 구간은 deferred로 낸다. "
             "완료 전에 organization plan --scope <scope> --preview로 최신 snapshot을 읽고, "
             "검토한 각 구간의 주장·적용 조건·분화 또는 유지 이유를 checked=[{unit,reason}]에 남긴다. "
             "checked는 선택한 구간의 현행 본문에 결속된다. 계획 뒤 고치거나 만든 노드의 구간은 review 때 "
