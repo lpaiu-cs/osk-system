@@ -58,16 +58,19 @@ class OrganizationTests(unittest.TestCase):
             missing = organization.plan(VAULT, 'W1')
             assert added['id'] in missing['missing_ids']
             rejected(lambda: finish_review('W1','The first node alone remains'))
-            # 완료는 받지 않지만 작업은 닫힌다 — 남은 구간을 보류로 판정하면 신호가 없다.
+            # 남은 구간을 다 판정해도 scope는 닫히지 않는다 — 고른 노드가 저장소에서 사라진 것이 신호다(#398 리뷰).
             for _ in range(5):
                 job = organization.plan(VAULT, 'W1')
-                if job.get('status') == 'complete': break
+                if not job.get('review_units'): break
                 organization.review(VAULT, job['key'], 'W1', 'deferred', 'Ranges hold', after=job['snapshot'],
                                     checked=[{'unit': u['unit'], 'reason': 'holds'} for u in job['review_units']])
-            assert organization.plan(VAULT, 'W1')['status'] == 'complete'
-            # 사라진 ID만으로는 다시 열지 않는다.
-            node('Unrelated')
-            assert organization.plan(VAULT, 'W1')['status'] == 'complete'
+            left = organization.plan(VAULT, 'W1')
+            assert left.get('status') != 'complete' and added['id'] in left['missing_ids'], left
+            # 다른 scope로 옮겨 간 노드는 사라진 것이 아니다 — 저장소에 살아 있으면 세지 않는다.
+            from types import SimpleNamespace
+            state, current = organization.load_state(VAULT), organization.snapshot(VAULT, 'W1')
+            assert organization._lost(state, current, SimpleNamespace(by_id={})) == [added['id']]
+            assert organization._lost(state, current, SimpleNamespace(by_id={added['id']: None})) == []
         """)
 
     def test_only_signals_open_a_scope(self):
@@ -634,10 +637,10 @@ class OrganizationTests(unittest.TestCase):
                 write.update_node(VAULT, "A",old_text=section,new_text="")
             p.unlink()
             write.update_node(VAULT, "W1",old_text="- [[A]]",new_text="")
-            # 사라진 ID만으로는 다시 열지 않는다 — 다른 신호가 있을 때 missing_ids로 함께 싣는다.
-            assert organization.plan(VAULT, "W1")["status"]=="complete"
+            resumed=organization.plan(VAULT, "W1")
+            assert resumed["key"]==job["key"] and a["id"] in resumed["missing_ids"],resumed
             from osk import growth, growth_ledger, growth_plan, growth_reviews, worker_process
-            assert not growth_plan.plan(VAULT, 20)["organization_jobs"]
+            assert growth_plan.plan(VAULT, 20)["organization_jobs"],"lost ID fell out of next run"
         """)
 
     def test_id_hub_navigation_matches_title_navigation(self):

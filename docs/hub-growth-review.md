@@ -55,15 +55,17 @@ The user approved this wording on 2026-11-16 ("이대로 올려"). The reasons a
   snapshot을 벗어나 판정 없이 미뤄지기 때문이다." The cross-reference in parentheses was added by the
   agent after the approval.
 - **What it looks at (paragraphs 3, 4 and 5).** The review now opens a scope only for a signal: hub
-  wiring problems, unresolved references, unfinished moves, a knowledge node whose body is empty, or
-  unreviewed ranges of long nodes. The empty-body signal was added after the approval, from review
+  wiring problems, unresolved references, unfinished moves, a knowledge node whose body is empty, a node
+  that was in the selected plan and is now nowhere in the vault, or unreviewed ranges of long nodes. The empty-body signal was added after the approval, from review
   (#393): the write surface accepts an empty body, and nothing else notices knowledge emptied by mistake.
+  The vanished-node signal was added from the release review (#398): a node lost together with its hub
+  link breaks neither wiring nor references. A node that moved to another scope is alive and is not counted.
 
 | Paragraph | Before | After |
 |---|---|---|
 | 3, first sentence | 대화 통합과 성장 실행은 변경된 scope와 기존 domain의 본문·현재 배치·하위 허브·지역 배선·미결 이동을 검토한다. | 대화 통합과 성장 실행은 변경된 scope와 기존 domain의 현재 배치·하위 허브·지역 배선·미결 이동·미해결 참조를 검토한다. 저장된 본문을 다시 읽는 것은 읽는 값이 큰 긴 노드의 구간에 한한다(4항) — 그 밖의 본문이 맞는지는 보존할 때의 판단과, 근거가 바뀔 때의 재검토(§4-1)가 맡는다. |
 | 3, binding review | (none) | 조직 검토 작업이 없는 프로젝트의 결속 판정은 `routing` 명령으로 적는다. |
-| 4, after the first sentence | (none) | 배선 문제·미해결 참조·미결 이동·본문이 빈 노드·긴 노드의 미검토 구간이 하나도 없는 scope는 검토할 것이 없는 것이며, 이와 무관한 쓰기는 그 scope를 다시 열지 않는다. |
+| 4, after the first sentence | (none) | 배선 문제·미해결 참조·미결 이동·본문이 빈 노드·고른 뒤 사라진 노드·긴 노드의 미검토 구간이 하나도 없는 scope는 검토할 것이 없는 것이며, 이와 무관한 쓰기는 그 scope를 다시 열지 않는다. |
 | 4, body reading | 본문 판독은 선택된 유한 구간의 id·내용 해시와 구간별 판단 이유에 결속한다. | 본문 판독은 긴 노드에서 고른 유한 구간의 id·내용 해시와 구간별 판단 이유에 결속한다. 긴 노드의 기준은 쓰기 응답이 본문의 길이를 알리는 기준과 같다. |
 | 5 | 변경이나 미완료는 다음 실행이 이어받고 | 남은 미결은 다음 실행이 이어받고 |
 
