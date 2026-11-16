@@ -120,7 +120,7 @@ def daily_active(vault: Vault, days: int = 3) -> bool:
 
 def run_failed(result: dict) -> bool:
     """실행이 실패했는가 — 작업이 남은 것(`incomplete`)과 가른다. `ok`는 고른 작업을 모두
-    끝냈다는 뜻이라, 여러 번에 나눠 끝나는 정돈이 남아도 거짓이다(Mechanism §9-4 4항).
+    끝냈다는 뜻이라, 여러 번에 나눠 끝나는 정돈이 한 구간도 줄지 않았으면 거짓이다(Mechanism §9-4 4항).
     실패는 돌지 못했거나(잠김·준비 실패), 작업자가 정상 종료하지 않았거나, 결과 묶음을
     적용하지 못한 것이다. 잠금 대기(`busy`)와 한도 거절(`limited`)은 실패가 아니라 대기다(#173)."""
     if result.get("state") in WAITS:

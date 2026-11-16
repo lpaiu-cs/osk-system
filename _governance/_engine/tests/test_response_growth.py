@@ -76,6 +76,37 @@ class HookBudgetTests(unittest.TestCase):
             assert 'damaged organization state' in start and '포착·통합 진단' not in start, start
         ''')
 
+    def test_fallback_review_leaves_organization_to_a_live_daily_run(self):
+        # 정기 실행이 살아 있으면 조직 검토는 그쪽이 맡는다 — fork와 같은 규칙으로 대화 안 검토에도 싣지 않는다.
+        for daily in (True, False):
+            base_tests.GrowthTests().check_case('''
+            from osk import response_growth as rg, scope_memory, growth_ledger, worker_preflight
+            from unittest.mock import patch
+            sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
+            import claude_session_start as hook
+            node('Own claim', scope='W1')
+            scope_memory.replace(VAULT, 'own', '', space='00_Scope/W1')
+            native = VAULT.root/'native.jsonl'
+            user = {'role':'user','content':'question'}
+            answer = {'role':'assistant','id':'m1','model':'same-model','stop_reason':'end_turn',
+                      'content':[{'type':'text','text':'answer'}]}
+            native.write_text(json.dumps({'type':'user','sessionId':'own','uuid':'u1','message':user})+chr(10)+
+                              json.dumps({'type':'assistant','sessionId':'own','uuid':'a1','message':answer})+chr(10))
+            rg.config_path(VAULT).parent.mkdir(exist_ok=True)
+            rg.config_path(VAULT).write_text(json.dumps({'claude':sys.executable}))
+            env = {'harness':'claude','session_id':'own','transcript_path':str(native),'cwd':str(VAULT.root),
+                   'session':'own'}
+            with patch.object(worker_preflight,'preflight',side_effect=ValueError('subscription login required')), \\
+                    patch.object(growth_ledger,'daily_active',return_value=DAILY):
+                rg.probe(VAULT, env)
+                start = hook.capture_block(VAULT, env,'own',startup=True)
+                rg.after_hook(VAULT, env)
+                seen = {n: hook.capture_block(VAULT, env,'own') for n in range(1,10)}
+            assert '검토 경고' in start and '[osk 케이던스' in seen[9], (start, seen[9])
+            for text in (start, seen[9]):
+                assert ('참조·조직 검토' in text) is not DAILY, text
+            '''.replace('DAILY', repr(daily)))
+
     def test_hosts_declare_their_limit(self):
         from osk import harness
         self.assertEqual(harness.get('kiro').hook_budget, 2_800)

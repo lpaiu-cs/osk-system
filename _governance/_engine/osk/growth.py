@@ -275,6 +275,14 @@ def _drafter(command: list[str]) -> str | None:
     return None
 
 
+def _organized(job: dict, outcome: dict) -> bool:
+    """정리 검토가 이 실행에서 제 몫을 했는가 — 끝냈거나, 계획 때보다 남은 구간을 줄였다. 정리는
+    프로젝트 하나를 여러 실행에 나눠 끝내므로, 다 끝내야만 몫을 한 것으로 보면 정리가 붙은 실행이
+    거의 모두 '끝나지 않음'으로 적힌다."""
+    return (outcome["status"] == "complete"
+            or outcome["remaining_units"] < (job.get("coverage") or {}).get("remaining", 0))
+
+
 def _progress(planned: dict, outcomes: dict, scope: dict, organization: dict, eviction: dict,
               recheck: dict) -> dict:
     """작업마다 진척했는가 — 닫았거나(보존·무가치·완료·올림) 정돈이 남은 단위를 줄였다. 보류는
@@ -282,8 +290,7 @@ def _progress(planned: dict, outcomes: dict, scope: dict, organization: dict, ev
     않는다(#175)."""
     made = ([c["key"] for c in planned["candidates"] if outcomes[c["key"]] in ("preserved", "no_value")]
             + [j["key"] for j in planned["scope_jobs"] if scope[j["key"]]["status"] == "complete"]
-            + [j["key"] for j in planned["organization_jobs"] if organization[j["key"]]["status"] == "complete"
-               or organization[j["key"]]["remaining_units"] < (j.get("coverage") or {}).get("remaining", 0)]
+            + [j["key"] for j in planned["organization_jobs"] if _organized(j, organization[j["key"]])]
             + [j["key"] for j in planned["eviction_jobs"] if eviction[j["key"]]["status"] == "complete"]
             + [j["key"] for j in planned["recheck_jobs"] if recheck[j["key"]]["status"] == "complete"])
     keys = [j["key"] for key in growth_ledger.QUEUES for j in planned.get(key, [])]
@@ -307,8 +314,8 @@ def _caught_up(vault: Vault, scope_job: dict | None, wanted: set, limit: int, sc
 
 
 def _fork_scope(vault: Vault, scope_job: dict, planned: dict, limit: int) -> None:
-    """대화에서 갈라진 실행이 제 scope에서 함께 맡는 것을 계획에 적는다 — 조직 검토 하나와, 정기 실행이 없을
-    때의 재검토."""
+    """대화에서 갈라진 실행이 제 scope에서 함께 맡는 것을 계획에 적는다 — 정기 실행이 없을 때만, 조직 검토
+    하나와 재검토. 정기 실행이 있으면 둘 다 그쪽이 맡는다."""
     from . import write
     # 일회성 작업 폴더의 대화는 그 키의 결속을 따르지 않는다(Mechanism §6-2 6항)
     # 결속 scope는 주된 scope부터, 없으면 결속 순서대로(§9-3 1항)
@@ -320,13 +327,16 @@ def _fork_scope(vault: Vault, scope_job: dict, planned: dict, limit: int) -> Non
     # 시도 기록을 남기지 않아 계속 앞에 서고, 뒤의 작업이 영영 뽑히지 않는다.
     rows = growth_ledger.ledger_records(vault)
     stalled = growth_plan.stalled(rows)
+    # 정기 실행이 없으면 이 scope의 조직 검토와 재검토를 fork가 맡는다 — 그런 설치에서는 fork가 유일한 길이다.
+    # 정기 실행이 있으면 붙이지 않는다: fork가 같은 scope에 노드를 쓰면 조직 검토는 미뤄야 하고(`_QUEUE_RULES`),
+    # 쓰지 않아도 대화 검토에 밀려 판정 없이 남았다(fork에 붙은 224건 가운데 143건).
+    alone = not growth_ledger.daily_active(vault)
     planned["organization_jobs"] = growth_plan.skip_stalled(
-        organization.pending(vault, scopes, limit=min(len(scopes), 20)) if scopes else [],
+        organization.pending(vault, scopes, limit=min(len(scopes), 20)) if scopes and alone else [],
         stalled, 1, planned)
-    # 정기 실행이 없으면 이 scope의 재검토를 fork가 맡는다.
     idx = growth_plan.node_index(vault)
     planned["recheck_jobs"] = growth_plan.skip_stalled(
-        growth_plan.pick_rechecks(vault, idx, limit + len(stalled), scope, rows) if scope and not growth_ledger.daily_active(vault) else [],
+        growth_plan.pick_rechecks(vault, idx, limit + len(stalled), scope, rows) if scope and alone else [],
         stalled, limit, planned)
 
 
@@ -380,7 +390,9 @@ def _observe(vault: Vault, planned: dict, manifest: dict) -> tuple:
 
 
 def _complete(returncode, error, planned: dict, final_reviews: dict, receipts: dict, queue_outcomes: tuple) -> bool:
-    """이 실행이 고른 것을 다 닫았는가. `queue_outcomes`는 큐마다의 작업 상태다(scope, 조직, 퇴출, 재검토)."""
+    """이 실행이 고른 것을 다 닫았는가. `queue_outcomes`는 큐마다의 작업 상태다(scope, 조직, 퇴출, 재검토).
+    조직 검토는 남은 구간을 줄였으면 제 몫을 한 것이다(`_organized`)."""
+    scope, organization_outcomes, eviction, recheck = queue_outcomes
     # Catch-up includes unrelated conversations. Their failures remain visible
     # in capture; only selected conversations can block this bounded run.
     return (returncode == 0 and error is None
@@ -388,7 +400,8 @@ def _complete(returncode, error, planned: dict, final_reviews: dict, receipts: d
                     for j in planned["scope_jobs"])
             and not final_reviews["errors"]
             and all(receipts.values())
-            and all(s["status"] == "complete" for outcomes in queue_outcomes for s in outcomes.values()))
+            and all(_organized(j, organization_outcomes[j["key"]]) for j in planned["organization_jobs"])
+            and all(s["status"] == "complete" for outcomes in (scope, eviction, recheck) for s in outcomes.values()))
 
 
 def run(vault: Vault, command: list[str], limit: int = 3, timeout: int = 600, *,

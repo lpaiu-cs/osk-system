@@ -94,27 +94,31 @@ class QueueCases:
             """.replace('DEFERRED_CASE', repr(deferred)))
 
     def test_unfinished_organization_is_remaining_work_not_a_failed_run(self):
-        self.check_case("""
+        # read: whether the worker checked units. Checked units shrink what is left; a deferral without
+        # them leaves it as it was.
+        for read, state in (('True', 'complete'), ('False', 'incomplete')):
+            self.check_case("""
             import subprocess
             node('A')
             node('B')
             # Organization reads a scope in several passes (Mechanism §9-4 4): a pass that leaves
             # units is progress. After v5.0.0 the scheduler logged every such daily run as failed
-            # and the session start said the daily run had not run at all.
+            # and the session start said the daily run had not run at all. A pass that shrank what
+            # is left did its share, so the run is complete; one that shrank nothing is incomplete.
             command_file = VAULT.root/'command.json'
-            command_file.write_text(json.dumps([sys.executable,'-c',packet_worker(org='deferred')]),
+            command_file.write_text(json.dumps([sys.executable,'-c',packet_worker(org='deferred', read=READ_UNITS)]),
                                     encoding='utf-8')
             proc = subprocess.run([sys.executable,'-B','-m','osk.cli','growth','run',
                                    '--command-file',str(command_file),'--limit','3'],
                                   capture_output=True,text=True,encoding='utf-8',timeout=120)
             result = json.loads(proc.stdout)
-            assert result['state'] == 'incomplete' and not result['final_reviews']['errors'], result
+            assert result['state'] == RUN_STATE and not result['final_reviews']['errors'], result
             assert {s['status'] for s in result['organization_outcomes'].values()} == {'pending'}, result
             assert proc.returncode == 0 and not growth_ledger.run_failed(result), (proc.returncode, result)
             # #301: an organization left over is no reason to hand rechecks to the fork.
             status = growth_ledger.daily_status(VAULT)
             assert status['ran'] and status['active'], status
-            assert status['last']['state'] == 'incomplete', status
+            assert status['last']['state'] == RUN_STATE, status
             # A run that could not run, or whose worker or packet failed, still fails.
             assert growth_ledger.run_failed({**result, 'returncode': 1})
             assert growth_ledger.run_failed({**result, 'final_reviews': {'state': 'rejected', 'errors': ['no packet']}})
@@ -122,7 +126,7 @@ class QueueCases:
             assert not growth_ledger.run_failed({'ok': True, 'state': 'skipped', 'selected': 0})
             # Another run holding the lock is a wait, not a failure (#175: 10-05 and 10-06 ended busy).
             assert not growth_ledger.run_failed({'ok': False, 'state': 'busy'})
-        """)
+            """.replace('READ_UNITS', repr(read)).replace('RUN_STATE', repr(state)))
 
     def test_scope_tries_count_only_what_the_daily_run_judged(self):
         self.check_case("""

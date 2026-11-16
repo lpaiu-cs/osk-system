@@ -79,7 +79,10 @@ still forget the hub link. The user decided:
   Review records are local state, not durable knowledge or raw conversation data.
 - `work_order` is the actual execution order. The first turn rotates even when
   every queue was selected in the previous attempt. Stop forks add one organization job from
-  their own Scope, reuse the same worker and retain the 600-second deadline.
+  their own Scope only where no daily run took rechecks in the last three days (the same rule
+  as rechecks); they reuse the same worker and retain the 600-second deadline. Otherwise the
+  daily run takes organization: a fork that writes in the Scope must defer it, and even when it
+  does not, the conversation review crowds it out.
 - Existing Domains use `organization plan --scope '00_Domain/<name>'` (a vault
   that kept a legacy Domain root uses that root's name, such as `Domain/<name>`);
   this does not create a Domain, authorize Person analysis or override pinned
