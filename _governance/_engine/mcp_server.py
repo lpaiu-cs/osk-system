@@ -21,7 +21,8 @@ import sys
 from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
-from pydantic import Field
+from pydantic import AliasChoices, Field
+from pydantic.json_schema import SkipJsonSchema
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -211,8 +212,12 @@ def search(query: str, k: Annotated[int, Field(ge=1, le=50)] = 8,
     return hits
 
 
+# 에이전트가 거듭 넣는 두 인자를 받는다(#260): `id`는 `name`의 다른 이름이고(본문은 이름과 id를 모두
+# 풀어 읽는다), `session`은 읽기에 쓰이지 않으니 받아서 버린다. 둘 다 발행 스키마에는 싣지 않는다 — 상주
+# 예산(validate.SCHEMA_BUDGET)을 쓰지 않으려는 것이고, 그 밖의 미지 인자는 지금처럼 거부한다.
 @mcp.tool()
-def read_node(name: str, view: str | None = None) -> dict:
+def read_node(name: Annotated[str, Field(validation_alias=AliasChoices("name", "id"))],
+              view: str | None = None, session: SkipJsonSchema[str | None] = None) -> dict:
     """`name`의 전문·`hash`(재작성 `expect_hash`). `view`는 `outline`(목차),
     `시작:끝`(본문 0기반 문자, 끝 제외) 또는 본문 인용(앞뒤 문단째, 그대로 `old_text`).
     부분 열람은 전문 쓰기용 해시를 주지 않는다."""
