@@ -118,6 +118,8 @@ def turns(rows):
             last_reply = (_words(message.get("content")) or "").strip() or last_reply
             for tool, args in _calls(message.get("content")) if turn is not None else ():
                 value = args.get({"search": "query", "create_node": "title"}.get(tool, "name"))
+                if tool == "read_node":                         # read_node는 id를 name의 다른 이름으로 받는다(#260)
+                    value = value or args.get("id")
                 if not isinstance(value, str) or not value.strip():
                     continue
                 if tool == "search":
@@ -219,9 +221,12 @@ def _pairs(searcher, found: list[dict], max_chars: int, local_of: dict | None) -
 
     for turn in found:
         used = {}
+        made = {resolve(name) for name in turn.get("created") or ()}   # 그 턴에 만든 노드를 id로 읽은 것도 뺀다
         for kind in ("read", "updated"):                  # 읽고 고친 노드는 고친 것으로 센다
             for name in turn[kind]:
                 node_id = resolve(name)
+                if node_id in made:
+                    continue
                 if node_id:
                     used[node_id] = kind
                 else:

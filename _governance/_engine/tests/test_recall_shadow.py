@@ -216,10 +216,13 @@ def _first_use() -> list[str]:
     stub.paths = [(name, None, SimpleNamespace(id=f"id-{name}")) for name in ["n1"] + many]
     rows = [user("u1"), calls(("read_node", {"name": "n1"})),
             user("u2"), calls(*[("read_node", {"name": name}) for name in many]),
-            user("u3"), calls(("read_node", {"name": "n1"}))]
+            user("u3"), calls(("read_node", {"id": "id-n1"})),      # id만 준 읽기도 쓰인 것이다(#398 2차 리뷰)
+            # 그 턴에 만든 노드는 id로 읽어도 쓰인 것이 아니다(#401 리뷰) — 이 턴에는 잴 것이 없다
+            user("u4"), calls(("create_node", {"title": many[0] + "-new"}), ("read_node", {"id": "id-new"}))]
+    stub.paths.append((many[0] + "-new", None, SimpleNamespace(id="id-new")))
     report = rs.measure(stub, list(rs.turns(rows)), 2000)
-    fresh = report["first_use_in_the_conversation"]["pairs"]
-    return [] if fresh == 1 + len(many) else [f"first use: 처음 쓰인 쌍 {fresh}, 기대 {1 + len(many)}"]
+    fresh, pairs = report["first_use_in_the_conversation"]["pairs"], report["used_nodes"]["pairs"]
+    return [] if (fresh, pairs) == (1 + len(many), 2 + len(many)) else [f"first use: 처음 {fresh}, 쌍 {pairs}"]
 
 
 def _cursors() -> list[str]:
