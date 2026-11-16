@@ -118,6 +118,8 @@ def turns(rows):
             last_reply = (_words(message.get("content")) or "").strip() or last_reply
             for tool, args in _calls(message.get("content")) if turn is not None else ():
                 value = args.get({"search": "query", "create_node": "title"}.get(tool, "name"))
+                if tool == "read_node":                         # read_node는 id를 name의 다른 이름으로 받는다(#260)
+                    value = value or args.get("id")
                 if not isinstance(value, str) or not value.strip():
                     continue
                 if tool == "search":
