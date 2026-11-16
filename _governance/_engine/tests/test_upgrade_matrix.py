@@ -106,6 +106,7 @@ RELEASES = {
     "v5.4.2": "de5335774248873747a4628613a12b43559ab97a",
     "v5.5.0": "ed6376023055947292b9a467d8442bc18f975f87",
     "v5.6.0": "e177556d1d33e89546c18f2f30d2c640de4b6d51",
+    "v6.0.0": "a1228e226e005f586d586e4753fe7c1853c816ec",
 }
 LAYOUTS = {"=": "= ", "bare": "", "00_": "00_"}
 # (start, layout) -> the release whose fresh install gave the vault that layout
@@ -173,11 +174,14 @@ CELLS = {
     ("v5.6.0", "00_"): None,
     ("v5.6.0", "="): "v3.20.0",
     ("v5.6.0", "bare"): "v3.20.1",
+    ("v6.0.0", "00_"): None,
+    ("v6.0.0", "="): "v3.20.0",
+    ("v6.0.0", "bare"): "v3.20.1",
 }
 # Per PR: the oldest updater (no gate, no baseline, legacy roots), the newest
 # release on its shipped layout, and the newest release on the legacy layout
 # (most early vaults). The release workflow runs every cell (OSK_MATRIX=full).
-PR_CELLS = [("v3.20.0", "="), ("v5.6.0", "00_"), ("v5.6.0", "=")]
+PR_CELLS = [("v3.20.0", "="), ("v6.0.0", "00_"), ("v6.0.0", "=")]
 # How each release's own docs make a vault. Until v3.22 the README said "clone
 # and switch to your own remote" and nothing recorded a release baseline, so the
 # first update stops on "engine drift" and tells the user to rerun with --adopt.
@@ -334,7 +338,8 @@ def _drive_content(cfg: dict) -> dict:
         return approvals.state(*_vault(approvals.state), region)
 
     if cfg["phase"] == "A":
-        out["key"] = _load_hook().session_key(cfg["work"])
+        session_key = _load_hook().session_key       # v6.0.0부터 저장소를 첫 인자로 받는다
+        out["key"] = session_key(*_vault(session_key), cfg["work"])
         if out["key"] != key:
             raise RuntimeError(f"session key {out['key']!r}, expected {key!r}")
         new_cluster(title="W1", summary="Matrix work scope hub",
