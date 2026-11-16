@@ -119,6 +119,9 @@ def _routing(sub) -> None:
         q.add_argument("--project", required=True, help="프로젝트 키")
         q.add_argument("--scope", required=True, help="scope 이름")
         q.add_argument("--reason", default="")
+    q = rt.add_parser("keep", help="결속 검토의 유지 판정 — 지금 결속을 지난 검토로 적는다")
+    q.add_argument("--project", required=True, help="프로젝트 키")
+    q.add_argument("--reason", required=True)
 
 
 def _tidy(sub) -> None:

@@ -306,7 +306,7 @@ sh osk-cli.sh --help       # vault 루트의 런처 — 같은 것(Windows: .\os
 | `doctor` | 이 기기의 하네스 연결과 vault 이행 점검 — MCP·훅 등록, 훅 실행 기록, 문맥 전달, 판본, fork 판정, 남은 일괄 이행. 읽기만 한다 (아래). `--vault`는 vault 내용 점검 — 남은 이행, 기록 충돌, 검증기 위반, 정기 검토의 잔재(재검토 후보·포착 막힘·scope 복구·정돈·보호영역 대기), 대화 검토 적체(예상 토큰과 `growth run --daily --backlog`). `--migrate`는 남은 이행을 옮긴다 — 첫 실행은 계획과 종료코드 2, 1시간 안의 확인된 같은 실행이 적용하고 이행 기록을 `_ledger/migration/`에 남긴다 |
 | `organization plan` / `organization review` | 선택한 Scope·기존 Domain의 긴 노드 구간 검토와 참조·허브·분화 완료 확인 |
 | `sm show` / `sm write` | scope 기억 — SessionStart 훅 경로(아래) |
-| `routing show` / `routing bind` / `routing unbind` / `routing primary` | 프로젝트 결속 — 결속 집합·주된 scope 조회(생략하면 검토 대상), 집합 증감, 주된 scope 지정(**사용자 전속** — 단말 확인을 거치며, 검토의 결정 묶음은 실행기가 적용) (Mechanism §6-2 6항) |
+| `routing show` / `routing bind` / `routing unbind` / `routing primary` / `routing keep` | 프로젝트 결속 — 결속 집합·주된 scope 조회(생략하면 검토 대상), 집합 증감, 주된 scope 지정(**사용자 전속** — 단말 확인을 거치며, 검토의 결정 묶음은 실행기가 적용), 결속 검토의 유지 판정(조직 검토 작업이 없는 프로젝트) (Mechanism §6-2 6항) |
 | `evidence migrate` | 비노드 `derived-from`을 노드 끝 관측 절의 `지지` 줄로 옮기는 이행 계획(v5.4 — 전수는 `.osk/evidence-section-plan.md`); `--apply`는 확인 없이 옮기고 이행 기록을 `_ledger/migration/`에 남긴다 (헌법 제8조 5·6항·제14조 8·9항 · Mechanism §5) |
 | `roots show` / `roots declare` / `roots retire` / `roots mount` / `roots unmount` | 외부 루트 — 별칭마다 선언·이 기기의 위치 조회, 별칭의 선언·해제(대장, 모든 기기), 이 기기의 위치 지정·삭제(`.osk/roots.json`). 조회 밖은 **사용자 전속** — 단말 확인을 거친다 (시행령 §2 8항 · Mechanism §1 6항) |
 | `rechecks` | 근거 재검토 후보 전체 — 근거가 바뀐 참조 노드 (시행령 §7 2항, 아래) |

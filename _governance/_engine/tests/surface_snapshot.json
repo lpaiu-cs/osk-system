@@ -800,6 +800,27 @@
       ],
       "commands": {}
      },
+     "keep": {
+      "help": "결속 검토의 유지 판정 — 지금 결속을 지난 검토로 적는다",
+      "options": [
+       {
+        "flags": [
+         "--project"
+        ],
+        "action": "_StoreAction",
+        "required": true,
+        "help": "프로젝트 키"
+       },
+       {
+        "flags": [
+         "--reason"
+        ],
+        "action": "_StoreAction",
+        "required": true
+       }
+      ],
+      "commands": {}
+     },
      "primary": {
       "help": "[사용자 전속] 주된 scope 지정 — 그 프로젝트 자체의 활동이 속한 scope",
       "options": [
