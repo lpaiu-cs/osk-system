@@ -43,7 +43,7 @@ STREAM = "".join(json.dumps(row) + "\n" for row in ROWS) + "찢긴 줄\n"
 DEPLOY, BOOKING, PAY = "00_Scope/harbor/배포", "00_Scope/harbor/예약", "00_Scope/harbor/결제"
 BEFORE = {tb.STAGING: (DEPLOY, "승인 버튼을 눌러야 돈다"), tb.WATCH: (DEPLOY, "1%를 넘으면 되돌린다"),
           tb.JITTER: ("00_Domain/분산 시스템", "지터를 섞는다")}
-QUIET = {"calls": [], "answer": "", "turns": 1, "seconds": 1, "finished": True}
+QUIET = {"calls": [], "answer": "", "turns": 1, "seconds": 1, "finished": True, "prelude_calls": 0, "turns_done": 1}
 # (과업, 끝난 저장소에서 달라진 노드, 기대하는 검사의 값)
 CASES = [
     ("refine", {tb.WATCH: (DEPLOY, "5xx 비율이 0.5%를 넘으면 되돌린다")}, [True, True, True]),
@@ -108,6 +108,18 @@ def problems() -> list[str]:
             "runs_with_a_rejection": 2, "repeated_rejections": 2}
     if got != want or both["rejection_kinds"] != {kinds[0]: 4, kinds[2]: 2, kinds[3]: 2}:
         bad.append(f"summary: {got}")
+    # 긴 대화 — 앞 턴의 호출은 채점에서 빠지고 수로만 남는다. 앞 턴들은 번호만으로 정해진다.
+    aside = [use("a", "search", query="무관"), out("a", {"result": []}),
+             {"type": "result", "subtype": "success", "result": "42", "num_turns": 2, "duration_ms": 1000}]
+    long = tb.record("".join(json.dumps(row) + "\n" for row in [*aside, *ROWS]))
+    if ([c["tool"] for c in long["calls"]] != [c["tool"] for c in run["calls"]]
+            or (long["prelude_calls"], long["turns_done"], run["prelude_calls"], run["turns_done"]) != (1, 2, 0, 1)):
+        bad.append(f"record, 긴 대화: {long['prelude_calls']} {long['turns_done']} {len(long['calls'])}")
+    if both["searched"] != 1:                # applied는 검색했고, missed는 검색을 뺀 실행이다
+        bad.append(f"summary searched: {both['searched']}")
+    turns = tb.filler(4)
+    if len(turns) != 4 or turns != tb.filler(4) or turns[1].count("\n") != 40 or "\n" in turns[0]:
+        bad.append("filler: 번호만으로 정해지는 턴 넷이 아니다")
     if set(tb.CHECKS) != set(tb.FIXTURE["tasks"]):
         bad.append("과업과 채점의 이름이 다르다")
     # 바탕의 표시는 판·모델·과업 파일의 해시를 함께 적는다 — 어느 하나가 다르면 build가 그 폴더를 받지 않는다.
