@@ -339,3 +339,5 @@ v5.7.0은 내지 않았다 — [그 계획](docs/v5.7-milestones.md)의 항목�
 ## License
 
 [MIT](LICENSE)
+
+통치 문서(헌법·시행령 및 그 아카이브)는 lpaiu-cs의 저작물이다. 저장소의 다른 파일과 같이 MIT 라이선스로 배포한다.
