@@ -31,7 +31,10 @@ def _suite(label, name, timeout=180, *, required=False):
 
 
 def test_sync_network_subprocess():
-    _suite("동기화 네트워크·적용 잠금·고정 SHA의 프로세스 경계", "test_sync_network.py")
+    # Windows 개발 기기에서 혼자 돌아도 175초가 걸린다 — 180초 제한에서는 다른 일이 함께 돌면 넘는다
+    # (2026-11-16에 전체 회귀에서 두 번 넘었고, 따로 돌리면 통과했다).
+    _suite("동기화 네트워크·적용 잠금·고정 SHA의 프로세스 경계", "test_sync_network.py",
+           timeout=300 if os.name == "nt" else 180)
 
 
 def test_upgrade_matrix_subprocess():
