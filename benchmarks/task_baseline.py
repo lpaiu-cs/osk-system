@@ -1,6 +1,7 @@
 """과업으로 재는 기준선(#19) — 고정 과업을 고정 저장소에서 에이전트에게 시키고, 표면만으로 끝냈는지 센다.
 
     python benchmarks/task_baseline.py <작업 폴더> --model <모델> [--ref v6.0.0] [--repeat 3] [--task 이름 ...]
+                                       [--prelude 30]
 
 - 저장소: 잴 판(`--ref`)의 트리를 풀고, `task_fixture.json`의 노드를 그 판의 표면으로 심는다. 과업마다 그
   사본에서 돈다 — 앞 실행이 남긴 것을 뒤 실행이 보지 않는다. 대화 검토는 끈다(`.osk/response-growth.json`).
@@ -11,6 +12,9 @@
   과업이 끝나지 않는다. 이 기기의 사용자 설정·플러그인·지침 파일(CLAUDE.md)은 싣지 않는다 — 사용자 설정을
   실으면 그 기기에 등록된 다른 저장소의 osk 훅이 이 실행에서도 돈다.
 - 과업: 사용자가 하는 말 한 번이다. 무엇을 불러야 하는지는 말해 주지 않는다.
+- 긴 대화(`--prelude N`): 과업의 말 앞에 기억과 무관한 턴 N개를 같은 세션에서 먼저 준다(`filler`) — 대화가
+  길어지면 에이전트가 검색을 덜 하는지 보려는 것이다. 채점은 마지막 턴(과업)의 도구 호출만 본다. 앞 턴에서
+  부른 도구의 수는 따로 낸다(`prelude_calls`). 실행 폴더와 보고서의 이름에 N이 붙는다.
 - 채점: 끝난 저장소의 파일과 실행 기록으로 한다(`CHECKS`). 엔진을 읽지 않는다.
 - 내는 것: 과업마다 끝낸 횟수, 검사별 통과, 도구 호출 수, 거부의 수와 종류, 넘긴 거부, 걸린 시간.
 
@@ -36,6 +40,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import threading
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -53,6 +58,12 @@ JITTER = "재시도 간격에는 지터를 넣는다"
 COMMIT = "커밋 제목은 영역 이름으로 시작한다"
 WEDNESDAY = "배포는 수요일에 하지 않는다"
 SECURITY = "00_Scope/harbor/보안 점검"
+# 긴 대화의 앞 턴 — 저장소의 지식과 무관하고, 도구 없이 답할 수 있는 말이다. 짝수 번째 턴에는 긴 붙여넣기가 붙는다.
+ASIDES = ("다음 문장을 절반 길이로 줄여 줘: 회의는 예정보다 길어졌지만 결론은 처음 안과 크게 다르지 않았다.",
+          "{n} 곱하기 17은 얼마야? 수만 답해 줘.",
+          "'일정을 조정하다'를 더 쉬운 말로 바꾼 표현 세 가지만 알려 줘.",
+          "다음 낱말을 가나다순으로 늘어놓아 줘: 창문, 가위, 모자, 바람, 다리.",
+          "섭씨 {n}도는 화씨로 몇 도야? 수만 답해 줘.")
 
 
 def inside(action: str, vault: Path, python: str) -> None:
@@ -129,9 +140,23 @@ def _commit(folder: Path, message: str) -> None:
     _sh(*GIT, "commit", "-q", "-m", message, cwd=folder, env={**os.environ, **DATED})
 
 
-def run(work: Path, task: str, turn: int, python: str, model: str) -> Path:
-    """과업 하나를 새 사본에서 한 번 — 실행 기록(`stream.jsonl`)과 끝난 저장소를 실행 폴더에 남긴다."""
-    here = work / "runs" / f"{task}-{turn}"
+def filler(count: int) -> list[str]:
+    """과업 앞에 둘 무관한 턴 — 번호만으로 정해진다. 짝수 번째에는 지어낸 기록 40줄을 붙여 문맥을 키운다."""
+    turns = []
+    for n in range(1, count + 1):
+        text = ASIDES[n % len(ASIDES)].format(n=n + 10)
+        if n % 2 == 0:
+            lines = [f"{line:02d} 창고-{(n * 7 + line) % 9} 상자 {(n * 31 + line * 17) % 400}개 "
+                     f"대기 {(n * 13 + line * 29) % 97}분" for line in range(1, 41)]
+            text = "\n".join(["아래 기록에서 대기가 가장 긴 줄의 번호만 알려 줘.", *lines])
+        turns.append(text)
+    return turns
+
+
+def run(work: Path, task: str, turn: int, python: str, model: str, prelude: int | None = None) -> Path:
+    """과업 하나를 새 사본에서 한 번 — 실행 기록(`stream.jsonl`)과 끝난 저장소를 실행 폴더에 남긴다. `prelude`를
+    주면 무관한 턴들을 같은 세션에 먼저 넣는다(`_converse`)."""
+    here = work / "runs" / (f"{task}-{turn}" if prelude is None else f"{task}-p{prelude}-{turn}")
     if (here / "stream.jsonl").exists():
         return here
     if here.exists():
@@ -143,12 +168,52 @@ def run(work: Path, task: str, turn: int, python: str, model: str) -> Path:
     argv[at] = json.dumps({**json.loads(argv[at]), "hooks": recipe["hooks"]})
     argv += ["--model", model, "--setting-sources", "project"]       # 사용자 설정(훅·플러그인)을 싣지 않는다
     env = {**{k: v for k, v in os.environ.items() if k not in SCRUB}, **QUIET}
-    done = subprocess.run(argv, input=FIXTURE["tasks"][task]["prompt"].encode("utf-8"), capture_output=True,
-                          cwd=here / FIXTURE["session"], env=env, timeout=LIMIT)
-    _keep_transcript(done.stdout, here)
-    (here / "stderr.txt").write_bytes(done.stderr)
-    (here / "stream.jsonl").write_bytes(done.stdout)
+    said, folder = FIXTURE["tasks"][task]["prompt"], here / FIXTURE["session"]
+    if prelude is None:
+        done = subprocess.run(argv, input=said.encode("utf-8"), capture_output=True, cwd=folder, env=env, timeout=LIMIT)
+        stream = done.stdout
+        (here / "stderr.txt").write_bytes(done.stderr)
+    else:
+        stream = _converse(argv + ["--input-format", "stream-json"], [*filler(prelude), said], folder, env,
+                           LIMIT * (1 + prelude // 10), here / "stderr.txt")
+    _keep_transcript(stream, here)
+    (here / "stream.jsonl").write_bytes(stream)
     return here
+
+
+def _ends_turn(row: bytes) -> bool:
+    try:
+        return json.loads(row).get("type") == "result"
+    except (ValueError, AttributeError):
+        return False
+
+
+def _converse(argv: list, texts: list, folder: Path, env: dict, limit: int, errors: Path) -> bytes:
+    """말을 하나씩 준다 — 턴이 끝난 것(`result`)을 보고 다음 말을 넣는다. 한꺼번에 넣으면 Claude Code가 밀린
+    말들을 한 턴으로 묶는다(말 셋을 넣었더니 턴이 둘이었다). 제한을 넘기면 죽이고, 그때까지의 기록을 낸다."""
+    got = []
+    with errors.open("wb") as err, subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=err,
+                                                    cwd=folder, env=env) as proc:
+        timer = threading.Timer(limit, proc.kill)
+        timer.start()
+        try:
+            for text in texts:
+                line = json.dumps({"type": "user", "message": {"role": "user", "content": text}}) + "\n"
+                proc.stdin.write(line.encode("utf-8"))
+                proc.stdin.flush()
+                for row in proc.stdout:
+                    got.append(row)
+                    if _ends_turn(row):
+                        break
+                else:
+                    break                                   # 출력이 끝났다 — 프로세스가 끝났거나 죽었다
+            proc.stdin.close()
+            got += proc.stdout.readlines()
+        except OSError:                                     # 죽은 프로세스의 입력에 썼다 — 그때까지의 기록을 낸다
+            pass
+        finally:
+            timer.cancel()
+    return b"".join(got)
 
 
 def _keep_transcript(stream: bytes, here: Path) -> None:
@@ -170,8 +235,9 @@ def _text(content) -> str:
 
 
 def record(stream: str) -> dict:
-    """실행 기록에서 도구 호출과 그 응답, 마지막 답, 걸린 것을 뽑는다."""
-    calls, by_id, last = [], {}, {}
+    """실행 기록에서 도구 호출과 그 응답, 마지막 답, 걸린 것을 뽑는다. 턴이 여럿이면(긴 대화) 마지막 턴의 호출만
+    남기고, 앞 턴들의 호출 수와 끝난 턴의 수를 따로 낸다."""
+    calls, by_id, last, ends = [], {}, {}, []
     for line in stream.splitlines():
         try:
             row = json.loads(line)
@@ -190,7 +256,10 @@ def record(stream: str) -> dict:
                                         or re.match(r'\{"(ok": false|error":)', call["output"]))
         if isinstance(row, dict) and row.get("type") == "result":
             last = row
-    return {"calls": calls, "answer": last.get("result") or "", "turns": last.get("num_turns"),
+            ends.append(len(calls))
+    before = ends[-2] if len(ends) > 1 else 0
+    return {"calls": calls[before:], "prelude_calls": before, "turns_done": len(ends),
+            "answer": last.get("result") or "", "turns": last.get("num_turns"),
             "seconds": round((last.get("duration_ms") or 0) / 1000), "finished": last.get("subtype") == "success"}
 
 
@@ -269,7 +338,8 @@ def score(task: str, before: dict, after: dict, run: dict) -> dict:
                  for at in refused)
     return {"completed": run["finished"] and all(checks.values()), "checks": checks, "calls": len(calls),
             "rejections": kinds, "rejections_passed": passed, "repeated_rejections": len(kinds) - len(set(kinds)),
-            "turns": run["turns"], "seconds": run["seconds"], "tools": [call["tool"] for call in calls]}
+            "turns": run["turns"], "seconds": run["seconds"], "tools": [call["tool"] for call in calls],
+            "prelude_calls": run["prelude_calls"], "turns_done": run["turns_done"]}
 
 
 def summary(scores: list) -> dict:
@@ -281,7 +351,10 @@ def summary(scores: list) -> dict:
             "rejections_passed": sum(s["rejections_passed"] for s in scores),
             "runs_with_a_rejection": sum(bool(s["rejections"]) for s in scores),
             "repeated_rejections": sum(s["repeated_rejections"] for s in scores),
-            "rejection_kinds": dict(kinds.most_common()), "seconds": sorted(s["seconds"] for s in scores)}
+            "rejection_kinds": dict(kinds.most_common()), "seconds": sorted(s["seconds"] for s in scores),
+            "searched": sum("search" in s["tools"] for s in scores),
+            "prelude_calls": sorted(s["prelude_calls"] for s in scores),
+            "turns_done": sorted(s["turns_done"] for s in scores)}
 
 
 def main() -> int:
@@ -295,6 +368,7 @@ def main() -> int:
     parser.add_argument("--repeat", type=int, default=3)
     parser.add_argument("--task", action="append", choices=list(FIXTURE["tasks"]))
     parser.add_argument("--python", default=sys.executable, help="MCP 서버와 훅을 돌릴 파이썬(mcp가 깔린 것)")
+    parser.add_argument("--prelude", type=int, default=None, help="과업 앞에 둘 무관한 턴의 수 — 긴 대화로 잰다")
     args = parser.parse_args()
     work = args.work.resolve()
     build(work, args.ref, args.python, args.model)
@@ -302,13 +376,17 @@ def main() -> int:
     for task in args.task or FIXTURE["tasks"]:
         scores = []
         for turn in range(1, args.repeat + 1):
-            here = run(work, task, turn, args.python, args.model)
+            here = run(work, task, turn, args.python, args.model, args.prelude)
             scores.append(score(task, before, nodes(here / "vault"),
                                 record((here / "stream.jsonl").read_text(encoding="utf-8", errors="replace"))))
+            if args.prelude is not None and scores[-1]["turns_done"] != args.prelude + 1:
+                scores[-1]["completed"] = False             # 앞 턴을 다 돌지 못했다 — 잰 조건이 아니다
             print(f"{task}-{turn}: {'끝냄' if scores[-1]['completed'] else '못 끝냄'} {scores[-1]['checks']} "
                   f"호출 {scores[-1]['calls']} 거부 {len(scores[-1]['rejections'])}", file=sys.stderr)
         report[task] = {**summary(scores), "each": scores}
-    (work / "report.json").write_text(json.dumps({"ref": args.ref, "model": args.model, "tasks": report},
+    name = "report.json" if args.prelude is None else f"report-p{args.prelude}.json"
+    (work / name).write_text(json.dumps({"ref": args.ref, "model": args.model, "prelude": args.prelude,
+                                         "tasks": report},
                                                  ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps({task: {k: v for k, v in r.items() if k != "each"} for task, r in report.items()},
                      ensure_ascii=False, indent=2))
