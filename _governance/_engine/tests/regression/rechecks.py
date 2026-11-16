@@ -90,6 +90,7 @@ def test_rechecks():
         check("근거를 add_edges로 다시 넣기만 해서는 닫히지 않는다",
               r.get("no_change") and "rechecked" not in r
               and why("regr-rc-N") == {"근거가 바뀌었다"}, r)
+        check("rechecked를 주지 않은 수정은 닫을 쌍이 없다는 알림을 싣지 않는다", "recheck_unmatched" not in r, r)
         r = _w(write.update_node, VAULT, "regr-rc-N", rechecked=["regr-rc-T", "regr-rc-S", "regr-rc-없음"])
         check("바꿀 것 없이 rechecked에 적으면 unchanged로 닫히고, 근거가 아닌 항목은 비춘다",
               r.get("no_change") and r.get("rechecked") == ["[[regr-rc-T]]"]

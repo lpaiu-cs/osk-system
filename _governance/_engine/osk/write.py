@@ -442,7 +442,7 @@ def _recheck_claims(vault: Vault, idx, path: Path, n, rechecked) -> tuple:
     rc_pre = rechecks.state(path.read_bytes())  # 검토자가 읽었어야 할 노드의 본문
     rc_prior = rechecks.complete_keys(vault, idx, path, n.meta) if rc_before else set()
     rc_again, rc_stray = set(), []
-    for ref in as_list(rechecked):
+    for ref in as_list(rechecked or []):       # 주지 않은 인자(None)는 적은 것이 없다는 뜻이다
         t = rechecks.target(str(ref), idx)
         if t and t[0] in rc_before and t[1] is not None:
             rc_again.add(t[0])
@@ -613,7 +613,7 @@ def update_node_locked(vault: Vault, name: str, body: str | None = None,
     if not only_conflicts:
         meta["updated"] = _stamp or now_kst()
 
-    data, errs = node_checks.validate_render(vault, path, meta, new_body, idx)
+    data, errs = node_checks.validate_render(vault, path, meta, new_body, idx, n.body)
     if errs:
         raise WriteError("계약·위상 위반 — 쓰지 않았다", errs)
     if settle is not None:

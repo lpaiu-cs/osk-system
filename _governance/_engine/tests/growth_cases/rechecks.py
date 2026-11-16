@@ -358,7 +358,10 @@ class RecheckCases:
         self.check_case("""
             from osk import response_growth
             day = 24 * 3600
-            node('A', body=chr(10).join(['A claim.', '', '## 근거', '', '- not a line']))
+            node('A', body='A claim.')
+            path = next((VAULT.root / '00_Scope/W1').glob('A.md'))   # the surface refuses a malformed line (#321)
+            path.write_bytes(path.read_bytes().replace(b'A claim.', chr(10).join(
+                ['A claim.', '', '## 근거', '', '- not a line']).encode()))
             assert 'evidence-section' not in validate.auto_activate(VAULT, now=day)
             assert not validate.validator_active(VAULT, 'evidence-section')
             assert write.update_node(VAULT, 'A', old_text='- not a line',

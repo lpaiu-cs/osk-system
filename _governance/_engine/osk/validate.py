@@ -402,11 +402,7 @@ def evidence_errors(vault: Vault, text: str, derived, idx: "graph.Index | None" 
         errs.append("관측 절이 노드 끝에 있지 않다")
     if span is not None:
         records = records or raw.Records(vault)
-        for line in text[span[0]:].split("\n")[1:]:
-            line = line.rstrip("\r")
-            if not line.strip():
-                continue   # 빈 줄 밖의 모든 줄이 근거 줄이다 — 하위 목록·문단·다른 표지도 형식 위반이다
-            m = evidence.LINE.match(line)
+        for line, m in evidence.scan(text):
             if not m:
                 errs.append(f"형식이 다른 관측 줄: {line[:60]}")
                 continue

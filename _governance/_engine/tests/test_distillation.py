@@ -647,6 +647,15 @@ def _child():
                 self.assertIsNone(D._load(VAULT, self.key))
                 self.assertEqual(core.sha256_file(VAULT.root / existing["path"]), existing["new_hash"])
 
+            def test_malformed_evidence_line_is_refused(self):
+                # The distill path passes the same write check as a plain write (#321).
+                self.args["body"] += "\n\n# 관측\n\n- 2026-11-09 · 사용자 대화 · 지지 — not a coordinate"
+                with self.assertRaises(write.WriteError) as caught:
+                    self.create()
+                self.assertTrue(any(v.startswith("형식이 다른 관측 줄") for v in caught.exception.violations),
+                                caught.exception.violations)
+                self.assertFalse((VAULT.root / "00_Scope/W1" / (self.args["title"] + ".md")).exists())
+
             def test_required_provenance_cannot_be_removed(self):
                 existing = write.create_node(VAULT, self.args["title"], "old", "old retained knowledge",
                                              "fable-5", space="00_Scope/W1")
