@@ -672,6 +672,7 @@ class ForkCases:
             from unittest.mock import patch
             node('Unrelated Domain candidate')
             node('Other Scope claim', scope='W2')
+            long_hub(); long_hub('W2')        # 두 scope 모두 정리 검토의 신호가 있다 — 자기 scope만 실린다
             scope_memory.replace(VAULT, 'own', '', space='00_Scope/W1')
             native = VAULT.root / 'native.jsonl'
             native.write_text(json.dumps({'type':'user','sessionId':'own','uuid':'u1','message':{'role':'user','content':'one-off question'}}) + '\\n' +

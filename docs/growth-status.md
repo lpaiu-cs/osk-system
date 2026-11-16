@@ -23,7 +23,7 @@ POSIX에서는 `PYTHONPATH=_governance/_engine .venv/bin/python -B -m osk.cli gr
 | `reviews` | 기간 안에 기록한 대화 검토 결정. `preserved`, `summary`, `no_value`, `deferred`를 그대로 구별 |
 | `runs` | 기간 안에 결과가 기록된 성장 실행. 선택 작업 수, 기록된 `ok`, native 종료 코드, 작업별 처분을 별도 표시 |
 | `preservation` | 기간 안의 보존 결정이 참조한 서로 다른 저장 영수증. ACK 뒤의 구조 신호(대상 노드·최상위 군집·출처 링크)를 실제 파일에 대조 |
-| `organization` | 현재 정돈 대기 군집의 본문 구간. `remaining_units`의 분모는 `units_in_pending_scopes` |
+| `organization` | 현재 정돈 대기 군집의 긴 노드 본문 구간. `remaining_units`의 분모는 `units_in_pending_scopes` |
 | `evictions` | 현재 미처분 퇴출 항목과 전체 이력의 처분 기록. 노드 보존이나 의미 판단의 성공률이 아님 |
 | `recheck_history` | 기간 안의 기준선·새 근거 결속·자동 이어받음·직접 판독 유지·본문 수정 기록 |
 | `rechecks` | 현재 노드와 근거 상태의 후보 쌍. 기준선 대기와 사용자 상신도 표시 |

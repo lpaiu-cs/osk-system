@@ -16,7 +16,7 @@
   "isolated_excepts": 44,
   "oversize_functions": 107,
   "excess_lines": 959,
-  "excess_branches": 970,
+  "excess_branches": 964,
   "late_loads": 1
  },
  "upward_imports": {},
@@ -272,8 +272,8 @@
    17
   ],
   "osk.organization:pending": [
-   57,
-   37
+   53,
+   31
   ],
   "osk.organization:review": [
    75,
