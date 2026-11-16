@@ -200,6 +200,11 @@ def _views() -> list[str]:
             mine["prompt@8_on_those_pairs"]) != (3, 0.0, round(1 / 3, 4), round(2 / 3, 4), round(1 / 3, 4),
                                                  round(1 / 3, 4)):
         bad.append(f"views: agent on first use {mine}")
+    # 질의 길이 제한은 사용자의 말로 만든 질의에만 걸린다 — 에이전트가 실제로 한 검색은 자르지 않는다(#395 리뷰).
+    short = rs.measure(stub, list(rs.turns(rows)), 1)
+    cut = short["found_by_the_agents_own_search"]
+    if (cut["@20"], cut["@300"]) != (agent["@20"], agent["@300"]) or short["recall"]["prompt"]["@300"] != 0:
+        bad.append(f"views: 질의 길이 제한 {cut} {short['recall']['prompt']}")
     return bad
 
 

@@ -210,8 +210,7 @@ def _pairs(searcher, found: list[dict], max_chars: int, local_of: dict | None) -
         return by_name.get(name) or (name if name in known else None)
 
     def ranked(query, local=None):              # 후보를 모두 받는다 — 목록에 없으면 후보가 아닌 것이다
-        everyone = len(searcher.paths)
-        return [h["id"] for h in searcher.view_search(query[:max_chars], everyone, local)] if query.strip() else []
+        return [h["id"] for h in searcher.view_search(query, len(searcher.paths), local)] if query.strip() else []
 
     def place(ids, node_id):
         return ids.index(node_id) + 1 if node_id in ids else None
@@ -233,10 +232,11 @@ def _pairs(searcher, found: list[dict], max_chars: int, local_of: dict | None) -
         counts["bound"] += bool(local)
         counts["in_vault"] += turn.get("conversation") in (local_of or {})
         counts["agent_search"] += bool(turn["searches"])
-        lists = {name: ranked(make(searcher, turn), local) for name, make in QUERIES.items()}
-        plain = ranked(turn["query"]) if local else lists["prompt"]
+        lists = {name: ranked(make(searcher, turn)[:max_chars], local) for name, make in QUERIES.items()}
+        plain = ranked(turn["query"][:max_chars]) if local else lists["prompt"]
         recent = list(dict.fromkeys(filter(None, map(resolve, reversed(turn.get("earlier") or [])))))
-        agent = [ranked(q, local if bound else None) for q, bound in turn["searches"]]  # 결속은 session을 실었던 검색에만
+        # 에이전트가 한 검색은 질의를 자르지 않는다 — 실제로 한 검색을 다시 돌리는 것이다. 결속은 session을 실었던 검색에만
+        agent = [ranked(q, local if bound else None) for q, bound in turn["searches"]]
         for node_id, kind in used.items():
             best = [r for r in (place(ids, node_id) for ids in agent) if r]   # 검색을 여럿 했으면 가장 잘 나온 순위
             rows.append({"turn": counts["measured"], "kind": kind, "size": len(turn["query"][:max_chars]),
