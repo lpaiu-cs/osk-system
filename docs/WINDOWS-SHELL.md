@@ -22,7 +22,8 @@ ADB의 `/sdcard/...`도 같은 변환 대상이지만 별개의 작업·대상�
 - Git Bash에서 `gh api`의 endpoint는 `repos/...`처럼 선행 `/` 없이 쓴다.
 - ADB의 `/sdcard/...` 등 리터럴 `/...` 인자를 네이티브 도구에 넘길 때는 **첫 네이티브 프로세스인 RTK 실행 전** `MSYS2_ARG_CONV_EXCL='*' rtk proxy ...`를 쓴다. 따옴표나 `rtk proxy`만으로 변환이 차단되지는 않는다. 이 설정은 해당 명령에만 적용하고, 로컬 파일 경로는 `C:/...` 또는 상대경로로 명시한다. 전역으로 변환을 끄지 않는다.
 - 쓰기·배포·변경 후 검증은 `rtk proxy`로 원래 출력을 보존한다. 성공을 판정하기 전에 `>/dev/null`, `| tail`, 출력 필터로 stdout·stderr를 버리거나 자르지 않는다. `2>&1` 자체는 병합일 뿐이며, 전체 로그를 남겨도 된다. 파이프라인이 필요하면 `set -o pipefail`과 전체 로그 보존을 함께 사용한다.
-- 쓰기 명령의 종료코드와 응답을 확인한 뒤 **같은 대상**을 독립적으로 다시 읽어 의도한 본문·해시와 비교한다. GitHub는 GET한 필드, ADB는 지정 기기의 대상 파일 해시, OSK는 `read_node`의 본문·해시를 확인한다. 확인할 수 없거나 불일치하면 완료로 보고하지 않는다. GitHub의 큰 본문은 `--input request.json` 또는 `-F body=@body.md`로 전달한다.
+- 셸로 한 쓰기 명령은 종료코드와 응답을 확인한 뒤 **같은 대상**을 독립적으로 다시 읽어 의도한 본문·해시와 비교한다. GitHub는 GET한 필드, ADB는 지정 기기의 대상 파일 해시를 확인한다. 확인할 수 없거나 불일치하면 완료로 보고하지 않는다. GitHub의 큰 본문은 `--input request.json` 또는 `-F body=@body.md`로 전달한다.
+- OSK의 MCP 쓰기(`create_node`·`update_node`)는 확인하려고 다시 읽지 않는다. 응답의 `new_hash`가 엔진이 저장한 바이트의 해시이고, 저장하지 못하면 응답 대신 오류가 온다. 응답을 받지 못했을 때만 `read_node(view=…)`로 확인한다.
 <!-- native-boundary:end -->
 
 `MSYS2_ARG_CONV_EXCL`을 전역으로 설정하면 네이티브 도구에 넘기던 로컬 `/c/...`
@@ -44,8 +45,15 @@ MSYS2_ARG_CONV_EXCL='*' rtk proxy adb -s SERIAL shell sha256sum /sdcard/payload.
 GitHub 본문 수정은 `--input request.json` 등 파일 입력으로 실행하고, 같은 객체를
 GET해서 JSON을 파싱한 `body`와 의도한 문자열을 비교한다. HTTP/CLI 성공만으로
 본문 일치를 대신하지 않는다. ADB는 로컬 파일과 지정 기기의 대상 파일 SHA-256을
-비교한다. OSK는 쓰기 응답의 `new_hash`와 후속 `read_node.hash`, 필요한 본문을
-대조한다. 나중 쓰기로 판본이 바뀌었다면 성공을 추정하지 말고 다시 판독한다.
+비교한다.
+
+OSK의 MCP 쓰기는 예외다. 엔진은 임시 파일을 쓰고 원자 교체를 마친 뒤에만 응답하고, 그 바이트의 해시를
+`new_hash`로 준다(`core.atomic_write`) — 종료코드 0인 무효 쓰기가 생길 틈이 없다. 그래서 확인하려고 다시
+읽지 않는다. 응답을 받지 못했으면(연결이 끊겼으면) 성공을 추정하지 말고 `read_node(view=…)`로 판본을 본다.
+
+이 예외는 v6.1에서 넣었다. 전에는 "OSK는 `read_node`의 본문·해시를 확인한다"였고, 운영 기록에서 방금 쓴 판을
+다시 읽는 것이 읽기 글자의 큰 몫이었다([v6.1 계획](v6.1-milestones.md)의 "비용"). 전의 블록을 `RTK.md`에 넣어 둔
+설치는 위 블록으로 바꿔 넣는다.
 
 ## 재현 검사
 
