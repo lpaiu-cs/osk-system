@@ -88,12 +88,13 @@ def turns(rows):
     `id`는 턴을 연 사용자 행의 uuid, `previous`는 그 전사에서 바로 앞 사용자의 말, `reply`는 그 턴 바로 앞에서
     에이전트가 한 마지막 말이고, `earlier`는 앞 턴들이 쓰거나 만든 노드의 이름이다(호출한 차례대로, 끝이 가장
     최근). `searches`는 `(질의, session을 실었나)`다. 그 턴에 만든 노드는 쓰인 것에서 뺀다."""
-    turn, last_query, last_reply, history = None, None, None, []
+    turn, last_query, last_reply, history, known = None, None, None, [], set()
 
     def close(t):
         used = {kind: [n for n in t[kind] if n not in t["created"]] for kind in ("read", "updated")}
         history.extend(t["order"])
         del history[:-HISTORY]
+        known.update(t["order"])          # 처음 쓰임은 대화 전체로 가린다 — 최근 HISTORY개로 가리면 긴 대화에서 다시 쓴 노드가 처음으로 세어진다
         return {**t, **used} if used["read"] or used["updated"] else None
 
     for row in rows:
@@ -109,7 +110,8 @@ def turns(rows):
                 yield done
             query = base.GOAL.sub("", base.INJECTED.sub("", text)).strip()
             turn = {"id": row.get("uuid"), "query": query, "previous": last_query, "reply": last_reply,
-                    "earlier": list(history), "read": [], "updated": [], "created": set(), "searches": [],
+                    "earlier": list(history), "known": set(known), "read": [], "updated": [], "created": set(),
+                    "searches": [],
                     "order": []}
             last_query = query
         elif row.get("type") == "assistant":
@@ -235,6 +237,7 @@ def _pairs(searcher, found: list[dict], max_chars: int, local_of: dict | None) -
         lists = {name: ranked(make(searcher, turn)[:max_chars], local) for name, make in QUERIES.items()}
         plain = ranked(turn["query"][:max_chars]) if local else lists["prompt"]
         recent = list(dict.fromkeys(filter(None, map(resolve, reversed(turn.get("earlier") or [])))))
+        before = set(filter(None, map(resolve, turn.get("known") or ())))
         # 에이전트가 한 검색은 질의를 자르지 않는다 — 실제로 한 검색을 다시 돌리는 것이다. 결속은 session을 실었던 검색에만
         agent = [ranked(q, local if bound else None) for q, bound in turn["searches"]]
         for node_id, kind in used.items():
@@ -242,6 +245,7 @@ def _pairs(searcher, found: list[dict], max_chars: int, local_of: dict | None) -
             rows.append({"turn": counts["measured"], "kind": kind, "size": len(turn["query"][:max_chars]),
                          "plain": place(plain, node_id), "carry": place(recent, node_id),
                          "searched": bool(turn["searches"]), "agent": min(best, default=None),
+                         "first": node_id not in before,
                          **{name: place(ids, node_id) for name, ids in lists.items()}})
     return rows, counts
 
@@ -289,7 +293,7 @@ def _agent(rows: list[dict]) -> dict:
 def measure(searcher, found: list[dict], max_chars: int, local_of: dict | None = None) -> dict:
     """쓰인 노드가 상위 몇 건 안에 드는가 — 질의를 만드는 법마다, 그리고 검색 없이 앞 턴의 노드를 다시 싣는다면."""
     rows, counts = _pairs(searcher, found, max_chars, local_of)
-    fresh = [r for r in rows if r["carry"] is None]          # 그 대화에서 처음 쓰인 노드 — 회상이 보탤 수 있는 몫이다
+    fresh = [r for r in rows if r["first"]]                  # 그 대화에서 처음 쓰인 노드 — 회상이 보탤 수 있는 몫이다
     turns_hit = {k: len({r["turn"] for r in rows if r["prompt"] is not None and r["prompt"] <= k}) for k in KS}
     sizes = [r["size"] for r in {r["turn"]: r for r in rows}.values()]
     return {
