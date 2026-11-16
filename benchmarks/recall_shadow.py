@@ -19,6 +19,10 @@
 - 검색 없이 재는 것 하나 — 쓰인 노드가 그 대화의 앞 턴들이 쓴 노드 가운데 몇째로 최근이었는가
   (`carried_from_earlier_turns`, 도구를 호출한 차례로 센다). 앞 턴에 쓴 노드는 에이전트가 이미 아는 노드다. 그래서 그 대화에서 처음 쓰인
   노드만 따로도 센다(`first_use_in_the_conversation`) — 회상이 보탤 수 있는 몫은 거기다.
+- 에이전트가 그 턴에 실제로 한 `search`의 질의들로도 다시 검색해, 쓰인 노드가 가장 잘 나온 순위를 센다
+  (`found_by_the_agents_own_search`). 그 턴에 검색이 있던 쌍만 분모다. 처음 쓰인 노드로도 가른다.
+- 상위 100·300건까지 보고, 질의와 겹치는 낱말이 없어 후보에 아예 못 드는 몫(`not_a_candidate`)을 함께 낸다 —
+  순위를 고쳐 메울 수 있는 몫과 낱말이 달라 못 찾는 몫을 가른다.
 
 읽을 때의 한계:
 
@@ -52,7 +56,7 @@ from osk.harness import base  # noqa: E402
 from osk.vault import Vault  # noqa: E402
 
 OSK_TOOL = re.compile(r"mcp__osk[\w-]*__(read_node|update_node|create_node|search)")
-KS = (1, 3, 5, 8, 20)
+KS = (1, 3, 5, 8, 20, 100, 300)  # 100·300은 싣기엔 많다 — 순위가 아니라 낱말이 겹치지 않아 놓치는 몫을 보려고 둔다
 AGENT_K = 8                      # 표면의 `search`가 기본으로 돌려주는 수
 SIZES = (("under 20", 0, 20), ("20 to 59", 20, 60), ("60 to 199", 60, 200), ("200 or more", 200, 10 ** 9))
 HISTORY = 200                    # 한 전사에서 기억해 두는 앞 턴의 노드 이름 수
@@ -194,7 +198,8 @@ QUERIES = {
 
 
 def _pairs(searcher, found: list[dict], max_chars: int, local_of: dict | None) -> tuple[list[dict], dict]:
-    """쓰인 노드마다 한 줄 — 질의마다의 순위, 앞 턴들이 쓴 노드 가운데 몇째로 최근인가, 에이전트의 검색이 찾았나."""
+    """쓰인 노드마다 한 줄 — 질의마다의 순위, 앞 턴들이 쓴 노드 가운데 몇째로 최근인가, 에이전트의 검색들에서 가장
+    높은 순위. 순위가 None이면 그 질의의 후보가 아니다(질의와 겹치는 낱말이 없다)."""
     by_name = {stem: node.id for stem, _path, node in searcher.paths}
     known = set(by_name.values())
     rows, counts = [], {"unknown": 0, "not_measurable": 0, "measured": 0, "agent_search": 0, "bound": 0,
@@ -204,8 +209,9 @@ def _pairs(searcher, found: list[dict], max_chars: int, local_of: dict | None) -
         name = name.removeprefix("[[").removesuffix("]]").strip()
         return by_name.get(name) or (name if name in known else None)
 
-    def ranked(query, local=None):
-        return [h["id"] for h in searcher.view_search(query[:max_chars], max(KS), local)] if query.strip() else []
+    def ranked(query, local=None):              # 후보를 모두 받는다 — 목록에 없으면 후보가 아닌 것이다
+        everyone = len(searcher.paths)
+        return [h["id"] for h in searcher.view_search(query[:max_chars], everyone, local)] if query.strip() else []
 
     def place(ids, node_id):
         return ids.index(node_id) + 1 if node_id in ids else None
@@ -230,12 +236,12 @@ def _pairs(searcher, found: list[dict], max_chars: int, local_of: dict | None) -
         lists = {name: ranked(make(searcher, turn), local) for name, make in QUERIES.items()}
         plain = ranked(turn["query"]) if local else lists["prompt"]
         recent = list(dict.fromkeys(filter(None, map(resolve, reversed(turn.get("earlier") or [])))))
-        agent = {h["id"] for q, bound in turn["searches"]                 # 결속은 session을 실었던 검색에만
-                 for h in searcher.view_search(q, AGENT_K, local if bound else None)}
+        agent = [ranked(q, local if bound else None) for q, bound in turn["searches"]]  # 결속은 session을 실었던 검색에만
         for node_id, kind in used.items():
+            best = [r for r in (place(ids, node_id) for ids in agent) if r]   # 검색을 여럿 했으면 가장 잘 나온 순위
             rows.append({"turn": counts["measured"], "kind": kind, "size": len(turn["query"][:max_chars]),
                          "plain": place(plain, node_id), "carry": place(recent, node_id),
-                         "agent": node_id in agent if turn["searches"] else None,
+                         "searched": bool(turn["searches"]), "agent": min(best, default=None),
                          **{name: place(ids, node_id) for name, ids in lists.items()}})
     return rows, counts
 
@@ -266,10 +272,17 @@ def _by_size(rows: list[dict]) -> dict:
     return out
 
 
+def _outside(rows: list[dict], field: str) -> float | None:
+    """질의의 후보가 아닌 몫 — 낱말이 하나도 겹치지 않아 순위를 아무리 늘려도 나오지 않는다."""
+    return _share(rows, lambda r: r[field] is None)
+
+
 def _agent(rows: list[dict]) -> dict:
-    """에이전트가 그 턴에 스스로 한 검색이 찾은 몫 — 같은 쌍에서 사용자의 말이 찾은 몫과 나란히."""
-    searched = [r for r in rows if r["agent"] is not None]
-    return {"pairs_in_turns_with_a_search": len(searched), f"@{AGENT_K}": _share(searched, lambda r: r["agent"]),
+    """에이전트가 그 턴에 스스로 한 검색이 찾은 몫 — 같은 쌍에서 사용자의 말이 찾은 몫과 나란히. 검색을 여럿 했으면
+    그 가운데 가장 잘 나온 순위로 센다."""
+    searched = [r for r in rows if r["searched"]]
+    return {"pairs_in_turns_with_a_search": len(searched), **_at(searched, "agent"),
+            "not_a_candidate": _outside(searched, "agent"),
             f"prompt@{AGENT_K}_on_those_pairs": _share(searched, lambda r: _within(r, "prompt"))}
 
 
@@ -288,6 +301,7 @@ def measure(searcher, found: list[dict], max_chars: int, local_of: dict | None =
                        "updated": sum(r["kind"] == "updated" for r in rows),
                        "names_not_searchable_now": counts["unknown"]},
         "recall": {name: _at(rows, name) for name in QUERIES},
+        "not_a_candidate": {name: _outside(rows, name) for name in QUERIES},
         "recall_without_bindings": {"prompt": _at(rows, "plain")},
         "recall_by_kind": {kind: {"prompt": _at([r for r in rows if r["kind"] == kind], "prompt")}
                            for kind in ("read", "updated")},
@@ -295,6 +309,7 @@ def measure(searcher, found: list[dict], max_chars: int, local_of: dict | None =
         f"either@{AGENT_K}": {f"{name} or carried": _share(rows, lambda r, n=name: _within(r, n) or _within(r, "carry"))
                               for name in QUERIES},
         "first_use_in_the_conversation": {"pairs": len(fresh), "recall": {name: _at(fresh, name) for name in QUERIES},
+                                          "not_a_candidate": {name: _outside(fresh, name) for name in QUERIES},
                                           "found_by_the_agents_own_search": _agent(fresh)},
         "turns_with_any_used_node": {f"@{k}": round(turns_hit[k] / counts["measured"], 4) if counts["measured"]
                                      else None for k in KS},

@@ -82,7 +82,7 @@ def problems() -> list[str]:
     stub = Stub({"첫 질문": "CAD", "넷째 질문": "DECA", "agent query": "A", "넷째 질문\n둘째 질문": "A",
                  "넷째 질문\n에이전트의 답": "BA"})
     report = rs.measure(stub, found, 2000)
-    want = {"@1": 0.25, "@3": 0.5, "@5": 0.75, "@8": 0.75, "@20": 0.75}
+    want = {"@1": 0.25, "@3": 0.5, "@5": 0.75, "@8": 0.75, "@20": 0.75, "@100": 0.75, "@300": 0.75}
     if report["recall"]["prompt"] != want or report["recall_without_bindings"]["prompt"] != want:
         bad.append(f"measure: recall {report['recall']['prompt']} {report['recall_without_bindings']}")
     # 앞 사용자의 말을 더한 질의는 넷째 턴의 A를 첫째로 올린다. 첫 턴에는 더할 말이 없어 질의가 달라지고 찾지 못한다.
@@ -108,8 +108,12 @@ def problems() -> list[str]:
         bad.append(f"measure: turns {report['turns_with_any_used_node']}")
     if report["mrr"] != round((1 / 2 + 1 + 1 / 4) / 4, 4):
         bad.append(f"measure: mrr {report['mrr']}")
-    # 검색이 있던 턴은 첫 턴뿐이다 — 그 셋 가운데 에이전트의 검색은 하나를, 사용자의 말은 둘을 찾는다.
-    if report["found_by_the_agents_own_search"] != {"pairs_in_turns_with_a_search": 3, "@8": round(1 / 3, 4),
+    # 검색이 있던 턴은 첫 턴뿐이다 — 그 셋 가운데 에이전트의 검색은 하나를 첫째로 찾고 둘은 후보에도 없다.
+    # 사용자의 말은 둘을 찾는다.
+    third = round(1 / 3, 4)
+    if report["found_by_the_agents_own_search"] != {"pairs_in_turns_with_a_search": 3,
+                                                    **{f"@{k}": third for k in rs.KS},
+                                                    "not_a_candidate": round(2 / 3, 4),
                                                     "prompt@8_on_those_pairs": round(2 / 3, 4)}:
         bad.append(f"measure: agent search {report['found_by_the_agents_own_search']}")
     # 사용자의 말은 둘 다 스무 자 아래다 — 쓰인 노드 넷이 그 구간에 들고, 셋이 상위 8건에 든다.
@@ -151,7 +155,51 @@ def problems() -> list[str]:
     if (gone["used_nodes"]["names_not_searchable_now"], gone["turns"]["not_measurable"]) != (1, 1):
         bad.append(f"measure: unknown names {gone['used_nodes']} {gone['turns']}")
 
-    bad += _copies() + _cursors()
+    bad += _views() + _copies() + _cursors()
+    return bad
+
+
+def _put(**ranks):
+    """그 순위에 그 노드를 둔 검색 결과 — 나머지 자리는 채움 노드다."""
+    out = [f"f{i}" for i in range(max(ranks.values()))]
+    for name, rank in ranks.items():
+        out[rank - 1] = name
+    return out
+
+
+def _views() -> list[str]:
+    """두 보기 — 그 대화에서 처음 쓰이는 노드만, 에이전트가 실제로 한 검색으로. 검색을 여럿 했으면 가장 잘 나온
+    순위로 세고, 결과 목록에 아예 없는 노드는 후보가 아닌 것으로 센다. 상위 300건까지 본다."""
+    stub = Stub({"u1": _put(n1=1), "s1": _put(n0=50), "s2": _put(n0=9),
+                 "u2": _put(n1=1, n2=200), "s3": _put(n1=2, n2=250)})
+    stub.paths = [(name, None, SimpleNamespace(id=f"id-{name}"))
+                  for name in ["n0", "n1", "n2", "n3"] + [f"f{i}" for i in range(400)]]
+    rows = [user("u1"), calls(("search", {"query": "s1"}), ("search", {"query": "s2"}),
+                              ("read_node", {"name": "n0"}), ("read_node", {"name": "n1"})),
+            user("u2"), calls(("search", {"query": "s3"}), ("read_node", {"name": "n1"}),
+                              ("read_node", {"name": "n2"})),
+            user("u3"), calls(("read_node", {"name": "n3"}))]       # u3의 결과는 비었다 — n3은 후보가 아니다
+    report = rs.measure(stub, list(rs.turns(rows)), 2000)
+    bad = []
+    # 쓰인 쌍 다섯: 사용자의 말로 n1은 두 번 첫째, n2는 200째, n0·n3은 후보가 아니다.
+    prompt = report["recall"]["prompt"]
+    if (prompt["@8"], prompt["@100"], prompt["@300"], report["not_a_candidate"]["prompt"]) != (0.4, 0.4, 0.6, 0.4):
+        bad.append(f"views: prompt {prompt} {report['not_a_candidate']}")
+    # 처음 쓰이는 쌍은 넷이다 — 둘째 턴의 n1은 앞 턴에 쓴 것이라 빠진다.
+    fresh = report["first_use_in_the_conversation"]
+    if (fresh["pairs"], fresh["recall"]["prompt"]["@8"], fresh["recall"]["prompt"]["@300"],
+            fresh["not_a_candidate"]["prompt"]) != (4, 0.25, 0.5, 0.5):
+        bad.append(f"views: first use {fresh}")
+    # 에이전트의 검색: n0은 두 검색 가운데 나은 9째, 첫 턴의 n1은 후보가 아니고, 둘째 턴의 n1은 2째, n2는 250째다.
+    agent = report["found_by_the_agents_own_search"]
+    if (agent["pairs_in_turns_with_a_search"], agent["@8"], agent["@20"], agent["@300"],
+            agent["not_a_candidate"]) != (4, 0.25, 0.5, 0.75, 0.25):
+        bad.append(f"views: agent {agent}")
+    mine = fresh["found_by_the_agents_own_search"]
+    if (mine["pairs_in_turns_with_a_search"], mine["@8"], mine["@20"], mine["@300"], mine["not_a_candidate"],
+            mine["prompt@8_on_those_pairs"]) != (3, 0.0, round(1 / 3, 4), round(2 / 3, 4), round(1 / 3, 4),
+                                                 round(1 / 3, 4)):
+        bad.append(f"views: agent on first use {mine}")
     return bad
 
 
