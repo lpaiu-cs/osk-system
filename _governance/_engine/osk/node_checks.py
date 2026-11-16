@@ -238,12 +238,11 @@ def size_feedback(path, body: str) -> dict:
         return {}
     return {"organization_advice": {
         "body_chars": len(body), "hub": hub, "read_view": "outline",
-        "instruction": CLAIM_GUIDANCE + "길이는 삭제·강제 분할의 근거가 아니다. 목차와 필요한 절부터 읽고, "
-                       "고칠 자리는 read_node(view=고칠 문장)으로 앞뒤 문단째 받아 그 body를 old_text로 고친다. "
-                       "현재 결론·적용 조건·근거를 한 곳에 유지하라. 단계별 실행 일지를 계속 덧붙이지 말고 "
-                       "레포의 실행 상세는 레포 기록을 인용하라. 허브에는 탐색 경로를 남기고 "
-                       "독립적으로 재사용되는 주장만 기존 또는 별도 노드로 증류하라. "
-                       "정정 전후의 판단과 출처는 보존하며 미검토 부분은 보류한다."}}
+        # 짧게만 싣는다. 이 안내는 긴 노드를 고칠 때마다 응답에 붙어 대화에 쌓이고, 주장을 가르는
+        # 자세한 기준(`CLAIM_GUIDANCE`)은 정리 검토와 대화 검토의 지시문에 이미 실린다. "삭제의 근거가
+        # 아니다"는 남긴다 — 길다는 말만 들으면 지식을 덜어 내는 쪽으로 읽힐 수 있다.
+        "instruction": "본문이 길다 — 길이는 삭제의 근거가 아니다. 목차(view=outline)와 필요한 절만 읽고, "
+                       "진행 일지를 덧붙이지 말고 독립 주장은 별도 노드로 증류한다."}}
 
 
 def edge_report(node) -> dict:

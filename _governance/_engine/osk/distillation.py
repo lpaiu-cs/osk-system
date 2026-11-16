@@ -210,6 +210,17 @@ def _verify(vault: Vault, job: dict, idx=None) -> dict:
         return receipt
 
 
+def _brief(receipt: dict) -> dict:
+    """쓰기 응답에 싣는 영수증. 출처·대상·허브는 호출자가 방금 보낸 것의 되울림이라 빼고,
+    끝난 단계는 상태만 남긴다. 끝나지 않은 단계는 남은 일을 알아야 하니 그대로 싣는다.
+    온전한 영수증은 저널에 있고 `status`·`resume`이 그것을 읽는다."""
+    out = {k: receipt[k] for k in ("key", "status", "reason") if k in receipt}
+    for part in ("preservation", "placement"):
+        if part in receipt:
+            done = receipt[part].get("status") == "complete"
+            out[part] = {"status": "complete"} if done else receipt[part]
+    return out
+
 
 def structure(vault: Vault, receipt: dict, idx=None) -> str | None:
     """ACK 뒤의 구조 신호 — 대상이 남았는가, 같은 최상위 군집에 있는가, 출처를 아직
@@ -572,7 +583,9 @@ def _execute(vault: Vault, operation: str, distill: dict, request: dict, *,
         idx = graph.Index(vault)
         nodefile.require_complete(idx)
         if job and _verify(vault, job).get("preservation", {}).get("status") == "complete":
-            return _completed_before(vault, job, idx)
+            result = _completed_before(vault, job, idx)
+            result["distillation"] = _brief(result["distillation"])
+            return result
         if job:
             selection = job["sources"], job["hub"], job["target"]["before_hash"]
         else:
@@ -584,7 +597,7 @@ def _execute(vault: Vault, operation: str, distill: dict, request: dict, *,
             if run.job is None:
                 raise
             result, receipt = run.failed(e)
-        result["distillation"] = receipt
+        result["distillation"] = _brief(receipt)
         if filtered:
             result["filtered"] = sorted(filtered)
         return result

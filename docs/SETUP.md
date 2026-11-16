@@ -941,6 +941,8 @@ MCP `create_node`·`update_node`의 `distill`에 `{key,sources,hub}`를 주면 �
 있으면 `{ref,hash}`), `hub`는 기존 착지 허브다. 노드 출처는 증류가 `derived-from`에 달고,
 인용 라운드는 본문 끝 관측 절의 줄이 있어야 쓴다. 인용 라운드는 그것이 가리키는 원본
 턴의 검토를 `preserved`로 닫는다.
+쓰기 응답의 `distillation`은 키·상태와, 끝나지 않은 단계의 남은 일만 싣는다 — 출처·대상·허브는
+보낸 요청의 되울림이라 응답에서 빼고, 온전한 영수증은 작업 기록에 남는다.
 본문 저장 뒤 연결 실패는 `distillation.status="pending"`이다. 같은 요청을 재시도하면
 같은 노드에서 이어간다. 다음 worker는 `update_node(name=<기존 id>,distill={resume:<키>})`로
 저장된 본문을 재작성하지 않고 연결을 복구한다. `settle`과 `distill`은 함께 주지 않고
