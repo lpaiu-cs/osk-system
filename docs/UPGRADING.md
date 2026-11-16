@@ -27,6 +27,29 @@ device.
   files again. Before you start the daemon, run `git pull` to take the ignore
   rule (`.osk/.gitignore`) first, or update the engine first.
 
+## From v6.0 to v6.1
+
+v6.1.0 cuts what responses and background review spend ([plan and counts](v6.1-milestones.md), Korean). There is
+no data to migrate. v6.0.1 was not released: the four fixes planned for it (#320, #321, #324, #386) are in this
+release.
+
+- **A governance document changed.** Mechanism §9-4 (continuing review of references and organization),
+  paragraphs 3, 4 and 5. The organization review belongs to the daily growth run, and it looks only at scopes
+  with a signal: hub wiring problems, unresolved references, unfinished moves, a knowledge node whose body is
+  empty, or ranges of long nodes. Approve the change to the governance region when you apply the update.
+- **Write responses changed shape.** The MCP `update_node` response carries `edges` only when the call
+  changed edges. The `distillation` in `create_node` and `update_node` responses carries the key, the status
+  and, for a step that is not finished, what is left. Scripts that read those fields from the response need a
+  fix. What is stored is unchanged.
+- **Replace the block you put in your harness instructions.** If you copied the block from
+  [Windows native commands](WINDOWS-SHELL.md) (Korean) into an instruction file such as `RTK.md`, replace it
+  with the new one. The old block told agents to read a node back with `read_node` after an OSK write. The
+  write response already confirms the save, so that read is not needed.
+- **Conversation-review runs no longer carry the organization review.** Where a daily growth run is active,
+  it carries it. Installations whose daily run does not take rechecks behave as before.
+- **New.** The CLI command `routing keep` (the keep decision of a binding review). `read_node` accepts `id`
+  and `session`.
+
 ## From v5.6 to v6.0
 
 v5.7.0 was not released. v6.0.0 adds no feature: it restructures the engine

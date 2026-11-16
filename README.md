@@ -192,7 +192,7 @@ release tag rather than `main` (newer tags are on the
 [releases page](https://github.com/lpaiu-cs/osk-system/releases)):
 
 ```bash
-git clone --branch v6.0.0 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
+git clone --branch v6.1.0 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
 cd my-osk-vault
 git switch -c main
 python _governance/_engine/scripts/setup.py --interactive
@@ -389,7 +389,9 @@ rest at 90% weekly use instead of keeping a budget, and has an agent search befo
 v5.7.0 was not released: the items of [its plan](docs/v5.7-milestones.md) moved to the v6 line.
 v6.0.0 adds no feature — it restructures the engine ([plan and record](docs/v6.0-refactoring.md)).
 The tools and commands are unchanged; only scripts that call engine functions directly need a fix
-([upgrading](docs/UPGRADING.md)). What comes after — a measurement baseline, recall, cost, then
+([upgrading](docs/UPGRADING.md)). v6.1.0 cuts what the engine spends: write responses carry only what the
+call changed, and the organization review runs in the daily run and looks only at scopes with a signal
+([plan and counts](docs/v6.1-milestones.md)). What comes after — a measurement baseline, recall, cost, then
 simplification — is in the [v6 roadmap](docs/v6-roadmap.md) (in Korean).
 
 ## License
