@@ -221,9 +221,12 @@ def _pairs(searcher, found: list[dict], max_chars: int, local_of: dict | None) -
 
     for turn in found:
         used = {}
+        made = {resolve(name) for name in turn.get("created") or ()}   # 그 턴에 만든 노드를 id로 읽은 것도 뺀다
         for kind in ("read", "updated"):                  # 읽고 고친 노드는 고친 것으로 센다
             for name in turn[kind]:
                 node_id = resolve(name)
+                if node_id in made:
+                    continue
                 if node_id:
                     used[node_id] = kind
                 else:
