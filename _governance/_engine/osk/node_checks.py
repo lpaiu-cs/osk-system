@@ -4,6 +4,7 @@
 Mechanism §6-2 4항)을 본다. 쓰기(`write`)와 이동(`node_moves`)이 같은 검사를 쓴다."""
 from __future__ import annotations
 import os, re, tempfile
+from collections import Counter
 from pathlib import Path
 from .core import ID_RE, CASE_RE, sha256_file
 from . import contract, evidence, graph, nodefile, rechecks, placement, topology
@@ -84,10 +85,24 @@ def check_edges(vault: Vault, edges: dict | None, idx, *, adding: bool = True) -
     return errs
 
 
+EVIDENCE_FORMAT = ("관측 줄의 꼴은 `- YYYY-MM-DD · `좌표` · 지지|조건|반례 — 내용`이다(시행령 §1 5항). "
+                   "대화 근거의 좌표는 cite_round가 돌려준 coordinate를 쓴다")
+
+
+def new_malformed(body: str, previous_body: str | None) -> list[str]:
+    """이번 쓰기가 더하거나 고친 형식 위반 관측 줄. 이미 있던 줄은 막지 않는다 —
+    남이 만든 위반 때문에 내 쓰기가 막히면 안 된다(설계 D10). 그 줄은 응답이 알린다."""
+    # 줄의 수로 견준다 — 이미 있던 위반 줄과 같은 줄을 하나 더 더한 것도 이번 쓰기가 더한 것이다
+    added = Counter(evidence.malformed(body)) - Counter(evidence.malformed(previous_body or ""))
+    errs = [f"형식이 다른 관측 줄: {line[:60]}" for line in added.elements()]
+    return errs + [EVIDENCE_FORMAT] if errs else []
+
+
 def validate_render(vault: Vault, path: Path, meta: dict, body: str,
-                     idx) -> tuple[bytes, list[str]]:
+                     idx, previous_body: str | None = None) -> tuple[bytes, list[str]]:
     """**렌더된 바이트를 되읽어** 검증한다 — 쓰려던 것이 아니라 쓸 것을
-    검증해야 한다(7차 중대 A). 직렬화가 깨뜨린 것은 dict 검사로는 안 보인다."""
+    검증해야 한다(7차 중대 A). 직렬화가 깨뜨린 것은 dict 검사로는 안 보인다.
+    `previous_body`는 고치기 전 본문이다 — 만들기는 없다."""
     data = nodefile.render(meta, body)
     fd, tmp = tempfile.mkstemp(suffix=".md")
     try:
@@ -117,7 +132,7 @@ def validate_render(vault: Vault, path: Path, meta: dict, body: str,
         return out
     if _norm(back.meta) != _norm(meta):
         return data, [f"직렬화 왕복 불일치 — 쓰지 않았다: {sorted(back.meta)} vs {sorted(meta)}"]
-    return data, _validate_node(vault, path, back, body, idx)
+    return data, _validate_node(vault, path, back, body, idx) + new_malformed(body, previous_body)
 
 
 def _validate_node(vault: Vault, path: Path, node, body: str, idx) -> list[str]:
@@ -210,7 +225,7 @@ def dangling_of(vault: Vault, path: Path, meta: dict, body: str, idx) -> list[st
 CLAIM_GUIDANCE = (
     "기존 노드 갱신은 같은 주장과 적용 조건을 정정할 때 우선한다. 같은 프로젝트·절차의 다음 단계라는 "
     "이유만으로 한 노드에 합치지 않는다. 독립적으로 검증·재사용할 결론은 기존 또는 새 노드에 보존한다. "
-    "노드의 분할은 대상에 결론·조건·근거를 먼저 보존하고 되읽은 뒤 허브 양쪽을 연결하고, 마지막에 원문의 "
+    "노드의 분할은 대상에 결론·조건·근거를 먼저 보존하고 쓰기 응답으로 저장을 확인한 뒤 허브 양쪽을 연결하고, 마지막에 원문의 "
     "해당 구간만 짧은 결론과 링크로 접는다. 사실과 변경 이유를 보존하되 중복 문단을 영구히 쌓지 않는다. "
 )
 
@@ -223,12 +238,11 @@ def size_feedback(path, body: str) -> dict:
         return {}
     return {"organization_advice": {
         "body_chars": len(body), "hub": hub, "read_view": "outline",
-        "instruction": CLAIM_GUIDANCE + "길이는 삭제·강제 분할의 근거가 아니다. 목차와 필요한 절부터 읽고, "
-                       "고칠 자리는 read_node(view=고칠 문장)으로 앞뒤 문단째 받아 그 body를 old_text로 고친다. "
-                       "현재 결론·적용 조건·근거를 한 곳에 유지하라. 단계별 실행 일지를 계속 덧붙이지 말고 "
-                       "레포의 실행 상세는 레포 기록을 인용하라. 허브에는 탐색 경로를 남기고 "
-                       "독립적으로 재사용되는 주장만 기존 또는 별도 노드로 증류하라. "
-                       "정정 전후의 판단과 출처는 보존하며 미검토 부분은 보류한다."}}
+        # 짧게만 싣는다. 이 안내는 긴 노드를 고칠 때마다 응답에 붙어 대화에 쌓이고, 주장을 가르는
+        # 자세한 기준(`CLAIM_GUIDANCE`)은 정리 검토와 대화 검토의 지시문에 이미 실린다. "삭제의 근거가
+        # 아니다"는 남긴다 — 길다는 말만 들으면 지식을 덜어 내는 쪽으로 읽힐 수 있다.
+        "instruction": "본문이 길다 — 길이는 삭제의 근거가 아니다. 목차(view=outline)와 필요한 절만 읽고, "
+                       "진행 일지를 덧붙이지 말고 독립 주장은 별도 노드로 증류한다."}}
 
 
 def edge_report(node) -> dict:
@@ -244,6 +258,8 @@ def reference_feedback(vault: Vault, path, meta, body, idx, previous=None) -> di
     refs = topology.reference_review(vault, node, idx, previous)
     out = {"dangling": sorted({r["ref"].split("#", 1)[0] for r in refs
                                if r["resolution"] == "dangling"})}
+    if bad := evidence.malformed(body):      # 이미 있던 위반 — 새 위반은 validate_render가 거부했다
+        out["malformed_evidence"] = bad
     if refs:
         out["reference_review"] = {
             "status": "pending", "items": refs,

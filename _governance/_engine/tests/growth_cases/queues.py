@@ -94,27 +94,33 @@ class QueueCases:
             """.replace('DEFERRED_CASE', repr(deferred)))
 
     def test_unfinished_organization_is_remaining_work_not_a_failed_run(self):
-        self.check_case("""
+        # read: whether the worker checked units. Checked units shrink what is left; a deferral without
+        # them leaves it as it was.
+        for read, state in (('True', 'complete'), ('False', 'incomplete')):
+            self.check_case("""
             import subprocess
             node('A')
-            node('B')
+            # 긴 노드 하나 — 구간이 셋을 넘어 한 번에 다 읽지 못한다.
+            node('B', body=(chr(10)*2).join('Part ' + str(i) + ' ' + ('evidence ' + str(i) + ' ')*300
+                                            for i in range(5)))
             # Organization reads a scope in several passes (Mechanism §9-4 4): a pass that leaves
             # units is progress. After v5.0.0 the scheduler logged every such daily run as failed
-            # and the session start said the daily run had not run at all.
+            # and the session start said the daily run had not run at all. A pass that shrank what
+            # is left did its share, so the run is complete; one that shrank nothing is incomplete.
             command_file = VAULT.root/'command.json'
-            command_file.write_text(json.dumps([sys.executable,'-c',packet_worker(org='deferred')]),
+            command_file.write_text(json.dumps([sys.executable,'-c',packet_worker(org='deferred', read=READ_UNITS)]),
                                     encoding='utf-8')
             proc = subprocess.run([sys.executable,'-B','-m','osk.cli','growth','run',
                                    '--command-file',str(command_file),'--limit','3'],
                                   capture_output=True,text=True,encoding='utf-8',timeout=120)
             result = json.loads(proc.stdout)
-            assert result['state'] == 'incomplete' and not result['final_reviews']['errors'], result
+            assert result['state'] == RUN_STATE and not result['final_reviews']['errors'], result
             assert {s['status'] for s in result['organization_outcomes'].values()} == {'pending'}, result
             assert proc.returncode == 0 and not growth_ledger.run_failed(result), (proc.returncode, result)
             # #301: an organization left over is no reason to hand rechecks to the fork.
             status = growth_ledger.daily_status(VAULT)
             assert status['ran'] and status['active'], status
-            assert status['last']['state'] == 'incomplete', status
+            assert status['last']['state'] == RUN_STATE, status
             # A run that could not run, or whose worker or packet failed, still fails.
             assert growth_ledger.run_failed({**result, 'returncode': 1})
             assert growth_ledger.run_failed({**result, 'final_reviews': {'state': 'rejected', 'errors': ['no packet']}})
@@ -122,7 +128,7 @@ class QueueCases:
             assert not growth_ledger.run_failed({'ok': True, 'state': 'skipped', 'selected': 0})
             # Another run holding the lock is a wait, not a failure (#175: 10-05 and 10-06 ended busy).
             assert not growth_ledger.run_failed({'ok': False, 'state': 'busy'})
-        """)
+            """.replace('READ_UNITS', repr(read)).replace('RUN_STATE', repr(state)))
 
     def test_scope_tries_count_only_what_the_daily_run_judged(self):
         self.check_case("""
@@ -346,6 +352,7 @@ class QueueCases:
             import mcp_server as M
             node('A')
             node('B')
+            long_hub()
             text = growth.prompt(VAULT, growth_plan.plan(VAULT, 3))
             assert organization.guidance() in text and 'expect_view_hash' in organization.guidance()
             units = [u for j in json.loads(text.rsplit(chr(10), 1)[1])['organization_jobs'] for u in j['review_units']]
@@ -360,6 +367,7 @@ class QueueCases:
         self.check_case("""
             from osk import integration, conversation_capture, conversation_cite, conversation_review, conversation_state
             node('A')
+            long_hub()
             path = VAULT.root / 'native.jsonl'
             rows = []
             for i in range(12):
@@ -400,6 +408,7 @@ class QueueCases:
             import os, time
             from osk import integration, conversation_capture, conversation_cite, conversation_review, conversation_state
             node('A')
+            long_hub()
             # Two ended conversations compete for one Scope slot per run (limit=3 shares the
             # budget with the candidate and organization queues). 'early' holds the older turns
             # although its state was touched last, so time order picks it first. A run that ends
@@ -497,6 +506,7 @@ class QueueCases:
             # and so is the second candidate of every queue: a stalled first one holds no budget.
             node('A')
             node('B', 'W2')
+            long_hub(); long_hub('W2')
             for title in ('R1', 'R2'):
                 assert write.create_node(VAULT, title, title, title + ' relies on A.', 'gpt-6-astra',
                                          space='00_Scope/W1', edges={'derived-from': 'A'})['ok']
@@ -535,6 +545,7 @@ class QueueCases:
             from osk import integration, conversation_capture, conversation_cite, conversation_review, conversation_state
             for name, scope in (('A','W1'),('B','W2'),('C','W3')):
                 node(name, scope)
+                long_hub(scope)
             path = VAULT.root / 'native.jsonl'
             rows = [
                 {'type':'user','sessionId':'waiting','uuid':'u1','message':{'role':'user','content':'Keep this scoped fact.'}},
@@ -609,6 +620,7 @@ class QueueCases:
             from unittest.mock import patch
             from osk import evictions
             node('A')
+            long_hub()
             items = [evictions.record_evict(VAULT, 'W1', 'session', 'Temporary observation '+str(i)) for i in range(3)]
             assert not growth_plan.plan(VAULT)['eviction_jobs']  # Young entries retain the session-hook path.
             with patch.object(evictions, 'age_days', return_value=17):

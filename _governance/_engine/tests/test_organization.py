@@ -24,6 +24,10 @@ def wire(hub, name):
     idx=graph.Index(VAULT); p=nodefile.live_locate(VAULT, hub,idx); n=contract.parse(p)
     if name not in n.wikilinks():
         write.update_node(VAULT, hub, body=n.body.rstrip()+chr(10)+"- [["+name+"]]",expect_hash=core.sha256_file(p))
+def long(text, parts=4):
+    # 정리 검토는 긴 노드(12,000자 초과)의 구간만 본다 — 구간 하나가 한 절이다.
+    return text + (chr(10)*2) + (chr(10)*2).join(
+        '## Part ' + str(i) + chr(10) + ('bounded evidence ' + str(i) + ' ')*190 for i in range(parts))
 def rejected(fn):
     try: fn()
     except (ValueError, write.WriteError): return
@@ -45,7 +49,7 @@ def finish_review(scope, reason, intentional=None):
 class OrganizationTests(unittest.TestCase):
     def test_later_selected_destination_cannot_disappear_before_completion(self):
         self.case("""
-            node('A'); original = organization.plan(VAULT, 'W1')
+            node('A', long('First claim')); original = organization.plan(VAULT, 'W1')
             added = node('Later destination')
             later = organization.plan(VAULT, 'W1')
             assert later['key'] == original['key']
@@ -54,6 +58,54 @@ class OrganizationTests(unittest.TestCase):
             missing = organization.plan(VAULT, 'W1')
             assert added['id'] in missing['missing_ids']
             rejected(lambda: finish_review('W1','The first node alone remains'))
+            # 남은 구간을 다 판정해도 scope는 닫히지 않는다 — 고른 노드가 저장소에서 사라진 것이 신호다(#398 리뷰).
+            for _ in range(5):
+                job = organization.plan(VAULT, 'W1')
+                if not job.get('review_units'): break
+                organization.review(VAULT, job['key'], 'W1', 'deferred', 'Ranges hold', after=job['snapshot'],
+                                    checked=[{'unit': u['unit'], 'reason': 'holds'} for u in job['review_units']])
+            left = organization.plan(VAULT, 'W1')
+            assert left.get('status') != 'complete' and added['id'] in left['missing_ids'], left
+            # 다른 scope로 옮겨 간 노드는 사라진 것이 아니다 — 저장소에 살아 있으면 세지 않는다.
+            from types import SimpleNamespace
+            state, current = organization.load_state(VAULT), organization.snapshot(VAULT, 'W1')
+            assert organization._lost(state, current, SimpleNamespace(by_id={})) == [added['id']]
+            assert organization._lost(state, current, SimpleNamespace(by_id={added['id']: None})) == []
+        """)
+
+    def test_only_signals_open_a_scope(self):
+        self.case("""
+            # 짧은 노드만 있고 배선·참조가 맞으면 작업이 없다.
+            node('A'); node('B')
+            assert organization.plan(VAULT, 'W1')['status'] == 'complete'
+            assert not organization.pending(VAULT, ['W1'])
+            # 긴 노드가 있으면 그 구간만 실린다.
+            big = node('Big', long('Long claim'))
+            job = organization.plan(VAULT, 'W1')
+            assert job['review_units'] and {u['id'] for u in job['review_units']} == {big['id']}, job['review_units']
+            assert job['coverage']['total'] == 4, job['coverage']
+            # 긴 노드의 구간을 다 판정하면 끝난다.
+            finish_review('W1', 'Every range of the long node holds')
+            assert organization.plan(VAULT, 'W1')['status'] == 'complete'
+            # 본문이 비워진 지식 노드는 신호다 — 쓰기 표면이 빈 본문을 받아, 잡는 자리가 여기뿐이다.
+            blank = node('Blank')
+            assert organization.plan(VAULT, 'W1')['status'] == 'complete'
+            emptied = write.update_node(VAULT, 'Blank', body='', expect_hash=blank['new_hash'])
+            assert organization.plan(VAULT, 'W1').get('status') != 'complete', 'an emptied body must reopen the scope'
+            write.update_node(VAULT, 'Blank', body='Restored evidence', expect_hash=emptied['new_hash'])
+            assert organization.plan(VAULT, 'W1')['status'] == 'complete'
+            # 신호와 무관한 쓰기는 다시 열지 않는다.
+            write.update_node(VAULT, 'A', old_text='Reusable evidence', new_text='Revised evidence')
+            node('C')
+            assert organization.plan(VAULT, 'W1')['status'] == 'complete'
+            # 배선 문제가 생기면 다시 열린다.
+            write.update_node(VAULT, 'W1', old_text=chr(10)*2+'- [[C]]', new_text='')
+            assert any('C' in i['missing_links'] for i in organization.plan(VAULT, 'W1')['issues'])
+            wire('W1', 'C')
+            assert organization.plan(VAULT, 'W1')['status'] == 'complete'
+            # 미해결 참조가 생기면 다시 열린다.
+            write.update_node(VAULT, 'B', old_text='Reusable evidence', new_text='See [[no such node]]')
+            assert organization.plan(VAULT, 'W1')['references']
         """)
 
     def test_existing_domain_review_is_separate_and_duplicate_pages_have_unique_ids(self):
@@ -153,8 +205,9 @@ class OrganizationTests(unittest.TestCase):
     def test_deferred_resume_context_reaches_next_job_and_growth_manifest(self):
         self.case("""
             from osk import growth, growth_ledger, growth_plan, growth_reviews, worker_process
-            for name in ('A', 'B', 'C', 'D'):
+            for name in ('A', 'B', 'C'):
                 node(name)
+            node('D', long('Reusable evidence'))
             job = organization.plan(VAULT, 'W1')
             target = next(n for n in job['nodes'] if n['name']=='D')
             reason = 'Reviewed A, B and C. Next: '+target['id']+' section Limits; verify condition X.'
@@ -180,8 +233,9 @@ class OrganizationTests(unittest.TestCase):
     def test_hook_readout_keeps_what_the_judgement_binds_to(self):
         self.case("""
             from osk import cli
-            for name in ('A', 'B', 'C', 'D'):
+            for name in ('A', 'B', 'C'):
                 node(name)
+            node('D', long('Reusable evidence'))
             job = organization.plan(VAULT, 'W1')
             organization.review(VAULT, job['key'], 'W1', 'deferred', 'Reviewed A. Next: D section Limits.')
             write.update_node(VAULT, 'D', old_text='Reusable evidence', new_text='Revised evidence')
@@ -227,11 +281,11 @@ class OrganizationTests(unittest.TestCase):
             # the range content, never the file, so every reviewed range was deferred (2026-10-04).
             import mcp_server as M
             node('Large', (chr(10) * 2).join('## Claim ' + str(i) + chr(10) + ('bounded evidence ' + str(i) + ' ') * 170
-                                             for i in range(2)))
+                                             for i in range(5)))
             node('Small')
             job = organization.plan(VAULT, 'W1')
             units = organization.readout([job])[0]['review_units']
-            assert len(units) == 3 and len({u['id'] for u in units}) == 2, units  # one node, two ranges
+            assert len(units) == 3 and {u['name'] for u in units} == {'Large'}, units  # 짧은 노드는 구간이 없다
             for u in units:
                 got = M.read_node(name=u['id'], view=u['view'])['view_hash']
                 assert u['expect_view_hash'] == got, (u, got)
@@ -245,6 +299,10 @@ class OrganizationTests(unittest.TestCase):
             text = 'Durable qualified conclusion. ' * 600
             a = node('Large', text)
             assert a['organization_advice']['read_view'] == 'outline', a
+            # 긴 노드를 고칠 때마다 붙는 안내다 — 짧게 두고 자세한 기준은 검토 지시문이 싣는다.
+            # 길이가 삭제의 근거가 아니라는 말은 남는다
+            assert len(a['organization_advice']['instruction']) <= 100, a
+            assert '삭제의 근거가 아니다' in a['organization_advice']['instruction'], a
             p = VAULT.root / a['path']
             assert contract.parse(p).body.strip() == text.strip()
             current = organization.snapshot(VAULT, 'W1')
@@ -261,7 +319,7 @@ class OrganizationTests(unittest.TestCase):
         self.case("""
             # 문단 경계가 없으면 4000자에서 끊어 문장 중간을 잘랐다 — 문장 끝에서 자른다(10-04).
             body = ''.join('Measured value stays within the bounded range for case ' + str(i) + '. '
-                           for i in range(160))
+                           for i in range(240))   # 긴 노드여야 구간이 있다
             node('Ledger', body)
             n = contract.parse(nodefile.live_locate(VAULT, 'Ledger', graph.Index(VAULT)))
             units = organization._units(n)
@@ -275,10 +333,10 @@ class OrganizationTests(unittest.TestCase):
         self.case("""
             # 고친 구간은 다음 검토로 넘긴다 — 같은 계획이 곧바로 다시 고르면 고친 이가 자기
             # 정정을 검토하거나 끝없이 미루게 된다(Pelican 17/19, 10-04).
-            node('A', 'First independent claim.')
-            node('B', 'Second independent claim.')
+            node('A', long('First independent claim.', 5))
+            node('B', long('Second independent claim.'))
             job = organization.plan(VAULT, 'W1')
-            assert {'A', 'B'} <= {u['name'] for u in job['review_units']}, job['review_units']
+            assert {u['name'] for u in job['review_units']} == {'A'}, job['review_units']
             write.update_node(VAULT, 'B', old_text='Second', new_text='Corrected second')
             current = organization.snapshot(VAULT, 'W1')
             checked = [{'unit': u['unit'], 'reason': 'The claim holds'} for u in job['review_units']
@@ -287,7 +345,7 @@ class OrganizationTests(unittest.TestCase):
                                 after=current['snapshot'], checked=checked)
             nxt = organization.plan(VAULT, 'W1')
             assert 'B' not in {u['name'] for u in nxt['review_units']}, nxt['review_units']
-            assert nxt['coverage']['handoff'] == 1, nxt['coverage']
+            assert nxt['coverage']['handoff'] == 4, nxt['coverage']
             rest = [{'unit': u['unit'], 'reason': 'ok'} for u in nxt['review_units']]
             rejected(lambda: organization.review(VAULT, nxt['key'], 'W1', 'complete', 'Handed-off range is unread',
                                                  after=nxt['snapshot'], checked=rest))
@@ -295,7 +353,7 @@ class OrganizationTests(unittest.TestCase):
                                 after=nxt['snapshot'], checked=rest)
             # 남은 구간이 모두 넘김 중이면 완료가 아니라 넘김이라고 답하고, 정기 실행도 고르지 않는다
             waiting = organization.plan(VAULT, 'W1')
-            assert waiting['status'] == 'handoff' and waiting['handoff'] == 1, waiting
+            assert waiting['status'] == 'handoff' and waiting['handoff'] == 4, waiting
             assert not organization.pending(VAULT, ['W1']), 'a cooling range is not offered to anyone yet'
             assert organization.status(VAULT, job)['status'] == 'pending'
             # 냉각이 지나면 다른 검토자에게 다시 온다
@@ -333,7 +391,7 @@ class OrganizationTests(unittest.TestCase):
             r=subprocess.run([sys.executable,"-B","-c","from osk import core, organization; from osk.vault import Vault; VAULT = Vault.open(); assert organization.plan(VAULT, 'W1')['status']=='complete'"],env=os.environ,capture_output=True)
             assert r.returncode==0,r.stderr
             write.update_node(VAULT, "A",old_text="A fact",new_text="A revised fact")
-            assert organization.plan(VAULT, "W1")["key"]!=job["key"]
+            assert organization.plan(VAULT, "W1")["status"]=="complete"   # 신호와 무관한 쓰기는 다시 열지 않는다
         """)
 
     def test_source_navigation_and_raw_round_are_not_knowledge_nodes(self):
@@ -355,10 +413,11 @@ class OrganizationTests(unittest.TestCase):
 
     def test_real_hub_placement_and_identity_preservation(self):
         self.case("""
-            a=node("A"); b=node("B"); job=organization.plan(VAULT, "W1")
+            a=node("A"); b=node("B")
             write.create_node(VAULT, "Branch","Branch","Two related facts","gpt-6-astra",space="00_Scope/W1/Branch")
             wire("W1","Branch")
             moved=node_moves.move_nodes(VAULT, ["A","B"],"00_Scope/W1/Branch"); assert moved["ok"]
+            job=organization.plan(VAULT, "W1"); assert job["issues"], job
             now=organization.snapshot(VAULT, "W1")
             rejected(lambda: organization.review(VAULT, job["key"],"W1","complete","Moved",after=now["snapshot"]))
             wire("Branch","A"); wire("Branch","B")
@@ -366,7 +425,11 @@ class OrganizationTests(unittest.TestCase):
             write.update_node(VAULT, "W1",old_text="- [[B]]",new_text="")
             now=organization.snapshot(VAULT, "W1")
             assert not now["issues"],now["issues"]
-            finish_review("W1", "One meaningful branch; original IDs retained")
+            # 고친 뒤에는 신호가 없어 새 계획이 없다 — 이 작업의 status는 그 key의 검토 행을 요구한다.
+            assert organization.plan(VAULT, "W1")["status"]=="complete"
+            assert organization.status(VAULT, job)["status"]=="pending"
+            organization.review(VAULT, job["key"],"W1","complete","One meaningful branch; original IDs retained",
+                                after=now["snapshot"])
             assert organization.status(VAULT, job)["status"]=="complete"
             path=nodefile.live_locate(VAULT, a["id"],graph.Index(VAULT)); path.unlink()
             assert organization.status(VAULT, job)["status"]=="pending"
@@ -395,7 +458,7 @@ class OrganizationTests(unittest.TestCase):
         self.case("""
             # Mechanism §9-4 3: the organization review owns hub differentiation and carries
             # the scope's hub tree (hub path, direct node count, hub summary; indent = depth).
-            node("A"); node("B")
+            node("A", long("Long claim")); node("B")
             write.create_node(VAULT, "Branch","Branch entry","Branch of related facts","gpt-6-astra",space="00_Scope/W1/Branch")
             wire("W1","Branch")
             write.create_node(VAULT, "C","C","A branch fact","gpt-6-astra",space="00_Scope/W1/Branch")
@@ -451,7 +514,7 @@ class OrganizationTests(unittest.TestCase):
     def test_linked_worktrees_share_lock_but_not_organization_state(self):
         self.case("""
             import os,subprocess
-            node("Shared")
+            node("Shared", long("Shared claim"))
             def git(*args):
                 r=subprocess.run(["git",*args],cwd=VAULT.root,capture_output=True,text=True)
                 assert r.returncode==0,r.stdout+r.stderr
@@ -465,7 +528,7 @@ class OrganizationTests(unittest.TestCase):
             child=("import json; from osk import core,organization; from osk.vault import Vault; VAULT = Vault.open(); "
                    "job=organization.plan(VAULT, 'W1'); "
                    "assert not job.get('missing_ids'), job; "
-                   "organization.review(VAULT, job['key'],'W1','complete','This checkout only',after=job['snapshot'],checked=[{'unit':u['unit'],'reason':'Known fixture claim'} for u in job['review_units']]); "
+                   "organization.review(VAULT, job['key'],'W1','deferred','This checkout only',after=job['snapshot'],checked=[{'unit':u['unit'],'reason':'Known fixture claim'} for u in job['review_units']]); "
                    "print(json.dumps({'state':str(organization._state_path(VAULT)),'lock':str(core.local_lock_path('osk-mutation.lock', VAULT.root))}))")
             r=subprocess.run([sys.executable,"-B","-c",child],cwd=linked,
                              env=dict(os.environ,OSK_VAULT_ROOT=str(linked)),capture_output=True,text=True)
@@ -541,7 +604,8 @@ class OrganizationTests(unittest.TestCase):
 
     def test_cas_review_and_graph_settings_preserve_existing_preferences(self):
         self.case("""
-            node("A"); job=organization.plan(VAULT, "W1"); old=organization.snapshot(VAULT, "W1")
+            node("A", long("Reusable evidence"))
+            job=organization.plan(VAULT, "W1"); old=organization.snapshot(VAULT, "W1")
             write.update_node(VAULT, "A",old_text="Reusable evidence",new_text="A later observation")
             rejected(lambda: organization.review(VAULT, job["key"],"W1","complete","Reviewed earlier bytes",after=old["snapshot"]))
             sys.path.insert(0,str(Path(organization.__file__).resolve().parents[1]/"scripts"))
@@ -558,7 +622,7 @@ class OrganizationTests(unittest.TestCase):
 
     def test_adversarial_empty_body_raw_coordinates_and_lost_id_restart(self):
         self.case("""
-            a=node("A"); job=organization.plan(VAULT, "W1")
+            a=node("A", long("Knowledge")); job=organization.plan(VAULT, "W1")
             write.update_node(VAULT, "A",body="",expect_hash=a["new_hash"])
             rejected(lambda: organization.review(VAULT, job["key"],"W1","complete","No content retained",after=organization.snapshot(VAULT, "W1")["snapshot"]))
             p=nodefile.live_locate(VAULT, a["id"],graph.Index(VAULT))

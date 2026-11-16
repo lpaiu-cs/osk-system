@@ -278,6 +278,10 @@ JSON 안의 역슬래시는 `\\`로 이스케이프한다 —
 대상 인스턴스는 `OSK_VAULT_ROOT`로 바꿀 수 있다. 지정하지 않으면
 `_governance/_engine/`에서 두 단계 위(= `_governance`의 부모)를 vault 루트로 본다.
 
+Claude Code는 서버가 30초 안에 연결되지 않으면 그 세션에 osk 도구를 싣지 않는다. 서버의 기동은 평소 1초
+남짓이지만, 기계가 바쁜 순간에는 프로세스가 뜨는 것 자체가 열 배 넘게 느려져 이 제한을 넘을 수 있다(#261).
+그런 세션이 보이면 환경 변수 `MCP_TIMEOUT`(밀리초)으로 제한을 늘린다 — 예: `MCP_TIMEOUT=60000`.
+
 ## CLI
 
 ```bash
@@ -300,9 +304,9 @@ sh osk-cli.sh --help       # vault 루트의 런처 — 같은 것(Windows: .\os
 | `growth status` | 현재 대기량과 기간별 성장 근거를 구분하는 읽기 전용 보고서 — [분모·판독 한계](growth-status.md) |
 | `fork doctor` | 구독 fork 준비 점검 — 시작/입력 훅과 같은 판정과 근거, 상태·설정을 쓰지 않는다 (아래) |
 | `doctor` | 이 기기의 하네스 연결과 vault 이행 점검 — MCP·훅 등록, 훅 실행 기록, 문맥 전달, 판본, fork 판정, 남은 일괄 이행. 읽기만 한다 (아래). `--vault`는 vault 내용 점검 — 남은 이행, 기록 충돌, 검증기 위반, 정기 검토의 잔재(재검토 후보·포착 막힘·scope 복구·정돈·보호영역 대기), 대화 검토 적체(예상 토큰과 `growth run --daily --backlog`). `--migrate`는 남은 이행을 옮긴다 — 첫 실행은 계획과 종료코드 2, 1시간 안의 확인된 같은 실행이 적용하고 이행 기록을 `_ledger/migration/`에 남긴다 |
-| `organization plan` / `organization review` | 선택한 Scope·기존 Domain의 구간별 본문 검토와 참조·허브·분화 완료 확인 |
+| `organization plan` / `organization review` | 선택한 Scope·기존 Domain의 긴 노드 구간 검토와 참조·허브·분화 완료 확인 |
 | `sm show` / `sm write` | scope 기억 — SessionStart 훅 경로(아래) |
-| `routing show` / `routing bind` / `routing unbind` / `routing primary` | 프로젝트 결속 — 결속 집합·주된 scope 조회(생략하면 검토 대상), 집합 증감, 주된 scope 지정(**사용자 전속** — 단말 확인을 거치며, 검토의 결정 묶음은 실행기가 적용) (Mechanism §6-2 6항) |
+| `routing show` / `routing bind` / `routing unbind` / `routing primary` / `routing keep` | 프로젝트 결속 — 결속 집합·주된 scope 조회(생략하면 검토 대상), 집합 증감, 주된 scope 지정(**사용자 전속** — 단말 확인을 거치며, 검토의 결정 묶음은 실행기가 적용), 결속 검토의 유지 판정(조직 검토 작업이 없는 프로젝트) (Mechanism §6-2 6항) |
 | `evidence migrate` | 비노드 `derived-from`을 노드 끝 관측 절의 `지지` 줄로 옮기는 이행 계획(v5.4 — 전수는 `.osk/evidence-section-plan.md`); `--apply`는 확인 없이 옮기고 이행 기록을 `_ledger/migration/`에 남긴다 (헌법 제8조 5·6항·제14조 8·9항 · Mechanism §5) |
 | `roots show` / `roots declare` / `roots retire` / `roots mount` / `roots unmount` | 외부 루트 — 별칭마다 선언·이 기기의 위치 조회, 별칭의 선언·해제(대장, 모든 기기), 이 기기의 위치 지정·삭제(`.osk/roots.json`). 조회 밖은 **사용자 전속** — 단말 확인을 거친다 (시행령 §2 8항 · Mechanism §1 6항) |
 | `rechecks` | 근거 재검토 후보 전체 — 근거가 바뀐 참조 노드 (시행령 §7 2항, 아래) |
@@ -504,10 +508,13 @@ fork에만 원 대화의 캐시 키를 물려주므로 `--ephemeral`은 뺄 수 
 대신 실행 결과의 `cache.first_request_floor`가 첫 요청 적중률의 하한을 적는다
 ([근거](response-growth.md#codex-desktop-sources-no-longer-fork-2026-10)).
 
-Stop의 한 작업자는 원 대화 검토와 **같은 Scope의 조직 작업 1건**을 기존 600초 안에
-처리한다. 다른 대화나 Domain을 붙이지 않는다. 정기 실행은 `work_order` 순서로
+Stop의 한 작업자는 원 대화 검토를 기존 600초 안에 처리한다. 다른 대화나 Domain을 붙이지 않는다.
+조직 검토는 정기 실행이 맡는다. 같은 실행에서 대화 검토가 그 Scope에 노드를 쓰면 조직 검토는 판정 없이
+미뤄야 하고, 쓰지 않아도 대화 검토에 밀려 손대지 못하기 때문이다. 정기 실행이 최근 3일 안에 재검토를
+맡지 못한 설치에서만 Stop 작업자가 **같은 Scope의 조직 작업 1건**을 함께 맡는다 — 그때는 그것이 유일한
+길이다. 근거 재검토를 넘기는 조건과 같다(#301). 정기 실행은 `work_order` 순서로
 작업하고 매번 첫 차례를 순환하므로, 조직 검토를 항상 마지막으로 미루지 않는다.
-조직 작업은 최대 3개 구간·구간당 4000자를 선택한다. `checked=[{unit,reason}]`로
+조직 작업은 긴 노드의 구간에서 최대 3개·구간당 4000자를 선택한다. `checked=[{unit,reason}]`로
 각 구간의 주장·조건·유지/분화 이유를 기록하며, 미검토 구간이 남으면 `deferred`로
 부분 진척을 남긴다. 이전의 포괄적인 완료 기록은 구간별 검토를 대신하지 않는다.
 현재 문안·구현 경계는 [조직 검토 변경](hub-growth-review.md)을 따른다.
@@ -581,7 +588,8 @@ fallback 사유를, 실행 결과의 `cache`에서 자식 사용량을
   `view_hash`가 그 값과 다르면 선택 뒤 본문이 바뀐 것이니 새 plan으로 범위를 다시 확인한다.
   unit 문자열 속 sha256은 구간 내용 키라 비교 대상이 아니다. 전체 규칙과
   군집·노드 목록은 CLI `organization plan`의 `guidance`와 본문이 준다. 별도 실행기가
-  없는 경로에서는 포착 대기와 따로, 세션 시작에도 싣는다.
+  없는 경로에서는 포착 대기와 따로, 세션 시작에도 싣는다. 정기 실행이 최근 3일 안에 재검토를 맡았으면
+  조직 검토는 그쪽이 맡으므로 이 경로에서도 싣지 않는다.
 - 계수·검토 대기는 **기기 로컬**이다(vault 루트·하네스·실제 대화 ID 단위).
   지식과 원문은 vault에 남는다. 기억이 비어 있어도 통합 시점은 알린다.
 - 두 훅 모두 **엔진을 import한다** — 등록한 인터프리터가
@@ -937,6 +945,8 @@ MCP `create_node`·`update_node`의 `distill`에 `{key,sources,hub}`를 주면 �
 있으면 `{ref,hash}`), `hub`는 기존 착지 허브다. 노드 출처는 증류가 `derived-from`에 달고,
 인용 라운드는 본문 끝 관측 절의 줄이 있어야 쓴다. 인용 라운드는 그것이 가리키는 원본
 턴의 검토를 `preserved`로 닫는다.
+쓰기 응답의 `distillation`은 키·상태와, 끝나지 않은 단계의 남은 일만 싣는다 — 출처·대상·허브는
+보낸 요청의 되울림이라 응답에서 빼고, 온전한 영수증은 작업 기록에 남는다.
 본문 저장 뒤 연결 실패는 `distillation.status="pending"`이다. 같은 요청을 재시도하면
 같은 노드에서 이어간다. 다음 worker는 `update_node(name=<기존 id>,distill={resume:<키>})`로
 저장된 본문을 재작성하지 않고 연결을 복구한다. `settle`과 `distill`은 함께 주지 않고
@@ -1012,9 +1022,10 @@ fork에 남긴다. 이번 실행에서 생긴 Scope 노드는 다음 실행의 D
 기존 Scope와 새 Scope의 조합도 비교하며,
 같은 입력 집합의 완료된 검토는 반복하지 않는다. 프로세스 종료코드 0만으로 완료하지 않고
 실제 Domain 본문·근거·허브와 입력 해시를 확인해야 한다.
-결과의 `ok`는 고른 작업을 모두 끝냈는가이며, 여러 번에 나눠 끝나는 정돈이 남으면
-`incomplete`다. `growth run`의 종료 코드는 실행 자체가 실패했을 때(돌지 못함·작업자 비정상
-종료·결과 묶음 미적용)만 0이 아니다 — 작업이 남은 실행을 운영체제 스케줄러가 실패로 남기지 않는다.
+결과의 `ok`는 고른 작업을 모두 끝냈는가다. 여러 번에 나눠 끝나는 조직 검토는 남은 구간을
+줄였으면 이 실행의 몫을 끝낸 것으로 본다 — 줄이지 못했으면 `incomplete`다. `growth run`의 종료 코드는
+실행 자체가 실패했을 때(돌지 못함·작업자 비정상 종료·결과 묶음 미적용)만 0이 아니다 —
+작업이 남은 실행을 운영체제 스케줄러가 실패로 남기지 않는다.
 다른 실행이 잠금을 쥔 것(`busy`)과 한도 거절(`limited`)도 실패가 아니라 대기다(#173). 한도
 거절은 Claude가 `rate_limit_event`로 `rejected`를 낸 것, 또는 끝나지 못한 Codex 작업자 뒤에 다시
 조회한 Codex가 소진인 것이다. 그 조회가 답하지 못하면 거절이 아니라 작업자 실패로 남는다.

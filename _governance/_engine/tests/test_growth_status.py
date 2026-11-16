@@ -251,8 +251,8 @@ class GrowthStatusTests(unittest.TestCase):
             source=write.create_node(VAULT, 'Source','source','Reusable source claim.','test',space='00_Scope/W1')
             result=distillation.create_node(VAULT, {'key':'fixed','sources':[source['id']],'hub':'W1'},
                 title='Retained',summary='retained',body='A durable claim.',drafter='test',space='00_Scope/W1')
-            receipt=result['distillation']
-            assert receipt['status']=='complete',result
+            assert result['distillation']['status']=='complete',result
+            receipt=distillation.status(VAULT,'fixed')     # 검토가 저장하는 영수증은 작업 기록의 온전한 판이다
             cursor('a',1,1,reviews=[{'through':'frozen','at':AT,'outcome':'preserved','receipts':[receipt,receipt]}])
             good=report()['preservation']
             assert good['receipt_versions']==1 and good['structure']=={'intact':1},good

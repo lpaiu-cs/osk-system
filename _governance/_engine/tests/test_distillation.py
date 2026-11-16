@@ -87,6 +87,22 @@ def _child():
                 self.assertEqual(again["distillation"]["status"], "complete")
                 self.assertEqual((VAULT.root / out["path"]).read_bytes(), before)
 
+            def test_write_response_carries_only_the_receipt_state(self):
+                # 출처·대상·허브는 보낸 요청의 되울림이다 — 응답은 끝난 단계의 상태만, 끝나지 않은
+                # 단계는 남은 일을 싣는다. 온전한 영수증은 작업 기록이 그대로 갖는다.
+                with self.fail_hub():
+                    out = self.create()
+                pending = out["distillation"]
+                self.assertNotIn("sources", pending)
+                self.assertEqual(pending["preservation"], {"status": "complete"})
+                self.assertEqual(pending["placement"]["status"], "pending")
+                self.assertIn("reason", pending["placement"])
+                again = self.create()
+                self.assertEqual(again["distillation"], {"key": self.key, "status": "complete",
+                                 "preservation": {"status": "complete"}, "placement": {"status": "complete"}})
+                full = D.status(VAULT, self.key)
+                self.assertTrue({"sources", "target", "hub"} <= full.keys() and full["placement"]["hubs"], full)
+
             def test_resume_refuses_a_replaced_hub_whatever_its_extension_case(self):
                 # The journal binds the selected hub's id. A hub replaced before resume stays
                 # pending even when its extension case differs; hub_file below returns the name
@@ -295,7 +311,7 @@ def _child():
                 out = D.update_node(VAULT, self.spec, name=existing["id"],
                                     body=self.args["body"], expect_hash=existing["new_hash"])
                 self.assertEqual(out["distillation"]["status"], "complete")
-                self.assertEqual(out["distillation"]["target"]["before_hash"], existing["new_hash"])
+                self.assertEqual(D.status(VAULT, self.key)["target"]["before_hash"], existing["new_hash"])
                 again = D.update_node(VAULT, self.spec, name=existing["id"],
                                       body=self.args["body"], expect_hash=existing["new_hash"])
                 self.assertEqual(again["distillation"]["status"], "complete")
@@ -402,7 +418,7 @@ def _child():
                 out = D.create_node(VAULT, dict(self.spec, hub="Sub"),
                                     **dict(self.args, space="00_Scope/W1/Sub"))
                 self.assertEqual(out["distillation"]["status"], "complete", out)
-                self.assertEqual([h["path"] for h in out["distillation"]["placement"]["hubs"]],
+                self.assertEqual([h["path"] for h in D.status(VAULT, self.key)["placement"]["hubs"]],
                                  ["00_Scope/W1/Sub/Sub.md", "00_Scope/W1/W1.md"])
                 # The upper entry stops linking the sub-cluster: the receipt is pending again,
                 # the body stays preserved, and reading the status repairs nothing.
@@ -423,7 +439,7 @@ def _child():
                 self.args["space"] = domain.relative_to(VAULT.root).as_posix()
                 out = self.create()
                 self.assertEqual(out["distillation"]["status"], "complete")
-                self.assertEqual(out["distillation"]["sources"][0]["ref"], self.source["id"])
+                self.assertEqual(D.status(VAULT, self.key)["sources"][0]["ref"], self.source["id"])
 
             def test_exact_raw_anchor_and_append_stability(self):
                 record = raw.append_rounds(VAULT, self.name, self.name,
@@ -494,7 +510,7 @@ def _child():
 
             def test_shared_receipt_survives_local_journal_loss(self):
                 out = self.create()
-                receipt = out["distillation"]
+                receipt = D.status(VAULT, self.key)     # 동기화되는 영수증은 작업 기록의 온전한 판이다
                 D._job_path(VAULT, self.key).unlink()
                 self.assertEqual(D.status(VAULT, self.key)["status"], "pending")
                 self.assertEqual(D.verify_receipt(VAULT, receipt)["status"], "complete")
@@ -507,7 +523,7 @@ def _child():
                 # 파일 전체에 결속한 영수증은 무관한 편집 하나에도 깨져, 이미 보존한 내용을
                 # 다시 증류하는 형식 수정이 되풀이됐다(10-04 repair-1~8).
                 out = self.create()
-                receipt = out["distillation"]
+                receipt = D.status(VAULT, self.key)
                 self.assertTrue(receipt["target"].get("paragraphs"))
                 target = VAULT.root / out["path"]
                 body = contract.parse(target).body
@@ -528,7 +544,7 @@ def _child():
                 out = D.update_node(VAULT, self.spec, name=existing["id"], old_text="- second fact",
                                     new_text="- second fact\n- distilled third fact")
                 self.assertEqual(out["distillation"]["status"], "complete")
-                self.assertEqual(len(out["distillation"]["target"]["paragraphs"]), 1)
+                self.assertEqual(len(D.status(VAULT, self.key)["target"]["paragraphs"]), 1)
                 write.update_node(VAULT, existing["id"], old_text="- first fact", new_text="- first fact, corrected")
                 self.assertEqual(D.status(VAULT, self.key)["status"], "complete")
                 write.update_node(VAULT, existing["id"], old_text="distilled third fact",
@@ -540,17 +556,18 @@ def _child():
                 out = D.create_node(VAULT, self.spec, **dict(
                     self.args, body="## Retry only idempotent requests\n\nVerified on Linux."))
                 self.assertEqual(out["distillation"]["status"], "complete")
-                self.assertEqual(len(out["distillation"]["target"]["paragraphs"]), 2)
+                full = D.status(VAULT, self.key)
+                self.assertEqual(len(full["target"]["paragraphs"]), 2)
                 write.update_node(VAULT, out["id"], old_text="## Retry only idempotent requests",
                                   new_text="### Retry only idempotent requests")
                 self.assertEqual(D.status(VAULT, self.key)["status"], "complete")  # 단계만 바꿨다
                 # 이 수정 전에 만든 영수증은 문단만 결속했고, 그대로 맞는다
-                earlier = dict(out["distillation"], target=dict(
-                    out["distillation"]["target"], paragraphs=[core.sha256_bytes(b"Verified on Linux.")]))
+                earlier = dict(full, target=dict(
+                    full["target"], paragraphs=[core.sha256_bytes(b"Verified on Linux.")]))
                 self.assertEqual(D.verify_receipt(VAULT, earlier)["status"], "complete")
                 write.update_node(VAULT, out["id"], old_text="### Retry only idempotent requests", new_text="")
                 self.assertEqual(D.status(VAULT, self.key)["status"], "pending")
-                self.assertEqual(D.verify_receipt(VAULT, out["distillation"])["status"], "pending")
+                self.assertEqual(D.verify_receipt(VAULT, full)["status"], "pending")
 
             def test_journal_saved_before_heading_units_replays_its_binding(self):
                 # 업그레이드 전에 저장하고 쓰기 전에 끊긴 저널은 문단만 결속했다(#141 리뷰 P2).
@@ -571,11 +588,11 @@ def _child():
                 again = D.create_node(VAULT, self.spec, **args)
                 self.assertEqual(again["distillation"]["status"], "complete")
                 self.assertEqual(again["id"], job["target"]["id"])
-                self.assertEqual(again["distillation"]["target"]["paragraphs"], job["target"]["paragraphs"])
+                self.assertEqual(D.status(VAULT, self.key)["target"]["paragraphs"], job["target"]["paragraphs"])
 
             def test_legacy_whole_file_receipt_keeps_its_binding(self):
                 out = self.create()
-                legacy = dict(out["distillation"])
+                legacy = D.status(VAULT, self.key)
                 legacy["target"] = {k: v for k, v in legacy["target"].items() if k != "paragraphs"}
                 target = VAULT.root / out["path"]
                 body = contract.parse(target).body
@@ -646,6 +663,15 @@ def _child():
                                   remove_edges={"derived-from": alias})
                 self.assertIsNone(D._load(VAULT, self.key))
                 self.assertEqual(core.sha256_file(VAULT.root / existing["path"]), existing["new_hash"])
+
+            def test_malformed_evidence_line_is_refused(self):
+                # The distill path passes the same write check as a plain write (#321).
+                self.args["body"] += "\n\n# 관측\n\n- 2026-11-09 · 사용자 대화 · 지지 — not a coordinate"
+                with self.assertRaises(write.WriteError) as caught:
+                    self.create()
+                self.assertTrue(any(v.startswith("형식이 다른 관측 줄") for v in caught.exception.violations),
+                                caught.exception.violations)
+                self.assertFalse((VAULT.root / "00_Scope/W1" / (self.args["title"] + ".md")).exists())
 
             def test_required_provenance_cannot_be_removed(self):
                 existing = write.create_node(VAULT, self.args["title"], "old", "old retained knowledge",

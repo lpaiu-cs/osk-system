@@ -28,6 +28,13 @@ def node(title, scope='W1', body=None):
     write.update_node(VAULT, scope, body=old.rstrip() + chr(10) + '- [[' + title + ']]', expect_hash=core.sha256_file(hub))
     return next(s for c in growth_plan.plan(VAULT, 20)['candidates'] for s in c['sources']
                 if s['name'] == title)
+def long_hub(scope='W1'):
+    # 정리 검토는 신호가 있는 scope만 싣는다 — 6,000자를 넘는 허브는 구간 둘의 작업이 된다.
+    hub = VAULT.root / '00_Scope' / scope / (scope + '.md')
+    pad = (chr(10)*2).join('Section ' + str(i) + ' marker. ' + ('Entry overview ' + str(i) + ' ') * 200
+                           for i in range(2))
+    write.update_node(VAULT, scope, body=contract.parse(hub).body.rstrip() + chr(10)*2 + pad + chr(10)*2,
+                      expect_hash=core.sha256_file(hub))
 def legacy(sid, transcript, scope='W1'):
     # Rewrite a fresh cursor as the full-capture engine (<= v4.1) left it: rounds stored
     # in _raw/. The daily worker reviews only these; original turns stay with their conversation.

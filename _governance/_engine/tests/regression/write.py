@@ -590,6 +590,10 @@ def test_edge_target_normalization():
     r3 = _w(write.update_node, VAULT, "regr-norm", remove_edges={"derived-from": tid})
     check("id 제거가 유효하다",
           r3["ok"] and tid not in (r3["edges"]["derived-from"] or []), r3)
+    # 연결을 건드리지 않은 호출에 연결 목록을 되울리면 응답이 대화에 쌓인다
+    r4 = _w(write.update_node, VAULT, "regr-norm", old_text="본문", new_text="본문 고침")
+    check("앵커 치환만 한 응답에는 연결 목록이 없다", r4["ok"] and "edges" not in r4, r4)
+    check("연결을 고친 응답에는 연결 목록이 있다", "edges" in r1 and "edges" in r3, (r1, r3))
     for nm in ("regr-norm", "regr-norm-t"):
         (ROOT / f"00_Scope/W1/{nm}.md").unlink(missing_ok=True)
 
@@ -615,6 +619,49 @@ def test_update_no_change():
     r3 = _w(write.update_node, VAULT, "regr-noop", summary="달라짐")
     check("실제 변경은 통과", r3["ok"] and not r3.get("no_change"), r3)
     p_.unlink(missing_ok=True)
+
+
+def test_evidence_line_format_on_write():
+    """쓰기는 이번에 더하거나 고친 형식 위반 관측 줄을 거부한다(#321). 이미 있던 위반은 막지 않고
+    응답의 `malformed_evidence`로 알린다(설계 D10). 좌표 미해석은 지금처럼 막지 않는다."""
+    ok_line = "- 2026-11-09 · `https://example.com/a` · 지지 — 바른 줄"
+    bads = ["- 2026-11-09 · 사용자 대화 · 지지 — 좌표가 인라인 코드가 아니다",
+            "- 2026-11-07 · PR #12 · 반례 — 좌표가 PR 번호 맨글이다",
+            "- 2026-11-04 · `<기록>#1` · 결정 — 입장이 셋 밖이다"]
+    p = ROOT / "00_Scope/W1/regr-evfmt.md"
+    try:
+        for i, bad in enumerate(bads):
+            r = _w(write.create_node, VAULT, f"regr-evfmt-c{i}", "형식", f"본문\n\n# 관측\n\n{bad}\n",
+                   "fable-5", space="00_Scope/W1")
+            check(f"만들기: 형식이 다른 관측 줄을 거부한다 ({i})",
+                  not r["ok"] and f"형식이 다른 관측 줄: {bad[:60]}" in r["violations"]
+                  and any("cite_round" in v for v in r["violations"]), r)
+            check(f"만들기 거부는 파일을 만들지 않는다 ({i})", not (ROOT / f"00_Scope/W1/regr-evfmt-c{i}.md").exists())
+        r = _w(write.create_node, VAULT, "regr-evfmt", "형식", f"본문\n\n# 관측\n\n{ok_line}\n",
+               "fable-5", space="00_Scope/W1")
+        check("만들기: 바른 줄은 받고 malformed_evidence가 없다", r["ok"] and "malformed_evidence" not in r, r)
+        before = p.read_bytes()
+        r = _w(write.update_node, VAULT, "regr-evfmt", old_text=ok_line, new_text=f"{ok_line}\n{bads[0]}")
+        check("고치기: 앵커 치환으로 더한 틀린 줄을 거부한다",
+              not r["ok"] and any(v.startswith("형식이 다른 관측 줄") for v in r["violations"]), r)
+        body = contract.parse(p).body
+        r = _w(write.update_node, VAULT, "regr-evfmt", body=body.replace(ok_line, bads[2]),
+               expect_hash=core.sha256_file(p))
+        check("고치기: 전문으로 바꾼 틀린 줄을 거부한다",
+              not r["ok"] and any(v.startswith("형식이 다른 관측 줄") for v in r["violations"]), r)
+        check("고치기 거부는 파일을 건드리지 않는다", p.read_bytes() == before)
+        p.write_bytes(before.replace(ok_line.encode(), f"{ok_line}\n{bads[1]}".encode()))   # 표면 밖의 위반
+        r = _w(write.update_node, VAULT, "regr-evfmt", old_text="본문", new_text="고친 본문")
+        check("이미 있던 틀린 줄은 무관한 수정을 막지 않고 응답에 실린다",
+              r["ok"] and r.get("malformed_evidence") == [bads[1]], r)
+        r = _w(write.update_node, VAULT, "regr-evfmt", old_text=bads[1], new_text=f"{bads[1]}\n{bads[1]}")
+        check("이미 있던 틀린 줄과 같은 줄을 하나 더 더하면 거부한다",
+              not r["ok"] and r["violations"].count(f"형식이 다른 관측 줄: {bads[1][:60]}") == 1, r)
+        fixed ="- 2026-11-07 · `https://example.com/pr/12` · 반례 — 고친 줄"
+        r = _w(write.update_node, VAULT, "regr-evfmt", old_text=bads[1], new_text=fixed)
+        check("틀린 줄을 바르게 고치면 받고 목록이 빈다", r["ok"] and "malformed_evidence" not in r, r)
+    finally:
+        p.unlink(missing_ok=True)
 
 
 # ── 14q. bound_scope는 실제 결속했을 때만 (8차 잔여 2) ──────────────────

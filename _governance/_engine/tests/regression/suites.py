@@ -31,7 +31,10 @@ def _suite(label, name, timeout=180, *, required=False):
 
 
 def test_sync_network_subprocess():
-    _suite("동기화 네트워크·적용 잠금·고정 SHA의 프로세스 경계", "test_sync_network.py")
+    # Windows 개발 기기에서 혼자 돌아도 175초가 걸린다 — 180초 제한에서는 다른 일이 함께 돌면 넘는다
+    # (2026-11-16에 전체 회귀에서 두 번 넘었고, 따로 돌리면 통과했다).
+    _suite("동기화 네트워크·적용 잠금·고정 SHA의 프로세스 경계", "test_sync_network.py",
+           timeout=300 if os.name == "nt" else 180)
 
 
 def test_upgrade_matrix_subprocess():
@@ -64,7 +67,7 @@ def test_vault_subprocess():
     _suite("저장소 값: 한 프로세스에서 연 임시 저장소 둘이 섞이지 않는다", "test_vault.py")
 
 
-GROWTH_SUITES = ("test_distillation.py", "test_integration.py", "test_codex_forks.py", "test_integration_recovery.py", "test_growth.py", "test_growth_daily.py", "test_growth_status.py", "test_response_growth.py", "test_retrieval.py", "test_organization.py", "test_hidden_raw.py", "test_raw_view.py", "test_space_layout.py", "test_update_review.py", "test_update_notice.py", "test_harness.py", "test_transcript_fixtures.py", "test_setup.py", "test_services.py")
+GROWTH_SUITES = ("test_distillation.py", "test_integration.py", "test_codex_forks.py", "test_integration_recovery.py", "test_growth.py", "test_growth_daily.py", "test_growth_status.py", "test_response_growth.py", "test_retrieval.py", "test_organization.py", "test_hidden_raw.py", "test_raw_view.py", "test_space_layout.py", "test_update_review.py", "test_update_notice.py", "test_harness.py", "test_transcript_fixtures.py", "test_recall_shadow.py", "test_task_baseline.py", "test_setup.py", "test_services.py")
 
 
 def test_growth_loop_subprocesses():

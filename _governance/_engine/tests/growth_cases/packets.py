@@ -40,6 +40,7 @@ class PacketCases:
         self.check_case("""
             from osk import integration, conversation_capture, conversation_cite, conversation_review, conversation_state
             node('A')
+            long_hub()
             for sid in ('first', 'second'):
                 path = VAULT.root / (sid + '.jsonl')
                 rows = [
@@ -218,12 +219,13 @@ class PacketCases:
     def test_organization_packet_without_snapshot_refuses_a_unit_changed_after_reading(self):
         self.check_case("""
             node('A')
+            long_hub()
             assert 'Use osk MCP tools only' in growth.prompt(VAULT, growth_plan.plan(VAULT, 3))
             assert 'growth checkpoint --file' not in growth.prompt(VAULT, growth_plan.plan(VAULT, 3))
             # The worker has no CLI snapshot. A unit it read that changes before the
-            # runner applies the packet no longer matches its content key.
-            change = ("from osk import write, cluster_gate, node_checks, node_moves, nodefile; n=VAULT.root/'00_Scope/W1/A.md'; "
-                      "assert write.update_node(VAULT, 'A',body='Changed after the worker read it.',expect_hash=core.sha256_file(n))['ok']")
+            # runner applies the packet no longer matches its content key. 구간은 긴 허브의 것이다.
+            change = ("from osk import write; assert write.update_node(VAULT, 'W1',old_text='Section 1 marker.',"
+                      "new_text='Section 1 corrected.')['ok']")
             stale = growth.run(VAULT, [sys.executable,'-c',packet_worker(change)],limit=3)
             assert any('changed review unit' in e for e in stale['final_reviews']['errors']), stale
             assert {s['status'] for s in stale['organization_outcomes'].values()} != {'complete'}, stale
@@ -236,6 +238,7 @@ class PacketCases:
         self.check_case("""
             node('A')
             node('B')
+            long_hub()
             # Another session swaps A's evidence after the plan. Unit keys cover bodies only,
             # so the planned snapshot is what tells the reviewed state from the current one.
             change = "from osk import write, cluster_gate, node_checks, node_moves, nodefile; assert write.update_node(VAULT, 'A',add_edges={'derived-from':'B'})['ok']"
@@ -251,37 +254,38 @@ class PacketCases:
         self.check_case("""
             node('A')
             node('B')
-            # The worker reads A, corrects B and checkpoints A as deferred. Its own write moves
-            # the scope past the planned snapshot; A's unchanged unit is still its progress and
-            # B goes to another reviewer (#136 M4: the packet was refused and nothing was kept).
-            change = ("from osk import write, cluster_gate, node_checks, node_moves, nodefile; n=VAULT.root/'00_Scope/W1/B.md'; "
-                      "assert write.update_node(VAULT, 'B',body='Corrected by the worker.',expect_hash=core.sha256_file(n))['ok']")
-            result = growth.run(VAULT, [sys.executable,'-c',packet_worker(change, org='deferred', read="u['name']=='A'")],
-                                limit=3)
-            # B is also a Domain candidate's source, so that candidate is refused; only the
-            # organization checkpoint is under test here.
+            long_hub()
+            # The worker reads the hub's first range, corrects its second and checkpoints as deferred.
+            # Its own write moves the scope past the planned snapshot; the unchanged range is still its
+            # progress and the corrected one goes to another reviewer (#136 M4: the packet was refused
+            # and nothing was kept).
+            change = ("from osk import write; assert write.update_node(VAULT, 'W1',old_text='Section 1 marker.',"
+                      "new_text='Section 1 corrected.')['ok']")
+            worker = packet_worker(change, org='deferred', read="u['view'].startswith('0:')")
+            result = growth.run(VAULT, [sys.executable,'-c',worker], limit=3)
             errors = result['final_reviews']['errors']
             assert not [e for e in errors if e.startswith('Organization')], errors
             assert {s['status'] for s in result['organization_outcomes'].values()} != {'complete'}, result
             from osk import organization
             nxt = organization.plan(VAULT, 'W1')
-            assert not {u['name'] for u in nxt.get('review_units', [])} & {'A', 'B'}, nxt
+            assert not nxt.get('review_units'), nxt
             assert nxt.get('handoff') or nxt.get('coverage', {}).get('handoff'), nxt
         """)
         self.check_case("""
             node('A')
             node('B')
-            # The worker also lists B, which it then corrected. B's judgment was of the old body,
-            # so only A is kept; B is named back and goes to another reviewer.
-            change = ("from osk import write, cluster_gate, node_checks, node_moves, nodefile; n=VAULT.root/'00_Scope/W1/B.md'; "
-                      "assert write.update_node(VAULT, 'B',body='Corrected by the worker.',expect_hash=core.sha256_file(n))['ok']")
+            long_hub()
+            # The worker also lists the range it then corrected. That judgment was of the old body,
+            # so only the other range is kept; the corrected one is named back and handed on.
+            change = ("from osk import write; assert write.update_node(VAULT, 'W1',old_text='Section 1 marker.',"
+                      "new_text='Section 1 corrected.')['ok']")
             result = growth.run(VAULT, [sys.executable,'-c',packet_worker(change, org='deferred')], limit=3)
             errors = result['final_reviews']['errors']
             assert not [e for e in errors if e.startswith('Organization')], errors
             assert any('changed after reading' in n for n in result['final_reviews']['notes']), result
             from osk import organization
             nxt = organization.plan(VAULT, 'W1')
-            assert not {u['name'] for u in nxt.get('review_units', [])} & {'A', 'B'}, nxt
+            assert not nxt.get('review_units'), nxt
         """)
 
     def test_final_packet_applies_only_observed_domain_preservation(self):
@@ -299,12 +303,8 @@ class PacketCases:
             assert result['ok'], result
             assert set(result['domain_outcomes'].values()) == {'preserved'}, result
             assert result['final_reviews']['state'] == 'applied', result
-            # Newly created Domain knowledge is pending its own organization
-            # review; the Scope review cannot acknowledge it implicitly.
-            pending = growth_plan.plan(VAULT)['organization_jobs']
-            assert [j['scope'] for j in pending] == ['00_Domain/Principles'], pending
-            reviewed = growth.run(VAULT, [sys.executable,'-c',packet_worker()],limit=1)
-            assert reviewed['ok'], reviewed
+            # 새 Domain 지식도 짧고 허브에 걸렸으면 정리 검토의 신호가 없다.
+            assert not growth_plan.plan(VAULT)['organization_jobs']
             assert growth.run(VAULT, ['unused-command'])['state'] == 'skipped'
         """)
 
@@ -347,6 +347,7 @@ class PacketCases:
             # reason, and the other decisions in the packet still apply (헌법 1조 3항).
             self.check_case(f"""
                 node('A')
+                long_hub()
                 result = growth.run(VAULT, [sys.executable,'-c',packet_worker({change!r})])
                 assert not result['ok'] and result['final_reviews']['state'] == 'incomplete', result
                 assert result['final_reviews']['errors'], result
@@ -478,6 +479,7 @@ class PacketCases:
         self.check_case("""
             node('A')
             node('B','W2')
+            long_hub()
             change = "growth_reviews.review(VAULT, **q['osk_reviews']['domain'][0],manifest=p['rid'])"
             result = growth.run(VAULT, [sys.executable,'-c',packet_worker(change)],limit=3)
             assert result['ok'], result

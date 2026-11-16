@@ -281,6 +281,10 @@ async def transport_checks():
             # The shared registration boundary also rejects mistaken read options.
             refused = await session.call_tool('read_node', {'name': full['name'], 'veiw': 'outline'})
             assert refused.isError and 'veiw' in str(refused.content), refused
+            # 에이전트가 거듭 넣는 두 인자는 받는다(#260) — id는 name의 다른 이름, session은 받아서 버린다.
+            assert await call('read_node', {'id': full['id']}) == full
+            assert await call('read_node', {'name': full['name'], 'session': 'any-project'}) == full
+            assert await call('read_node', {'id': full['id'], 'session': 'any-project', 'view': 'outline'})
             valid = await call('update_node', {'name': full['name'],
                 'old_text': 'Revised instance', 'new_text': 'Stored edit'})
             assert valid['ok']

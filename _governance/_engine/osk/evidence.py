@@ -23,12 +23,28 @@ URL = re.compile(r"^https?://\S+$")
 NODE_LINE = "노드를 가리키는 근거 줄"
 
 
-def lines(text: str) -> list[re.Match]:
-    """노드 끝 관측 절에서 형식이 맞는 줄(시행령 §1 5항). 형식이 다른 줄은 검증기가 보고한다."""
+def scan(text: str) -> list[tuple[str, re.Match | None]]:
+    """노드 끝 관측 절의 빈 줄이 아닌 줄마다 (줄, `LINE`의 매치 또는 None). 빈 줄 밖의 모든 줄이
+    근거 줄이다 — 하위 목록·문단·다른 표지도 형식 위반이다(시행령 §1 5항)."""
     span = rechecks.evidence_span(text)
     if span is None:
         return []
-    return [m for line in text[span[0]:].split("\n")[1:] if (m := LINE.match(line.rstrip("\r")))]
+    out = []
+    for line in text[span[0]:].split("\n")[1:]:
+        line = line.rstrip("\r")
+        if line.strip():
+            out.append((line, LINE.match(line)))
+    return out
+
+
+def lines(text: str) -> list[re.Match]:
+    """노드 끝 관측 절에서 형식이 맞는 줄(시행령 §1 5항)."""
+    return [m for _, m in scan(text) if m]
+
+
+def malformed(text: str) -> list[str]:
+    """노드 끝 관측 절에서 형식이 다른 줄."""
+    return [line for line, m in scan(text) if m is None]
 
 
 def coordinates(text: str) -> list[str]:
