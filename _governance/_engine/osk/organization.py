@@ -250,11 +250,17 @@ def _unresolved(current: dict, intentional: list) -> list:
 
 
 def _complete(scope: str, state: dict, current: dict) -> bool:
-    """신호가 없으면 끝났다 — 배선 문제, 옮기다 만 것, 긴 노드의 남은 구간, 미해결 참조. 마지막 검토의
-    snapshot과 견주지 않는다. 그러면 신호와 무관한 쓰기도 scope를 다시 열었다."""
+    """신호가 없으면 끝났다 — 배선 문제, 옮기다 만 것, 긴 노드의 남은 구간, 미해결 참조, 본문이 빈 노드. 마지막
+    검토의 snapshot과 견주지 않는다. 그러면 신호와 무관한 쓰기도 scope를 다시 열었다."""
     intentional = state["reviews"].get(scope, {}).get("intentional", [])
     return not (current["issues"] or current["pending_moves"] or _remaining(current, state)
-                or _unresolved(current, intentional))
+                or _unresolved(current, intentional) or _bodiless(current))
+
+
+def _bodiless(current: dict) -> bool:
+    """본문이 빈 지식 노드가 있다. 쓰기 표면은 빈 본문을 받으므로, 실수로 비운 지식을 잡는 자리가 여기뿐이다 —
+    구간이 없어 읽을 것도 없으니 신호로 두지 않으면 scope가 끝난 것으로 남는다."""
+    return any(not n["hub"] and not n["has_body"] for n in current["nodes"])
 
 
 def _cooling(state: dict, scope: str) -> set:
@@ -304,7 +310,7 @@ def pending(vault: Vault, scopes=None, limit: int = 3, *, idx=None, record: bool
         current["coverage"] = {"remaining": len(remaining), "total": len(current.pop("units"))}
         if len(offered) < len(remaining):
             current["coverage"]["handoff"] = len(remaining) - len(offered)
-        current["reason"] = "hub wiring, references, unfinished moves or long-node ranges need organization review"
+        current["reason"] = "hub wiring, references, unfinished moves, empty bodies or long-node ranges need organization review"
         current["review_command"] = "python -m osk.cli organization review (UTF-8 JSON stdin)"
         if unfinished or missing_ids:
             current["key"] = prior["key"]
@@ -400,7 +406,7 @@ def review(vault: Vault, key: str, scope: str, outcome: str, reason: str, after:
             old_ids = {n["id"] for n in selected["nodes"]}
             if not old_ids <= {n["id"] for n in current["nodes"]}:
                 raise ValueError("selected knowledge disappeared or crossed Scope; pending")
-            if any(not n["hub"] and not n["has_body"] for n in current["nodes"]):
+            if _bodiless(current):
                 raise ValueError("knowledge body is empty; pending")
             available = {_ref_key(i) for i in current["references"]}
             if any(_ref_key(i) not in available for i in intentional):
@@ -632,7 +638,7 @@ def apply_binding_decisions(vault: Vault, decisions: list | None, state: dict | 
     seen = state.setdefault("bindings_seen", {})
     applied = []
     for d in decisions:
-        project, action = d["project"].strip(), d["action"]
+        project, action = routing.canonical_session(vault, d["project"].strip()), d["action"]   # 별칭은 정본 키로
         current = routing.bindings(vault, project)
         if action == "unbind" and d["scope"].strip() in current["scopes"]:
             routing.unbind_session(vault, project, d["scope"].strip(), d["reason"].strip())

@@ -84,6 +84,13 @@ class OrganizationTests(unittest.TestCase):
             # 긴 노드의 구간을 다 판정하면 끝난다.
             finish_review('W1', 'Every range of the long node holds')
             assert organization.plan(VAULT, 'W1')['status'] == 'complete'
+            # 본문이 비워진 지식 노드는 신호다 — 쓰기 표면이 빈 본문을 받아, 잡는 자리가 여기뿐이다.
+            blank = node('Blank')
+            assert organization.plan(VAULT, 'W1')['status'] == 'complete'
+            emptied = write.update_node(VAULT, 'Blank', body='', expect_hash=blank['new_hash'])
+            assert organization.plan(VAULT, 'W1').get('status') != 'complete', 'an emptied body must reopen the scope'
+            write.update_node(VAULT, 'Blank', body='Restored evidence', expect_hash=emptied['new_hash'])
+            assert organization.plan(VAULT, 'W1')['status'] == 'complete'
             # 신호와 무관한 쓰기는 다시 열지 않는다.
             write.update_node(VAULT, 'A', old_text='Reusable evidence', new_text='Revised evidence')
             node('C')
