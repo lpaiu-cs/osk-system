@@ -29,6 +29,10 @@ _SOFT_BREAK = re.compile(r"\n|[.!?。](?=\s)")
 
 def _units(node) -> list[dict]:
     """Stable paragraph-bounded excerpts; appending does not invalidate earlier pages."""
+    # 구간은 긴 노드(organization_advice가 붙는 노드)에서만 만든다. 짧은 본문이 맞는지는 보존할 때의
+    # 판단과 재검토가 맡는다 — 모든 본문을 다시 읽게 하면 쓰기마다 대상이 다시 생겨 끝나지 않았다.
+    if not node_checks.size_feedback(node.path, node.body):
+        return []
     body, result, start, occurrences = node.body, [], 0, {}
     breaks = [m.end() for m in re.finditer(r"\n\n+|\n(?=#{1,6} )", body)]
     while start < len(body):
@@ -246,11 +250,17 @@ def _unresolved(current: dict, intentional: list) -> list:
 
 
 def _complete(scope: str, state: dict, current: dict) -> bool:
-    row = state["reviews"].get(scope)
-    return bool(row and row.get("outcome") == "complete" and
-                row.get("after") == current["snapshot"] and not current["issues"] and not current["pending_moves"] and
-                not _remaining(current, state) and
-                not _unresolved(current, row.get("intentional", [])))
+    """신호가 없으면 끝났다 — 배선 문제, 옮기다 만 것, 긴 노드의 남은 구간, 미해결 참조, 본문이 빈 노드. 마지막
+    검토의 snapshot과 견주지 않는다. 그러면 신호와 무관한 쓰기도 scope를 다시 열었다."""
+    intentional = state["reviews"].get(scope, {}).get("intentional", [])
+    return not (current["issues"] or current["pending_moves"] or _remaining(current, state)
+                or _unresolved(current, intentional) or _bodiless(current))
+
+
+def _bodiless(current: dict) -> bool:
+    """본문이 빈 지식 노드가 있다. 쓰기 표면은 빈 본문을 받으므로, 실수로 비운 지식을 잡는 자리가 여기뿐이다 —
+    구간이 없어 읽을 것도 없으니 신호로 두지 않으면 scope가 끝난 것으로 남는다."""
+    return any(not n["hub"] and not n["has_body"] for n in current["nodes"])
 
 
 def _cooling(state: dict, scope: str) -> set:
@@ -286,10 +296,6 @@ def pending(vault: Vault, scopes=None, limit: int = 3, *, idx=None, record: bool
         missing_ids = sorted({n["id"] for n in prior["nodes"]} - {n["id"] for n in current["nodes"]}) if prior else []
         if missing_ids:
             current["missing_ids"] = missing_ids
-        if (not prior and all(n["hub"] for n in current["nodes"]) and not current["references"]
-                and not current["issues"] and not current["pending_moves"]
-                and not any(n.get("organization_advice") for n in current["nodes"])):
-            continue
         if _complete(scope, state, current):
             continue
         remaining = _remaining(current, state)
@@ -304,7 +310,7 @@ def pending(vault: Vault, scopes=None, limit: int = 3, *, idx=None, record: bool
         current["coverage"] = {"remaining": len(remaining), "total": len(current.pop("units"))}
         if len(offered) < len(remaining):
             current["coverage"]["handoff"] = len(remaining) - len(offered)
-        current["reason"] = "references or changed knowledge need organization review"
+        current["reason"] = "hub wiring, references, unfinished moves, empty bodies or long-node ranges need organization review"
         current["review_command"] = "python -m osk.cli organization review (UTF-8 JSON stdin)"
         if unfinished or missing_ids:
             current["key"] = prior["key"]
@@ -400,7 +406,7 @@ def review(vault: Vault, key: str, scope: str, outcome: str, reason: str, after:
             old_ids = {n["id"] for n in selected["nodes"]}
             if not old_ids <= {n["id"] for n in current["nodes"]}:
                 raise ValueError("selected knowledge disappeared or crossed Scope; pending")
-            if any(not n["hub"] and not n["has_body"] for n in current["nodes"]):
+            if _bodiless(current):
                 raise ValueError("knowledge body is empty; pending")
             available = {_ref_key(i) for i in current["references"]}
             if any(_ref_key(i) not in available for i in intentional):
@@ -439,6 +445,9 @@ def review(vault: Vault, key: str, scope: str, outcome: str, reason: str, after:
 
 
 def status(vault: Vault, job: dict, idx=None) -> dict:
+    # 이 key의 검토 행을 요구한다 — 그래야 작업자가 쓰기로 신호를 다 없앤 실행에서도 결과 묶음(결속 판정
+    # 포함)이 적용된다(`growth_reviews.needs_review`). 다른 경로로 신호가 사라진 작업은 그 실행에서만
+    # pending이고, 신호가 없으니 `pending()`이 다시 고르지 않는다.
     current = snapshot(vault, job["scope"], idx)
     state = load_state(vault)
     row = state["reviews"].get(job["scope"], {})
@@ -464,7 +473,7 @@ def guidance() -> str:
             "이번 작업의 판정 대상은 review_units의 최대 3개 구간(각 4000자 이하)이다. read_node(name=id, view=view)로 읽는다. "
             "반환된 view_hash가 그 구간의 expect_view_hash와 다르면 새 plan에서 범위를 확인한 뒤 읽는다"
             "(unit 속 sha256은 구간 내용 키라 비교 대상이 아니다). "
-            "이는 군집 전체의 검토가 아니다. 조건이나 출처가 구간 밖이면 필요한 근거 구간만 표적 조회한다. "
+            "구간은 긴 노드(organization_advice)의 것이며 군집 전체의 검토가 아니다. 조건이나 출처가 구간 밖이면 필요한 근거 구간만 표적 조회한다. "
             "이전 deferred의 질문과 필요한 근거부터 이어서 확인한다. 예산 안에 판단하지 못하면 checked에 넣지 말고 "
             "필요한 절과 질문을 deferred에 남긴다. 긴 본문 전문을 반복해서 읽지 않는다. "
             "previous_deferral.snapshot_changed가 참이면 이전 판단을 현재 완료로 간주하지 말고 대상 ID의 현행 내용을 확인한다. "
@@ -482,6 +491,7 @@ def guidance() -> str:
             "미해석 PE는 실제 근거로 수리하고, 탐색 질문 Link는 개별 사유로 유지할 수 있다. "
             "분화 시 실제 하위 군집·허브·구성원을 만들고 hub_links 양쪽을 반영한다. "
             "중단 시 같은 ID의 현재 위치부터 확인해 남은 작업을 이어라. "
+            "missing_ids가 실린 작업은 완료를 받지 않는다 — 판정한 구간은 deferred로 낸다. "
             "완료 전에 organization plan --scope <scope> --preview로 최신 snapshot을 읽고, "
             "검토한 각 구간의 주장·적용 조건·분화 또는 유지 이유를 checked=[{unit,reason}]에 남긴다. "
             "checked는 선택한 구간의 현행 본문에 결속된다. 계획 뒤 고치거나 만든 노드의 구간은 review 때 "
@@ -504,7 +514,7 @@ def prompt(vault: Vault, jobs: list[dict], *, inventory: bool = True) -> str:
 # 훅에 싣는 몫 — 착수와 완료의 조건, 판정이 결속되는 값. 나머지 규칙과 군집·노드 목록은
 # 작업 직전에 `plan`이 준다(2026-09-27 독립 검토: 규칙은 문서가 아니라 쓰는 순간에).
 HOOK_GUIDANCE = (
-    "저장 완료와 참조·조직 완료는 다르다. 이번 대상은 아래 review_units의 구간뿐이다(군집 전체가 아니다). "
+    "저장 완료와 참조·조직 완료는 다르다. 이번 대상은 아래 review_units의 구간뿐이다(긴 노드의 구간이며 군집 전체가 아니다). "
     "`read_node(name=id, view=view)`로 읽고 주장·적용 조건이 현행과 맞는지 판정한다. 돌려받은 view_hash가 "
     "그 구간의 expect_view_hash와 다르면(unit 속 sha256은 구간 내용 키라 비교하지 않는다) 선택 뒤 본문이 "
     "바뀐 것이니 새 plan으로 범위를 다시 확인한 뒤 읽는다. "
@@ -628,7 +638,7 @@ def apply_binding_decisions(vault: Vault, decisions: list | None, state: dict | 
     seen = state.setdefault("bindings_seen", {})
     applied = []
     for d in decisions:
-        project, action = d["project"].strip(), d["action"]
+        project, action = routing.canonical_session(vault, d["project"].strip()), d["action"]   # 별칭은 정본 키로
         current = routing.bindings(vault, project)
         if action == "unbind" and d["scope"].strip() in current["scopes"]:
             routing.unbind_session(vault, project, d["scope"].strip(), d["reason"].strip())

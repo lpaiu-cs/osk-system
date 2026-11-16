@@ -304,9 +304,9 @@ sh osk-cli.sh --help       # vault 루트의 런처 — 같은 것(Windows: .\os
 | `growth status` | 현재 대기량과 기간별 성장 근거를 구분하는 읽기 전용 보고서 — [분모·판독 한계](growth-status.md) |
 | `fork doctor` | 구독 fork 준비 점검 — 시작/입력 훅과 같은 판정과 근거, 상태·설정을 쓰지 않는다 (아래) |
 | `doctor` | 이 기기의 하네스 연결과 vault 이행 점검 — MCP·훅 등록, 훅 실행 기록, 문맥 전달, 판본, fork 판정, 남은 일괄 이행. 읽기만 한다 (아래). `--vault`는 vault 내용 점검 — 남은 이행, 기록 충돌, 검증기 위반, 정기 검토의 잔재(재검토 후보·포착 막힘·scope 복구·정돈·보호영역 대기), 대화 검토 적체(예상 토큰과 `growth run --daily --backlog`). `--migrate`는 남은 이행을 옮긴다 — 첫 실행은 계획과 종료코드 2, 1시간 안의 확인된 같은 실행이 적용하고 이행 기록을 `_ledger/migration/`에 남긴다 |
-| `organization plan` / `organization review` | 선택한 Scope·기존 Domain의 구간별 본문 검토와 참조·허브·분화 완료 확인 |
+| `organization plan` / `organization review` | 선택한 Scope·기존 Domain의 긴 노드 구간 검토와 참조·허브·분화 완료 확인 |
 | `sm show` / `sm write` | scope 기억 — SessionStart 훅 경로(아래) |
-| `routing show` / `routing bind` / `routing unbind` / `routing primary` | 프로젝트 결속 — 결속 집합·주된 scope 조회(생략하면 검토 대상), 집합 증감, 주된 scope 지정(**사용자 전속** — 단말 확인을 거치며, 검토의 결정 묶음은 실행기가 적용) (Mechanism §6-2 6항) |
+| `routing show` / `routing bind` / `routing unbind` / `routing primary` / `routing keep` | 프로젝트 결속 — 결속 집합·주된 scope 조회(생략하면 검토 대상), 집합 증감, 주된 scope 지정(**사용자 전속** — 단말 확인을 거치며, 검토의 결정 묶음은 실행기가 적용), 결속 검토의 유지 판정(조직 검토 작업이 없는 프로젝트) (Mechanism §6-2 6항) |
 | `evidence migrate` | 비노드 `derived-from`을 노드 끝 관측 절의 `지지` 줄로 옮기는 이행 계획(v5.4 — 전수는 `.osk/evidence-section-plan.md`); `--apply`는 확인 없이 옮기고 이행 기록을 `_ledger/migration/`에 남긴다 (헌법 제8조 5·6항·제14조 8·9항 · Mechanism §5) |
 | `roots show` / `roots declare` / `roots retire` / `roots mount` / `roots unmount` | 외부 루트 — 별칭마다 선언·이 기기의 위치 조회, 별칭의 선언·해제(대장, 모든 기기), 이 기기의 위치 지정·삭제(`.osk/roots.json`). 조회 밖은 **사용자 전속** — 단말 확인을 거친다 (시행령 §2 8항 · Mechanism §1 6항) |
 | `rechecks` | 근거 재검토 후보 전체 — 근거가 바뀐 참조 노드 (시행령 §7 2항, 아래) |
@@ -514,7 +514,7 @@ Stop의 한 작업자는 원 대화 검토를 기존 600초 안에 처리한다.
 맡지 못한 설치에서만 Stop 작업자가 **같은 Scope의 조직 작업 1건**을 함께 맡는다 — 그때는 그것이 유일한
 길이다. 근거 재검토를 넘기는 조건과 같다(#301). 정기 실행은 `work_order` 순서로
 작업하고 매번 첫 차례를 순환하므로, 조직 검토를 항상 마지막으로 미루지 않는다.
-조직 작업은 최대 3개 구간·구간당 4000자를 선택한다. `checked=[{unit,reason}]`로
+조직 작업은 긴 노드의 구간에서 최대 3개·구간당 4000자를 선택한다. `checked=[{unit,reason}]`로
 각 구간의 주장·조건·유지/분화 이유를 기록하며, 미검토 구간이 남으면 `deferred`로
 부분 진척을 남긴다. 이전의 포괄적인 완료 기록은 구간별 검토를 대신하지 않는다.
 현재 문안·구현 경계는 [조직 검토 변경](hub-growth-review.md)을 따른다.

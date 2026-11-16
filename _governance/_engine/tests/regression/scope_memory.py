@@ -529,6 +529,18 @@ def test_scope_memory_cli():
     check("CLI로 주된 scope를 지정한다",
           out.get("ok") is True and out.get("primary") == "WWmCli"
           and write.resolve_session(VAULT, S) == "WWmCli", out)
+    # 결속 검토의 유지 판정 — 조직 검토 작업이 없는 프로젝트는 이 길로 적는다
+    from osk import organization
+    out, _ = run(["routing", "keep", "--project", S, "--reason", "지금 결속이 맞다"])
+    seen = organization.load_state(VAULT).get("bindings_seen", {})
+    check("routing keep이 지금 결속 수를 지난 검토로 적는다",
+          out.get("ok") is True and seen.get(S) == len(write.bindings(VAULT, S)["scopes"]) > 0, (out, seen))
+    # 별칭으로 준 판정도 정본 키에 적힌다 — 검토 대상을 고르는 쪽이 정본 키로 본다(#393 리뷰)
+    write.alias_session(VAULT, S + "-old", S, "개명")
+    out, _ = run(["routing", "keep", "--project", S + "-old", "--reason", "옛 이름으로 준 판정"])
+    seen = organization.load_state(VAULT).get("bindings_seen", {})
+    check("별칭으로 준 유지 판정은 정본 키에 적힌다",
+          out.get("ok") is True and S + "-old" not in seen and S in seen, (out, sorted(seen)))
 
     _, plain = run(["sm", "show", "--session", S])
     check("show는 JSON이 아니라 전문 그대로",

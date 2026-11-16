@@ -282,7 +282,7 @@ def _sm_cmd(vault: Vault, a) -> None:
 def _routing_cmd(vault: Vault, a) -> None:
     """`osk routing` — 프로젝트 결속(Mechanism §6-2 6항). `show`는 집합·주된 scope(프로젝트를
     생략하면 검토 대상 전부), `bind`·`unbind`는 집합의 증감, `primary`는 주된 scope의 지정이다 —
-    지정은 사용자나, 검토의 결정 묶음을 적용하는 실행기만 한다."""
+    지정은 사용자나, 검토의 결정 묶음을 적용하는 실행기만 한다. `keep`은 결속 검토의 유지 판정이다."""
     from . import organization
     from .core import mutation_lock
     try:
@@ -294,6 +294,14 @@ def _routing_cmd(vault: Vault, a) -> None:
             # 사용자 전속 — 대화형 단말의 확인을 거친다(헌법 10조 1~2항). 검토의 결정 묶음은 이 길이
             # 아니라 `integration review`·`organization review`의 실행기가 적용한다.
             _confirm(f"`{a.project}`의 주된 scope를 `{a.scope}`로 지정합니까? [y/N] ")
+        if a.routing_cmd == "keep":
+            # 조직 검토 작업이 없는 프로젝트의 유지 판정이 닿는 길이다. 조직 검토가 신호가 있는 scope만
+            # 고르므로, 결속만 검토할 프로젝트에는 판정을 실을 작업이 없다.
+            with mutation_lock(vault):
+                organization.apply_binding_decisions(
+                    vault, [{"project": a.project, "action": "keep", "reason": a.reason}])
+            _emit({"ok": True, "project": a.project, **write.bindings(vault, a.project)})
+            return
         with mutation_lock(vault):
             current = write.bindings(vault, a.project)
             if a.routing_cmd == "bind":

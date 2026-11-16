@@ -85,6 +85,7 @@ class HookBudgetTests(unittest.TestCase):
             sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
             import claude_session_start as hook
             node('Own claim', scope='W1')
+            long_hub()     # 조직 검토는 신호가 있는 scope만 고른다
             scope_memory.replace(VAULT, 'own', '', space='00_Scope/W1')
             native = VAULT.root/'native.jsonl'
             user = {'role':'user','content':'question'}
