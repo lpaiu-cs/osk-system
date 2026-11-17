@@ -222,11 +222,13 @@ def _brief(receipt: dict) -> dict:
     return out
 
 
-def structure(vault: Vault, receipt: dict, idx=None) -> str | None:
+def structure(vault: Vault, receipt: dict, idx=None, records=None) -> str | None:
     """ACK 뒤의 구조 신호 — 대상이 남았는가, 같은 최상위 군집에 있는가, 출처를 아직
     다는가(노드는 `derived-from`, 인용 라운드는 근거 절의 줄이나 이행 전의 `derived-from`).
     문단·허브·출처 해시는 ACK 때 확인했고 다시 보지 않는다.
-    걸리면 그 이유를 돌려줄 뿐 검토를 다시 열지 않는다."""
+    걸리면 그 이유를 돌려줄 뿐 검토를 다시 열지 않는다.
+    영수증을 여럿 보는 읽기는 `idx`와 함께 `raw.Records` 하나를 건넨다 — 영수증마다 같은
+    기록 자리를 다시 찾지 않게."""
     try:
         idx = graph.Index(vault) if idx is None else idx
         target = receipt["target"]
@@ -236,9 +238,11 @@ def structure(vault: Vault, receipt: dict, idx=None) -> str | None:
         if p.relative_to(vault.root).parts[:2] != Path(target["path"]).parts[:2]:
             return "target left its top-level cluster"
         node = contract.parse(p)
-        kept = {write.edge_key(vault, ref, idx) for ref in (*contract.stored_edges(node.meta.get("derived-from")),
-                                                      *evidence.cited_rounds(vault, node.body))}
-        if any(write.edge_key(vault, s["ref"], idx) not in kept for s in receipt["sources"]):
+        records = raw.Records(vault) if records is None else records
+        kept = {write.edge_key(vault, ref, idx, records)
+                for ref in (*contract.stored_edges(node.meta.get("derived-from")),
+                            *evidence.cited_rounds(vault, node.body, records))}
+        if any(write.edge_key(vault, s["ref"], idx, records) not in kept for s in receipt["sources"]):
             return "target no longer cites its source"
     except (write.WriteError, OSError, ValueError, KeyError, TypeError) as e:
         return str(e)

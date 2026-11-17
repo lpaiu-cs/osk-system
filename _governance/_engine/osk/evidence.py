@@ -62,7 +62,7 @@ def cited_rounds(vault: Vault, text: str, records: raw.Records | None = None) ->
         if m is None or check(vault, coord, records=records) is not None:
             continue
         rel = posix_rel(records.file(m["record"]), vault.root)
-        out |= {raw.canonical_ref(vault, f"{rel}#{n}")
+        out |= {raw.canonical_ref(vault, f"{rel}#{n}", records)
                 for n in range(int(m["first"]), int(m["last"] or m["first"]) + 1)}
     return out
 

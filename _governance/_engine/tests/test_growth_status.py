@@ -274,6 +274,37 @@ class GrowthStatusTests(unittest.TestCase):
             assert broken['reviews']['outcomes']=={'preserved':1},broken
         ''')
 
+    def test_preservation_reads_each_record_folder_once(self):
+        # 영수증마다 인용 기록의 자리를 새로 찾으면 좌표 하나에 기록 디렉터리를 통째로 세 번 훑었다 —
+        # 실 vault(영수증 1,224·기록 283)에서 `growth status`가 21~31분 걸렸다.
+        self.check_case('''
+            from osk import distillation, naming, raw
+            cited=raw.append_rounds(VAULT,'status-test','observed',
+                                    [{'user':'q'+str(i),'agent':'a'+str(i)} for i in range(3)],'00_Scope/W1')
+            receipts=[]
+            for i in range(3):
+                out=distillation.create_node(VAULT,{'key':'k'+str(i),'sources':[cited['round_refs'][i]],'hub':'W1'},
+                    title='Kept '+str(i),summary='kept',
+                    body='Durable claim '+str(i)+'.'+chr(10)*2+'# 관측'+chr(10)*2+'- 2026-10-01 · `observed#1–3` · 지지 — seen',
+                    drafter='test',space='00_Scope/W1')
+                assert out['distillation']['status']=='complete',out
+                receipts.append(distillation.status(VAULT,'k'+str(i)))
+            idx=growth_plan.node_index(VAULT)
+            listed=[]
+            real=naming.Listing.__init__
+            def spy(self,d):
+                listed.append(d)
+                real(self,d)
+            with patch.object(naming.Listing,'__init__',spy):
+                one=S._preservation(VAULT,receipts[:1],idx)
+                single=list(listed)
+                listed.clear()
+                every=S._preservation(VAULT,receipts,idx)
+            assert one['structure']=={'intact':1} and every['structure']=={'intact':3},(one,every)
+            assert sorted(map(str,listed))==sorted(map(str,single)),(single,listed)
+            assert len(set(listed))==len(listed),listed
+        ''')
+
     def test_corrupt_state_and_ledger_are_unavailable_not_zero(self):
         self.check_case('''
             path,state=cursor('a',1)
