@@ -517,7 +517,7 @@ class Index:
             return live[0]
         return None if live else self.nonnode.get(name)
 
-    def resolve(self, name: str):
+    def resolve(self, name: str, records: "raw.Records | None" = None):
         """대상명 → ('node',소속) | ('nonnode',소속) | ('ambiguous',) |
         ('dangling',) | ('external',). 경로형([[00_Scope/B/b]])은 경로로 우선
         해석한다 — 파일명 우회를 막는다. 다만 URL은 `/`가 있어도 경로가
@@ -536,7 +536,7 @@ class Index:
             return ("external",) if roots.alias_problem(alias[0], self._roots) is None else ("dangling",)
         if placement.is_record_ref(name):
             try:
-                return ("nonnode", placement.space_of(self.vault, raw.raw_file(self.vault, name.split("#", 1)[0])))
+                return ("nonnode", raw.record_space(self.vault, name.split("#", 1)[0], records))
             except (OSError, ValueError):
                 return ("dangling",)
         if re.match(ID_RE, name):

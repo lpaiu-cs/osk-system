@@ -166,9 +166,9 @@ def _review_state_locked(vault: Vault, s: dict, through: str) -> dict:
     # append-only라 바뀌지 않고, 정정은 정정하는 쪽이 reopen으로 등록한다.
     out = {**result, "status": "complete", "review": last, "semantic_verified": False}
     if last["outcome"] == "preserved":
-        idx = graph.Index(vault)
+        idx, records = graph.Index(vault), raw.Records(vault)
         broken = [{"key": r["key"], "reason": why} for r in last["receipts"]
-                  if (why := distillation.structure(vault, r, idx))]
+                  if (why := distillation.structure(vault, r, idx, records))]
         if broken:
             out["structure"] = broken
     return out

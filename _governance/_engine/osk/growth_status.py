@@ -11,7 +11,7 @@ from datetime import datetime
 import json
 
 from . import (core, epoch, organization, rechecks, evictions, distillation, harness, response_growth,
-               conversation_capture, conversation_state, growth_ledger, growth_plan, update_state)
+               conversation_capture, conversation_state, growth_ledger, growth_plan, raw, update_state)
 from .vault import Vault
 
 
@@ -193,8 +193,9 @@ def _organization(vault: Vault, idx) -> dict:
 
 def _preservation(vault: Vault, receipts: list[dict], idx) -> dict:
     unique = {json.dumps(r, sort_keys=True): r for r in receipts}
+    records = raw.Records(vault)     # 영수증들이 같은 기록을 인용한다 — 기록 자리는 한 번만 찾는다
     items = [{'key': r['key'], 'target_id': r['target'].get('id'),
-              'structure': distillation.structure(vault, r, idx)} for r in unique.values()]
+              'structure': distillation.structure(vault, r, idx, records)} for r in unique.values()]
     return {'receipt_versions': len(items),
             'structure': dict(Counter('broken' if i['structure'] else 'intact' for i in items)),
             'items': items,
