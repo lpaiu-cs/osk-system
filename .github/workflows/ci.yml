@@ -51,7 +51,9 @@ jobs:
   suite:
     name: ${{ matrix.os }} · py${{ matrix.python }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 40
+    # 수트 안의 시간 초과(업그레이드 행렬 40분)가 이 제한보다 먼저 와야 끊긴 수트의 출력이 남는다.
+    # 전 셀을 도는 Windows 잡은 31–33분이다(2026-11).
+    timeout-minutes: 60
     continue-on-error: ${{ matrix.os == 'macos-latest' }}
     strategy:
       fail-fast: false

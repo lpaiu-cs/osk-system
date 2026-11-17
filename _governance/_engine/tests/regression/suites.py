@@ -39,9 +39,12 @@ def test_sync_network_subprocess():
 
 def test_upgrade_matrix_subprocess():
     """구 릴리스가 만들고 쓴 vault를 그 릴리스 자신의 updater로 후보에 올린다
-    (v3.20.1 사고의 경로). full을 요청했으면 이력 부재도 실패다."""
+    (v3.20.1 사고의 경로). full을 요청했으면 이력 부재도 실패다.
+
+    전 셀(full)은 Windows 러너에서 19–20분이 걸리고 판마다 셀이 셋씩 는다. v6.1.0 발행의 첫
+    시도에서 25분 제한을 넘겼고 같은 커밋의 재시도는 통과했다(2026-11-17, 셀 65개)."""
     _suite("업그레이드 경로 행렬(구 릴리스 vault → 자기 updater → 후보)",
-           "test_upgrade_matrix.py", timeout=1500,
+           "test_upgrade_matrix.py", timeout=2400,
            required=os.environ.get("OSK_MATRIX") == "full")
 
 
