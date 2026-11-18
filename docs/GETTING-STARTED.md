@@ -7,6 +7,8 @@ osk-system. It starts from an empty folder and ends with a verified setup. At th
 end, your agent writes its first memory, then finds it and reads it back. Written
 for release v6.1.0.
 
+To try OSK in a disposable vault first, [follow a refund decision through to the customer reply it affects](#try-a-decision-change).
+
 For more detail on any step, follow the links to [SETUP.md](SETUP.md), the
 operator reference (in Korean).
 
@@ -134,14 +136,82 @@ Never edit these files by hand.
 
 ## Prerequisites
 
-- **Python 3.11 or newer.** README and SETUP use 3.12, and so do the commands
-  below. Any 3.11+ interpreter works if you change the version in the commands.
+- **Python 3.11 or newer.** The installation steps use 3.12 in their examples.
+  If a command names 3.12, you can substitute your installed version.
 - **Git**, with `user.name` and `user.email` set so that commits work, and
   credentials that can push to your private remote.
 - **Claude Code and/or Codex.** You can connect one or both.
 - **An empty private Git repository** for the vault, created without a README or
   license. It is optional but recommended, because the vault will hold your
   conversation records and personal notes.
+
+## Try a decision change
+
+Your shop shortens its refund window. Which customer-facing note still promises the old terms? You can try this before installing OSK for your own projects.
+
+**Prepare a disposable vault.** You need Git, Python 3.11+ and a signed-in Claude Code CLI. In a folder outside your projects, run:
+
+```sh
+git clone --depth 1 --branch v6.1.1 https://github.com/lpaiu-cs/osk-system.git osk-demo
+cd osk-demo
+```
+
+On macOS/Linux run `python3 -m venv .venv`, then `.venv/bin/python -m pip install -r _governance/_engine/requirements.txt`.
+
+In Windows PowerShell, check that `py -3 --version` reports Python 3.11 or newer. Then create the environment and install the dependencies.
+
+```powershell
+py -3 -m venv .venv
+.venv/Scripts/python.exe -m pip install -r _governance/_engine/requirements.txt
+```
+
+Save the following as `demo-mcp.json` in `osk-demo`. On Windows use `.venv/Scripts/python.exe` for `command`.
+
+```json
+{
+  "mcpServers": {
+    "osk-demo": {
+      "command": ".venv/bin/python",
+      "args": ["_governance/_engine/mcp_server.py"],
+      "env": {"OSK_VAULT_ROOT": "."}
+    }
+  }
+}
+```
+
+Start Claude from that same folder. This session uses the demo's MCP configuration. It needs no private remote, hooks or background jobs.
+
+```sh
+claude --setting-sources project --strict-mcp-config --mcp-config demo-mcp.json
+```
+
+**Send these four messages in order**, in the same chat. Allow the `osk-demo` tools when Claude asks.
+
+1. **Record the decision.**
+
+   > This is a fictional shop. Use the osk-demo tools and skip citing this chat. Check the overview and search first. Create the project home note refund-demo in 00_Scope/refund-demo with session key refund-demo. I approve creating that space if the tool asks twice. Save a separate note titled “Refund window” in this project. Customers can request a refund within 30 days of purchase.
+
+   You should see the project home and a decision note whose body says **30 days**.
+
+2. **Write a reply that relies on it.**
+
+   > Save another note titled “Refund reply” with the customer-facing sentence “You can request a refund within 30 days of purchase.” Set “Refund window” as its source using the derived-from relation. Show me the saved relation and whether the reply appears in the overview’s rechecks field.
+
+   The reply points to `[[Refund window]]`. The overview omits `rechecks` when the list is empty, as it should be here.
+
+3. **Change the decision.**
+
+   > We now accept refunds within 14 days of purchase to match our payment provider’s window. Update the body and summary of the existing “Refund window” note. Leave the reply for me to review.
+
+   Read the two notes side by side. The decision now says **14 days** and the customer reply still says **30 days**.
+
+4. **Find what needs attention.**
+
+   > Use the OSK overview to show me which note needs review and why. Read the two notes and tell me exactly what the customer would be promised today.
+
+   In `rechecks.items`, look for `node` = `Refund reply`, `target` = `[[Refund window]]`, and `why` = `근거가 바뀌었다` (“the source changed”). The reply still promises 30 days, 16 more than the current policy allows. You can inspect both Markdown files under `00_Scope/refund-demo/`.
+
+   To see the same finding directly, run `sh osk-cli.sh rechecks` in the demo folder (PowerShell: `.\osk-cli.cmd rechecks`).
 
 ## Step 1: Create your vault
 

@@ -162,6 +162,8 @@ https://raw.githubusercontent.com/lpaiu-cs/osk-system/main/docs/OPERATE-AGENT.md
 
 **처음이라면** [시작 안내서](docs/GETTING-STARTED.ko.md)를 따라간다. 빈 폴더에서
 에이전트의 첫 기억까지, macOS·Linux·Windows 명령과 단계별 확인 방법을 함께 담았다.
+환불 기한을 바꿨을 때 OSK가 예전 기한을 약속하는 고객 답변을 어떻게 찾아내는지
+[결정 변경 따라하기](docs/GETTING-STARTED.ko.md#결정-변경-따라하기)에서 확인할 수 있다.
 
 **v3 vault를 갱신한다면** v4를 적용하기 전에 [판 올리기](docs/UPGRADING.ko.md)를 읽는다.
 v4가 더는 읽지 않는 배치와 옮기는 법이 있다.

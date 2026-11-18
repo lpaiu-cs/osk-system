@@ -183,6 +183,8 @@ Read https://raw.githubusercontent.com/lpaiu-cs/osk-system/main/docs/OPERATE-AGE
 **New to osk-system?** Follow the [Getting started](docs/GETTING-STARTED.md)
 tutorial. It goes from an empty folder to your agent's first saved memory, on
 macOS, Linux and Windows, with a check after every step.
+To see how OSK finds a customer reply that cites an outdated refund policy,
+try the [decision-change walkthrough](docs/GETTING-STARTED.md#try-a-decision-change).
 
 **Updating a v3 vault?** Read [Upgrading](docs/UPGRADING.md) before you apply
 v4: it lists the placements v4 no longer reads and how to move them.
