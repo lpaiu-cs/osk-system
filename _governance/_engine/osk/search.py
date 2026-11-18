@@ -118,10 +118,11 @@ class Searcher:
         out = []
         for score, _, (stem, p, n) in ranked:
             out.append({
+                # 정정 뒤에도 제목은 옛 주장을 담을 수 있다. 현재 요약을 먼저 보여 준다.
+                "summary": str(n.meta.get("summary", "")),
                 "title": stem,
                 "path": posix_rel(p, self.vault.root),
                 "id": n.id,
-                "summary": str(n.meta.get("summary", "")),
                 "updated": str(n.meta.get("updated", "")),
                 "score": round(float(score), 3),
             })

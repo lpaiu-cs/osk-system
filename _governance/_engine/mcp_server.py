@@ -202,8 +202,7 @@ SEARCH_FIRST = ("새 노드를 세우기 전에 그 주제로 search를 먼저 �
 @mcp.tool()
 def search(query: str, k: Annotated[int, Field(ge=1, le=50)] = 8,
            session: str | None = None) -> list[dict]:
-    """query로 전 Space 어휘 검색(인용 기록·Workbench 제외). 결과 title이 다른 도구의
-    name. summary는 미리보기이며 인용·판단 전에 read_node로 확인한다."""
+    """query로 전 Space 어휘 검색(인용 기록·Workbench 제외). summary=요약, title=조회명(name, 옛 주장일 수 있음). 판단·인용 전 read_node."""
     # `session`의 결속 scope가 순위 자질이 된다(시행령 §8 3항 locality). 쓰는 법은 세션 시작
     # 문구가 가르치므로 설명에는 싣지 않는다(상주 예산, validate.SCHEMA_BUDGET).
     global _searched
@@ -503,12 +502,10 @@ def update_node(name: str, body: str | None = None,
                 new_text: str | None = None, settle: str | None = None,
                 rechecked: list[str] | None = None,
                 distill: dict | None = None) -> dict:
-    """`name`의 같은 주장·조건을 정정한다. 독립 주장은 분화한다.
-    `old_text`→`new_text`는 유일 앵커 치환(해시 불필요).
-    전문 `body`는 `expect_hash` 필수. 엣지는 선-읽기 없는 델타.
-    `dangling`=대상 없는 링크. `settle`=이 본문 갱신으로 보존한 evict rid;
-    처분 결과: `settlement`. `distill`은 `create_node`와 같다.
-    저장 후 연결만 재개: `distill={resume:키}`."""
+    """name의 주장·조건을 정정한다. 결정 변경은 summary에, 이유는 본문에 반영한다. 독립 주장은 분화한다.
+    old_text→new_text는 유일 앵커 치환(해시 불필요). 전문 body는 expect_hash 필수. 엣지는 선-읽기 없는 델타.
+    dangling=대상 없는 링크. settle=이 갱신으로 보존한 evict rid, 처분 결과는 settlement.
+    distill은 create_node와 같다. 저장 후 연결만 재개: distill={resume:키}."""
     if distill is not None:
         # 주지 않은 `rechecked`는 싣지 않는다 — 요청 결속이 이 인자 이전의 작업과 같게 남는다
         extra = {} if rechecked is None else {"rechecked": rechecked}
