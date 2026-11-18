@@ -50,6 +50,11 @@ release.
 - **New.** The CLI command `routing keep` (the keep decision of a binding review). `read_node` accepts `id`
   and `session`.
 
+v6.1.1 needs nothing beyond applying the update. `growth status` reads each citation-record folder once
+per run instead of once per record reference: on a copy of a real vault with 1,225 receipts it went from
+16–25 minutes to about 15 seconds, with the same output (#402). The release check gives the full upgrade
+matrix more time (#404).
+
 ## From v5.6 to v6.0
 
 v5.7.0 was not released. v6.0.0 adds no feature: it restructures the engine
