@@ -17,6 +17,8 @@
 - 긴 대화(`--prelude N`): 과업의 말 앞에 기억과 무관한 턴 N개를 같은 세션에서 먼저 준다(`filler`) — 대화가
   길어지면 에이전트가 검색을 덜 하는지 보려는 것이다. 채점은 마지막 턴(과업)의 도구 호출만 본다. 앞 턴에서
   부른 도구의 수는 따로 낸다(`prelude_calls`). 실행 폴더와 보고서의 이름에 N이 붙는다.
+- `startup-rule`은 사본에 서로 다른 설치 저널과 과거 요약을 심는다. 제목의 첫 표지로 현행·과거·기타를
+  가르고, 실제 시작 훅에 추가된 설치판 줄의 글자 수와 마지막 result가 보고한 입력 사용량을 따로 낸다.
 - 채점: 끝난 저장소의 파일과 실행 기록으로 한다(`CHECKS`). 엔진을 읽지 않는다.
 - 내는 것: 과업마다 끝낸 횟수, 검사별 통과, 도구 호출 수, 거부의 수와 종류, 넘긴 거부, 걸린 시간.
 
@@ -90,6 +92,17 @@ def inside(action: str, vault: Path, python: str) -> None:
     from osk import routing
     from osk.vault import Vault
     session = FIXTURE["session"]
+    if action == "startup-rule":
+        from osk import core, update_state
+        case = FIXTURE["tasks"][action]
+        note = surface.read_node(COMMIT)
+        updated = surface.update_node(COMMIT, body=case["body"], summary=case["summary"], expect_hash=note["hash"])
+        memory = surface.scope_memory(session)
+        stored = surface.scope_memory(session, text=memory["text"] + "\n" + case["memory"], expect_hash=memory["hash"])
+        if not updated.get("ok") or not stored.get("ok"):
+            raise SystemExit(f"판별 규약 준비 실패: {updated}, {stored}")
+        core.ledger_append(update_state.journal_path(Vault.open()), {"kind": "done", "version": case["installed"]})
+        return
     for node in FIXTURE["nodes"]:
         surface.search(query=node["title"], session=session)        # 표면은 검색하지 않은 세션의 새 노드를 받지 않는다
         for _ in range(2):                                           # 최상위 군집은 같은 요청을 다시 보내야 선다
@@ -174,6 +187,8 @@ def run(work: Path, task: str, turn: int, python: str, model: str, prelude: int 
     if task == "recall-correction":
         _inside(task, vault, python)  # 새 세션은 정정 대화를 보지 않고 저장된 결정만 읽는다.
     recipe = json.loads(_inside("launch", vault, python))
+    if task == "startup-rule":
+        _inside(task, vault, python)
     argv, at = recipe["argv"], recipe["argv"].index("--settings") + 1
     argv[at] = json.dumps({**json.loads(argv[at]), "hooks": recipe["hooks"]})
     argv += ["--model", model, "--setting-sources", "project"]       # 사용자 설정(훅·플러그인)을 싣지 않는다
@@ -196,6 +211,30 @@ def _ends_turn(row: bytes) -> bool:
         return json.loads(row).get("type") == "result"
     except (ValueError, AttributeError):
         return False
+
+
+def _commit_rule(answer: str) -> str:
+    lines = [line.strip() for line in answer.splitlines() if line.strip() and not line.strip().startswith("```")]
+    if len(lines) != 1:
+        return "기타"
+    prefix, _, subject = lines[0].partition(":")
+    if not subject.strip("`*_ "):
+        return "기타"
+    return {"계정응답": "현재", "회원검사": "과거"}.get(prefix.strip("`*_ "), "기타")
+
+
+def _version_line_chars(row: dict) -> int | None:
+    """OSK가 실제로 보낸 설치판 한 줄(개행 포함). 구판은 0, OSK 시작 문맥을 못 읽으면 None."""
+    try:
+        context = json.loads(row["output"])["hookSpecificOutput"]["additionalContext"]
+    except (KeyError, TypeError, ValueError):
+        return None
+    lines = context.splitlines(keepends=True) if isinstance(context, str) else []
+    for i, line in enumerate(lines):
+        if line.startswith("[osk 세션 시작 —"):
+            field = lines[i + 1] if i + 1 < len(lines) else ""
+            return len(field) if field.startswith("OSK 설치판(갱신 저널 기준):") else 0
+    return None
 
 
 def _converse(argv: list, texts: list, folder: Path, env: dict, limit: int, errors: Path) -> bytes:
@@ -244,15 +283,21 @@ def _text(content) -> str:
         return str(content or "")
 
 
-def record(stream: str) -> dict:
+def record(stream: str, *, startup: bool = False) -> dict:
     """실행 기록에서 도구 호출과 그 응답, 마지막 답, 걸린 것을 뽑는다. 턴이 여럿이면(긴 대화) 마지막 턴의 호출만
     남기고, 앞 턴들의 호출 수와 끝난 턴의 수를 따로 낸다."""
     calls, by_id, last, ends = [], {}, {}, []
+    version_chars = None
     for line in stream.splitlines():
         try:
             row = json.loads(line)
         except ValueError:
             continue
+        if (startup and isinstance(row, dict) and row.get("subtype") == "hook_response"
+                and row.get("hook_event") == "SessionStart"):
+            chars = _version_line_chars(row)
+            if chars is not None:
+                version_chars = chars
         content = (row.get("message") or {}).get("content") if isinstance(row, dict) else None
         for block in content if isinstance(content, list) else ():
             if block.get("type") == "tool_use":
@@ -268,9 +313,15 @@ def record(stream: str) -> dict:
             last = row
             ends.append(len(calls))
     before = ends[-2] if len(ends) > 1 else 0
-    return {"calls": calls[before:], "prelude_calls": before, "turns_done": len(ends),
-            "answer": last.get("result") or "", "turns": last.get("num_turns"),
-            "seconds": round((last.get("duration_ms") or 0) / 1000), "finished": last.get("subtype") == "success"}
+    result = {"calls": calls[before:], "prelude_calls": before, "turns_done": len(ends),
+              "answer": last.get("result") or "", "turns": last.get("num_turns"),
+              "seconds": round((last.get("duration_ms") or 0) / 1000), "finished": last.get("subtype") == "success"}
+    if startup:
+        usage = last.get("usage") or {}
+        result["startup"] = {"rule": _commit_rule(result["answer"]), "version_line_chars": version_chars,
+                             "reported_input": {k: usage.get(k) for k in
+                                                ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")}}
+    return result
 
 
 def nodes(vault: Path) -> dict:
@@ -301,6 +352,10 @@ def _record(before, after, new, changed, run):
     return {"새 노드를 남겼다": bool(made),
             "예약 군집에 두었다": any(space == "00_Scope/harbor/예약" and "24시간" in text for space, text in new.values()),
             "근거를 적었다": any("# 관측" in text for text in made)}
+
+
+def _startup_rule(before, after, new, changed, run):
+    return {"현재 규약으로 제목을 썼다": run["startup"]["rule"] == "현재"}
 
 
 def _reject(before, after, new, changed, run):
@@ -337,6 +392,8 @@ def _decision(answer: str) -> str:
 
 CHECKS = {"refine": _refine, "update": _update, "record": _record, "reject": _reject, "domain": _domain,
           "recall-apply": _recall_apply, "recall-ask": _recall_ask, "recall-correction": _recall_correction}
+
+CHECKS["startup-rule"] = _startup_rule
 
 
 def _why(call: dict) -> str:
@@ -400,8 +457,11 @@ def main() -> int:
         scores = []
         for turn in range(1, args.repeat + 1):
             here = run(work, task, turn, args.python, args.model, args.prelude)
-            scores.append(score(task, before, nodes(here / "vault"),
-                                record((here / "stream.jsonl").read_text(encoding="utf-8", errors="replace"))))
+            stream = (here / "stream.jsonl").read_text(encoding="utf-8", errors="replace")
+            result = record(stream, startup=task == "startup-rule")
+            scores.append(score(task, before, nodes(here / "vault"), result))
+            if task == "startup-rule":
+                scores[-1]["startup"] = result["startup"]
             if args.prelude is not None and scores[-1]["turns_done"] != args.prelude + 1:
                 scores[-1]["completed"] = False             # 앞 턴을 다 돌지 못했다 — 잰 조건이 아니다
             print(f"{task}-{turn}: {'끝냄' if scores[-1]['completed'] else '못 끝냄'} {scores[-1]['checks']} "

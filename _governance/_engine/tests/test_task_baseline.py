@@ -128,6 +128,26 @@ def problems() -> list[str]:
         bad.append(f"record, 긴 대화: {long['prelude_calls']} {long['turns_done']} {len(long['calls'])}")
     if both["searched"] != 1:                # applied는 검색했고, missed는 검색을 뺀 실행이다
         bad.append(f"summary searched: {both['searched']}")
+    version = "OSK 설치판(갱신 저널 기준): v6.1.1\n"
+    for header, answer, rule, chars in [
+        ("[osk 세션 시작 — test]\n" + version, "`계정응답: 오류 수정`", "현재", len(version)),
+        ("[osk 세션 시작 — test]\n저장된 요약\n" + version, "회원검사: 오류 수정", "과거", 0),
+        ("", "```text\n계정응답: 오류 수정\n```", "현재", None),
+        ("", "**계정응답**: 오류 수정", "현재", None),
+        ("", "`회원검사`: 오류 수정", "과거", None),
+        ("", "__계정응답: 오류 수정__", "현재", None),
+        ("", "**계정응답:**", "기타", None),
+        ("", "계정응답: 오류 수정\n회원검사: 오류 수정", "기타", None),
+        ("", "fix: 계정응답: 오류 수정", "기타", None),
+    ]:
+        hook = {"subtype": "hook_response", "hook_event": "SessionStart",
+                "output": json.dumps({"hookSpecificOutput": {"additionalContext": header}})}
+        end = {"type": "result", "subtype": "success", "result": answer, "usage": {"input_tokens": 7}}
+        trace = tb.record("\n".join(map(json.dumps, (hook, end))), startup=True)
+        metrics = trace["startup"]
+        if (metrics["rule"], metrics["version_line_chars"], metrics["reported_input"]["input_tokens"],
+            tb.score("startup-rule", {}, {}, trace)["completed"]) != (rule, chars, 7, rule == "현재"):
+            bad.append(f"시작 안내와 규약: {metrics}")
     turns = tb.filler(4)
     if len(turns) != 4 or turns != tb.filler(4) or turns[1].count("\n") != 40 or "\n" in turns[0]:
         bad.append("filler: 번호만으로 정해지는 턴 넷이 아니다")
