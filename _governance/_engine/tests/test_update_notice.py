@@ -335,6 +335,33 @@ assert 'systemMessage' not in third, third
 assert '[osk 새 릴리스' not in third['hookSpecificOutput']['additionalContext'], third
 ''')
 
+    def test_start_separates_the_installed_version_from_historical_memory(self):
+        self.check_case(r'''
+from osk import routing, scope_memory
+os.environ.update(OSK_UPDATE_CHECK='0', OSK_HOOK_WORKER='0')
+project = root.parent / 'W1'
+project.mkdir()
+routing.set_primary(VAULT, 'W1', 'W1', 'fixture')
+old = '지난 점검 당시 OSK 설치판은 v3.1.0이었다.'
+scope_memory.replace(VAULT, 'W1', old, scope_memory.read(VAULT, 'W1')['hash'])
+hook = Path(update.__file__).resolve().parents[1] / 'scripts/hooks/claude_session_start.py'
+def header(session):
+    payload = {'cwd': str(project), 'session_id': session, 'hook_event_name': 'SessionStart', 'source': 'startup'}
+    r = subprocess.run([sys.executable, str(hook)], input=json.dumps(payload), text=True, encoding='utf-8',
+                       capture_output=True, timeout=90, check=True)
+    text = json.loads(r.stdout)['hookSpecificOutput']['additionalContext']
+    assert old in text and scope_memory.read(VAULT, 'W1')['text'] == old
+    return text.split(old, 1)[0].splitlines()
+
+assert 'OSK 설치판(갱신 저널 기준): 확인 불가' in header('no-history')
+done('v4.0.0', '0')
+assert 'OSK 설치판(갱신 저널 기준): v4.0.0' in header('installed')
+done('v4.1.0', '1')
+assert 'OSK 설치판(갱신 저널 기준): v4.1.0' in header('updated')
+update_state.journal_path(VAULT).write_text('{damaged\n', encoding='utf-8')
+assert 'OSK 설치판(갱신 저널 기준): 확인 불가' in header('unreadable')
+''')
+
     def test_session_start_and_doctor_tell_a_sync_daemon_that_stopped(self):
         self.check_case(r'''
 import sync_daemon
