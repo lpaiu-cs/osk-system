@@ -190,7 +190,7 @@ claude --setting-sources project --strict-mcp-config --mcp-config demo-mcp.json
 
    > Save another note titled “Refund reply” with the customer-facing sentence “You can request a refund within 30 days of purchase.” Set “Refund window” as its source using the derived-from relation. Show me the saved relation and whether the reply appears in the overview’s rechecks field.
 
-   The reply points to `[[Refund window]]`. There is no recheck for the reply yet.
+   The reply points to `[[Refund window]]`. The overview omits `rechecks` when the list is empty, as it should be here.
 
 3. **Change the decision.**
 
