@@ -1049,13 +1049,22 @@ def main() -> int:
         else:
             cand, how = up.head_candidate()
         prep = time.monotonic() - t0
-        print(f"candidate: {how}; source: {src}; prepared in {prep:.1f}s")
+        print(f"candidate: {how}; source: {src}; prepared in {prep:.1f}s", flush=True)
         for tag, was in sorted(up.moved.items()):
             print(f"note: the source's {tag} points at {was[:12]}; the matrix uses the "
                   f"release {RELEASES[tag][:12]}")
         jobs = max(1, int(os.environ.get("OSK_MATRIX_JOBS") or 4))
+
+        def cell(c):
+            # The report below prints only at the end. If the runner's timeout kills this
+            # process, these flushed lines are the only record of which cells finished or hung.
+            print(f"start {c[0]}/{c[1]} at {time.monotonic() - t0:.0f}s", flush=True)
+            r = run_cell(up, cand, work, *c)
+            print(f"done  {r['cell']} {'PASS' if r['ok'] else 'FAIL'} in {r['seconds']}s", flush=True)
+            return r
+
         with concurrent.futures.ThreadPoolExecutor(min(jobs, len(cells))) as pool:
-            results = list(pool.map(lambda c: run_cell(up, cand, work, *c), cells))
+            results = list(pool.map(cell, cells))
         keep = os.environ.get("OSK_MATRIX_KEEP")
         if keep:                                  # debugging: the vaults as the cells left them
             shutil.copytree(work, keep, ignore=shutil.ignore_patterns("upstream"),
