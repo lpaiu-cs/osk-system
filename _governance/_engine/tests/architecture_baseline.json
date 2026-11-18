@@ -5,7 +5,7 @@
  },
  "totals": {
   "upward_imports": 0,
-  "lazy_imports": 24,
+  "lazy_imports": 23,
   "two_module_cycles": 0,
   "tangled_modules": 0,
   "private_access": 0,
@@ -27,7 +27,7 @@
   "osk.growth": 1,
   "osk.harness": 1,
   "osk.node_moves": 1,
-  "osk.raw": 3,
+  "osk.raw": 2,
   "osk.response_growth": 2,
   "osk.services": 2,
   "osk.setup": 1,

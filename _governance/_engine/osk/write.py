@@ -289,17 +289,18 @@ def _baseline(vault: Vault, idx) -> None:
 # 두어야 한다. 쓰기 통로는 그런 자리가 아니다.
 
 
-def edge_key(vault: Vault, target: str, idx) -> tuple[str, str]:
+def edge_key(vault: Vault, target: str, idx, records: "raw.Records | None" = None) -> tuple[str, str]:
     """노드는 해석된 제목과 절 앵커, 비노드 근거는 전체 경로와 앵커로 구별한다.
     id·제목·경로 어느 표기든 같은 노드의 같은 범위면 같은 키다. 해석되지 않는 이름만 표기
-    규칙(`contract.target_stem`)으로 접는다 — 제목에 든 `.md`를 떼지 않기 위해서다."""
-    s = raw.canonical_ref(vault, target).strip()
+    규칙(`contract.target_stem`)으로 접는다 — 제목에 든 `.md`를 떼지 않기 위해서다.
+    키를 여럿 짓는 읽기는 `records`를 건네 기록 좌표를 한 색인 위에서 찾는다."""
+    s = raw.canonical_ref(vault, target, records).strip()
     if s.startswith("[[") and s.endswith("]]"):
         s = s[2:-2]
     path, sep, anchor = s.split("|", 1)[0].strip().partition("#")
     path = path.strip().replace("\\", "/")
     if "/" in path or sep:
-        kind = idx.resolve(path)[0]
+        kind = idx.resolve(path, records)[0]
         if kind == "external":
             # URL은 확장자까지 주소다 — `…/Makefile`과 `…/Makefile.md`는 다른 근거다.
             # `.md` 생략은 vault 안 경로의 표기 규칙이다(`resolve`가 `p`와 `p.md`를 본다).

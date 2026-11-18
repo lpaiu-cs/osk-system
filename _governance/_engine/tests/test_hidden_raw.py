@@ -50,6 +50,11 @@ def main():
         assert write._as_links(VAULT, "derived-from", f"[[ {url} ]]") == f"[[ {url} ]]"
         assert raw.canonical_ref(VAULT, "[[ 00_Scope/W1/_cited/new.md#1 ]]") == first["round_ref"]
         assert raw.canonical_ref(VAULT, "00_Scope/W1/_cited/new.md #1") == first["round_ref"]
+        # 한 읽기가 들고 다니는 색인(`Records`)도 같은 자리를 찾는다 — 디렉터리는 한 번만 읽는다
+        records = raw.Records(VAULT)
+        assert raw.canonical_ref(VAULT, "[[ 00_Scope/W1/_cited/new.md#1 ]]", records) == first["round_ref"]
+        assert graph.Index(VAULT).resolve("00_Scope/W1/_cited/new.md", records) == ("nonnode", ("raw", None))
+        assert records.raw_file(first["path"]) == raw.raw_file(VAULT, first["path"]) == new
         assert graph.Index(VAULT).resolve(url) == ("external",)
         reject(append_round, "hidden-test", "x" * 253, "q", "a")
         # A contained symlink must not move another scope's canonical record.
@@ -93,6 +98,8 @@ def main():
                 assert os.path.samefile(raw.record_path(VAULT, "W1", "caf\u00e9"), duplicates[0])
             else:
                 reject(raw.record_path, VAULT, "W1", "caf\u00e9")
+                reject(raw.Records(VAULT).raw_file, "00_Scope/W1/_raw/caf\u00e9.md")
+                reject(raw.canonical_ref, VAULT, "00_Scope/W1/_raw/caf\u00e9.md#1", raw.Records(VAULT))
                 reject(append_round, "hidden-test", "caf\u00e9", "q2", "a2")
                 if suffix == ".md":
                     reject(raw.migrate, VAULT, apply=True)
@@ -116,6 +123,7 @@ def main():
             assert dest.read_bytes() == original and not old.exists()
             assert raw.read_round(VAULT, ref)["text"] == raw.read_round(VAULT, str(dest) + "#1")["text"]
             assert raw.canonical_ref(VAULT, ref) == raw.canonical_ref(VAULT, str(dest) + "#1")
+            assert raw.canonical_ref(VAULT, ref, raw.Records(VAULT)) == raw.canonical_ref(VAULT, ref)
             alternate = write.unicodedata.normalize("NFC", name.upper())
             assert raw.record_path(VAULT, "W1", alternate) == dest
             assert append_round("hidden-test", alternate, "q2", "a2")["index"] == 2
@@ -124,6 +132,7 @@ def main():
             # No old/new ambiguity or normalization-equivalent directory twin.
             old.write_bytes(original)
             reject(raw.read_round, VAULT, ref)
+            reject(raw.Records(VAULT).raw_file, ref.split("#")[0])
             reject(raw.migrate, VAULT, apply=True)
             old.unlink()
             normalized = write.unicodedata.normalize("NFC", name)
@@ -134,11 +143,13 @@ def main():
                 else:
                     twin.mkdir()
                     reject(raw.record_path, VAULT, "W1", name)
+                    reject(raw.Records(VAULT).raw_file, ref.split("#")[0])
                     reject(append_round, "hidden-test", name, "q3", "a3")
                     twin.rmdir()
                 flat = base / ".records" / (normalized + ".txt")
                 flat.write_bytes(original)
                 reject(raw.record_path, VAULT, "W1", name)
+                reject(raw.Records(VAULT).raw_file, ref.split("#")[0])
                 flat.unlink()
         assert raw.migrate(VAULT, apply=True)["count"] == 0
 

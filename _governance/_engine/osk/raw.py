@@ -97,16 +97,16 @@ def legacy_dirs(vault: Vault):
     yield vault.root / vault.person / CITED
 
 
-def locate_record(vault: Vault, record: str) -> Path | None:
+def locate_record(vault: Vault, record: str, listing=naming.Listing) -> Path | None:
     """같은 이름의 기록이 실재하는 자리 — 루트 `_cited/`가 먼저, 그 다음 옛 자리. 없으면 None.
-    이식성 기준으로 같은 이름은 같은 정본이다."""
-    root = _record_file(vault, vault.root / CITED / f"{record}.md")
+    이식성 기준으로 같은 이름은 같은 정본이다. `listing`은 `_record_pair`의 것이다."""
+    root = _record_file(vault, vault.root / CITED / f"{record}.md", listing)
     if root.exists():
         return root
     for d in legacy_dirs(vault):
         if not d.is_dir():
             continue
-        p = _record_file(vault, d / f"{record}.md")     # 구·신 저장본이 함께 있으면 여기서 거부된다
+        p = _record_file(vault, d / f"{record}.md", listing)     # 구·신 저장본이 함께 있으면 여기서 거부된다
         if p.exists():
             return p
     return None
@@ -126,8 +126,10 @@ def is_person(vault: Vault, space: str | None) -> bool:
     return bool(name) and "/" not in name and adapt_path(name, vault.space_roots) == vault.person
 
 
-def _record_pair(vault: Vault, path: Path | str) -> tuple[Path, Path]:
-    """Confined physical path and its old Markdown alias. No content conversion."""
+def _record_pair(vault: Vault, path: Path | str, listing=naming.Listing) -> tuple[Path, Path]:
+    """Confined physical path and its old Markdown alias. No content conversion.
+    `listing`은 디렉터리 → `naming.Listing`이다. 기본은 부를 때마다 새로 읽고, `Records`는 한 번
+    읽은 것을 건넨다 — 좌표마다 같은 디렉터리를 통째로 다시 훑지 않게."""
     p = resolve_in_root(vault, path)
     if p is None or placement.space_of(vault, p)[0] != "raw":
         raise WriteError("vault 밖 또는 인용 기록 구획(`_cited/`·`_raw/`) 밖 경로 — 기록을 열지 않았다")
@@ -142,11 +144,11 @@ def _record_pair(vault: Vault, path: Path | str) -> tuple[Path, Path]:
         d, stem = p.parent, p.stem if p.suffix else p.name
     else:
         raise WriteError("지원하지 않는 raw 기록 경로")
-    old_name = naming.name_collision(d, stem, unique=True)
+    old_name = listing(d).collision(stem, unique=True)
     old = d / (old_name or f"{stem}.md")
     new_dir = d / ".records"
-    new_name = naming.name_collision(new_dir, old.stem, ".txt", unique=True)
-    long_name = naming.name_collision(new_dir, old.stem, None, unique=True)
+    new_name = listing(new_dir).collision(old.stem, ".txt", unique=True)
+    long_name = listing(new_dir).collision(old.stem, None, unique=True)
     if new_name and long_name:
         raise WriteError("raw 파일·디렉터리 별칭이 함께 있다 — 정본을 고를 수 없다")
     if long_name or (not new_name and len((old.stem + ".txt").encode("utf-8")) > naming.MAX_FILENAME_BYTES):
@@ -163,8 +165,8 @@ def _record_pair(vault: Vault, path: Path | str) -> tuple[Path, Path]:
     return old, new
 
 
-def _record_file(vault: Vault, path: Path | str) -> Path:
-    old, new = _record_pair(vault, path)
+def _record_file(vault: Vault, path: Path | str, listing=naming.Listing) -> Path:
+    old, new = _record_pair(vault, path, listing)
     if old.exists() and new.exists():
         raise WriteError("raw 구·신 저장본이 함께 있다 — 덮어쓰거나 임의로 합치지 않았다")
     return old if old.exists() else new
@@ -315,8 +317,9 @@ def consolidate(vault: Vault, *, apply: bool = False, expect: list | None = None
                 **({"manifest": posix_rel(manifest, vault.root)} if manifest else {})}
 
 
-def canonical_ref(vault: Vault, ref: str) -> str:
-    """Compare old wiki coordinates and new plain coordinates by the same record."""
+def canonical_ref(vault: Vault, ref: str, records: "Records | None" = None) -> str:
+    """Compare old wiki coordinates and new plain coordinates by the same record.
+    `records`를 주면 기록 자리를 그 색인 위에서 한 번만 찾는다(`Records.canonical`)."""
     value = ref.strip()
     if value.startswith("[[") and value.endswith("]]"):
         value = value[2:-2].strip()
@@ -324,13 +327,19 @@ def canonical_ref(vault: Vault, ref: str) -> str:
     path = path.strip()
     if re.match(r"^https?://", path) or not placement.is_record_ref(path):
         return ref  # Node IDs and node links keep their existing identity.
-    old, physical = _record_pair(vault, path)
+    physical = records.canonical(path) if records is not None else _canonical_file(vault, path)
+    return posix_rel(physical, vault.root) + (sep + anchor if sep else "")
+
+
+def _canonical_file(vault: Vault, path: str, listing=naming.Listing) -> Path:
+    """기록 좌표의 경로 부분 → 그 기록의 정본 파일(없으면 새 저장본의 자리)."""
+    old, physical = _record_pair(vault, path, listing)
     if not physical.exists() and not old.exists():
         # 옛 자리의 좌표가 루트의 기록을(또는 그 반대를) 가리킨다 — 같은 이름은 같은 기록이다
-        found = locate_record(vault, old.stem)
+        found = locate_record(vault, old.stem, listing)
         if found is not None:
             physical = found
-    return posix_rel(physical, vault.root) + (sep + anchor if sep else "")
+    return physical
 
 
 def round_body(chunk: str) -> str:
@@ -576,10 +585,10 @@ def parse_ref(ref: str) -> tuple[str, int | None]:
     return path.strip(), int(idx)
 
 
-def raw_file(vault: Vault, path: str) -> Path:
+def raw_file(vault: Vault, path: str, listing=naming.Listing) -> Path:
     """`_raw/` 안의 실재 파일로 해소한다. 봉쇄는 쓰기와 **같은 규율**이다 —
-    읽기라고 느슨하게 두면 `[[../../어딘가]]`가 vault 밖을 읽는 창이 된다."""
-    from .core import resolve_in_root
+    읽기라고 느슨하게 두면 `[[../../어딘가]]`가 vault 밖을 읽는 창이 된다.
+    `listing`은 `_record_pair`의 것이다 — 같은 경로를 여러 번 찾는 읽기는 `Records.raw_file`을 쓴다."""
     p = resolve_in_root(vault, path)
     if p is None:
         raise WriteError("vault 밖 경로 — 읽지 않았다", [f"경로: {path}"])
@@ -587,14 +596,22 @@ def raw_file(vault: Vault, path: str) -> Path:
         raise WriteError(
             "인용 기록 구획(`_cited/`·`_raw/`) 밖 경로 — 이 도구로 읽지 않는다",
             [f"`{path}`는 세션 기록이 아니다. 노드는 `read_node`로 읽는다"])
-    p = _record_file(vault, p)
+    p = _record_file(vault, p, listing)
     if not p.is_file():
         # 옛 자리의 좌표로 루트의 기록을, 또는 그 반대를 가리킨 경우 — 같은 이름은 같은 기록이다
-        found = locate_record(vault, _record_pair(vault, p)[0].stem)
+        found = locate_record(vault, _record_pair(vault, p, listing)[0].stem, listing)
         if found is None:
             raise WriteError("없는 기록", [f"그런 세션 기록이 없다: {path}"])
         return found
     return p
+
+
+def record_space(vault: Vault, path: str, records: "Records | None" = None) -> tuple:
+    """기록 좌표의 경로 부분이 해소되는 기록 파일의 소속(`graph.Index.resolve`). 색인은 인용 기록을
+    들고 있지 않아 매번 찾는다 — `records`를 주면 그 위에서 경로마다 한 번만 판정한다."""
+    if records is not None:
+        return records.space(path)
+    return placement.space_of(vault, raw_file(vault, path))
 
 
 def round_spans(text: str) -> dict:
@@ -640,10 +657,19 @@ PREFIX = re.compile(r"^[0-9a-f]{8,32}$")
 
 class Records:
     """인용 기록의 이름 색인. 한 번 훑어 여러 좌표를 해석한다 — 검증기는 근거 줄마다
-    파일 목록을 다시 읽지 않는다."""
+    파일 목록을 다시 읽지 않는다.
+
+    좌표의 기록 자리(`canonical`·`raw_file`)도 이 색인 위에서 경로마다 한 번만 찾는다. 별칭
+    판정(`_record_pair`)은 디렉터리를 통째로 읽어야 하므로, 좌표마다 새로 찾으면 근거 줄 수 ×
+    기록 수만큼 항목을 훑는다. 그래서 이것은 **읽기 하나의 스냅숏**이다 — 들고 있는 동안
+    쓴 기록은 보이지 않을 수 있으니, 쓰기를 사이에 두고 이어 쓰지 않는다."""
 
     def __init__(self, vault: Vault):
         self.vault = vault
+        self._listings: dict[Path, naming.Listing] = {}
+        self._canonical: dict[str, Path] = {}
+        self._raw_files: dict[str, Path] = {}
+        self._spaces: dict[str, tuple] = {}
         self.names: set[str] = set()
         for d in (vault.root / CITED, *legacy_dirs(vault)):
             if d.is_dir():
@@ -657,6 +683,30 @@ class Records:
                 self.hexes.setdefault(m["hex"], []).append(name)
         self._files: dict[str, Path] = {}
         self._rounds: dict[Path, set[int]] = {}
+
+    def listing(self, d: Path) -> naming.Listing:
+        """디렉터리 하나의 항목 — 처음 물을 때 한 번 읽는다."""
+        if d not in self._listings:
+            self._listings[d] = naming.Listing(d)
+        return self._listings[d]
+
+    def canonical(self, path: str) -> Path:
+        """기록 좌표의 경로 부분 → 정본 파일(`canonical_ref`의 기록 자리)."""
+        if path not in self._canonical:
+            self._canonical[path] = _canonical_file(self.vault, path, self.listing)
+        return self._canonical[path]
+
+    def raw_file(self, path: str) -> Path:
+        """`raw_file`과 같은 해소 — 같은 경로는 한 번만 찾는다."""
+        if path not in self._raw_files:
+            self._raw_files[path] = raw_file(self.vault, path, self.listing)
+        return self._raw_files[path]
+
+    def space(self, path: str) -> tuple:
+        """그 기록 파일의 소속(`placement.space_of`) — 판정이 `resolve()`를 부르므로 경로마다 한 번만."""
+        if path not in self._spaces:
+            self._spaces[path] = placement.space_of(self.vault, self.raw_file(path))
+        return self._spaces[path]
 
     def find(self, record: str) -> list[str]:
         """좌표의 기록 부분 → 그에 맞는 기록 이름들. 줄인 해시는 앞자리가 같은 해시 이름의
@@ -684,14 +734,14 @@ class Records:
         """좌표의 기록 부분 → 기록 파일. 줄인 해시·옛 이름·전체 경로를 받는다."""
         if record not in self._files:
             if "/" in record:
-                self._files[record] = raw_file(self.vault, record)
+                self._files[record] = self.raw_file(record)
             else:
                 names = self.find(record)
                 if len(names) != 1:
                     raise WriteError("없는 기록" if not names else "모호한 좌표",
                                            [f"`{record}`에 맞는 기록 {len(names)}개"
                                             + (f": {names[:3]}" if names else "")])
-                found = locate_record(self.vault, names[0])
+                found = locate_record(self.vault, names[0], self.listing)
                 if found is None:
                     raise WriteError("없는 기록", [f"`{record}`"])
                 self._files[record] = found

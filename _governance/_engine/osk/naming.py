@@ -5,8 +5,9 @@
 """
 from __future__ import annotations
 
+import os
 import unicodedata
-from pathlib import Path
+from pathlib import Path, PurePath
 
 from .errors import WriteError
 
@@ -101,17 +102,49 @@ def portable_name_key(name: str) -> str:
     return unicodedata.normalize("NFC", name).casefold()
 
 
+def _is_dir(entry: os.DirEntry) -> bool:
+    """`Path.is_dir`처럼 링크를 따라가고, 물을 수 없으면 디렉터리가 아니다."""
+    try:
+        return entry.is_dir()
+    except OSError:
+        return False
+
+
+class Listing:
+    """디렉터리 하나를 **한 번** 읽어 이식성 키로 묶는다 — 이름을 여럿 물어도 다시 훑지 않는다.
+
+    판정은 읽은 시점의 스냅숏이다. 쓰기 직전의 검사는 `name_collision`으로 그때 새로 읽고,
+    읽기 하나가 같은 디렉터리의 여러 이름을 물을 때만 이것을 들고 다닌다(`raw.Records`).
+    항목의 디렉터리 여부는 `scandir`이 이미 받아 온 것을 쓴다 — 항목마다 `stat`하지 않는다."""
+
+    def __init__(self, dest_dir: Path):
+        self.dest_dir = dest_dir
+        try:
+            with os.scandir(dest_dir) as it:
+                entries = list(it)
+        except OSError:
+            entries = []     # `Path.glob`과 같다 — 없거나 못 읽는 디렉터리에는 항목이 없다
+        self._entries = [(e.name, _is_dir(e)) for e in entries]
+        self._keys: dict[str | None, dict[str, list[str]]] = {}
+
+    def collision(self, stem: str, suffix: str | None = ".md", *, unique: bool = False) -> str | None:
+        """`name_collision`과 같은 판정 — `suffix`가 None이면 디렉터리, 아니면 그 확장자의 파일."""
+        keys = self._keys.get(suffix)
+        if keys is None:
+            keys = self._keys[suffix] = {}
+            for name, is_dir in self._entries:
+                if suffix is None:
+                    if is_dir:
+                        keys.setdefault(portable_name_key(name), []).append(name)
+                elif PurePath(name).suffix.lower() == suffix:
+                    keys.setdefault(portable_name_key(PurePath(name).stem), []).append(name)
+        hits = keys.get(portable_name_key(stem), [])
+        if unique and len(hits) > 1:
+            raise WriteError(f"이식성 이름 충돌 — 정본을 고를 수 없다: {self.dest_dir / stem}")
+        return hits[0] if hits else None
+
+
 def name_collision(dest_dir: Path, stem: str, suffix: str | None = ".md", *, unique: bool = False) -> str | None:
     """같은 군집에 이식성 기준으로 충돌하는 파일이 있으면 그 이름을 돌려준다.
-    같은 이름 자신도 걸리므로 기존 존재 검사를 겸한다."""
-    key = portable_name_key(stem)
-    hit = None
-    for p in dest_dir.glob("*"):
-        matches = p.is_dir() if suffix is None else p.suffix.lower() == suffix
-        if matches and portable_name_key(p.name if suffix is None else p.stem) == key:
-            if not unique:
-                return p.name
-            if hit is not None:
-                raise WriteError(f"이식성 이름 충돌 — 정본을 고를 수 없다: {dest_dir / stem}")
-            hit = p.name
-    return hit
+    같은 이름 자신도 걸리므로 기존 존재 검사를 겸한다. 부를 때마다 디렉터리를 새로 읽는다."""
+    return Listing(dest_dir).collision(stem, suffix, unique=unique)
