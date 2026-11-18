@@ -6,6 +6,8 @@ Claude Code나 Codex는 쓰고 있지만 osk-system은 처음 설정하는 사�
 안내서다. 빈 폴더에서 출발해 검증까지 마친 설정으로 끝난다. 마지막에는 에이전트가
 첫 기억을 쓰고, 그것을 다시 찾아 읽어 낸다. v6.1.0 릴리스 기준이다.
 
+먼저 예제 보관함에서 [환불 기한을 바꾸고 어떤 고객 답변을 다시 봐야 하는지](#결정-변경-따라하기) 확인해 볼 수 있다.
+
 단계마다 더 자세한 내용은 운용 참고서인 [SETUP.md](SETUP.md)로 이어지는 링크를
 따라가면 된다.
 
@@ -128,6 +130,67 @@ scope 기억으로 남기고, 그 노드에 필요한 턴만 인용한다.
 - **Claude Code나 Codex.** 하나만 연결해도, 둘 다 연결해도 된다.
 - **vault용 빈 비공개 Git 저장소.** README나 라이선스 없이 만든다. 필수는 아니지만
   권장한다 — vault에는 대화 기록과 개인 메모가 쌓이기 때문이다.
+
+## 결정 변경 따라하기
+
+가게의 환불 기한을 줄였다. 고객에게 예전 기한을 약속하는 문서는 어디에 남아 있을까? 개인 프로젝트에 OSK를 설치하기 전에 빈 보관함으로 확인할 수 있다.
+
+**예제 보관함 준비.** Git, Python 3.11 이상, 로그인한 Claude Code CLI가 필요하다. 평소 쓰는 프로젝트 바깥 폴더에서 실행한다.
+
+```sh
+git clone --depth 1 --branch v6.1.1 https://github.com/lpaiu-cs/osk-system.git osk-demo
+cd osk-demo
+```
+
+macOS/Linux에서는 `python3 -m venv .venv`를 실행한 뒤 `.venv/bin/python -m pip install -r _governance/_engine/requirements.txt`를 실행한다. Windows PowerShell에서는 `py -3.12 -m venv .venv`를 실행한 뒤 `.venv/Scripts/python.exe -m pip install -r _governance/_engine/requirements.txt`를 실행한다.
+
+아래 내용을 `osk-demo` 폴더에 `demo-mcp.json`으로 저장한다. Windows라면 `command` 값은 `.venv/Scripts/python.exe`로 쓴다.
+
+```json
+{
+  "mcpServers": {
+    "osk-demo": {
+      "command": ".venv/bin/python",
+      "args": ["_governance/_engine/mcp_server.py"],
+      "env": {"OSK_VAULT_ROOT": "."}
+    }
+  }
+}
+```
+
+같은 폴더에서 Claude를 시작한다. 이 대화는 예제용 MCP 설정을 쓴다. 개인 원격 저장소나 훅, 백그라운드 작업을 설정할 필요가 없다.
+
+```sh
+claude --setting-sources project --strict-mcp-config --mcp-config demo-mcp.json
+```
+
+**같은 대화에서 다음 네 문장을 차례로 입력한다.** Claude가 물으면 `osk-demo` 도구 사용을 허용한다.
+
+1. **결정을 기록한다.**
+
+   > 가상의 가게 예제니까 대화 인용은 생략하고 osk-demo 도구를 써 줘. 전체 현황을 보고 검색한 뒤, 세션 키 refund-demo로 00_Scope/refund-demo에 프로젝트 첫 문서 refund-demo를 만들어 줘. 새 공간을 만드는 데 동의해. 이 프로젝트에 ‘환불 기한’이라는 별도 문서로 구매 후 30일 이내에 환불을 신청할 수 있다는 결정을 기록해 줘.
+
+   프로젝트 첫 문서와, 본문에 **30일**이라고 적힌 결정 문서가 생긴다.
+
+2. **결정을 근거로 고객 답변을 쓴다.**
+
+   > ‘환불 안내 답변’ 문서를 만들고 “구매 후 30일 이내에 환불을 신청할 수 있습니다.”라고 적어 줘. ‘환불 기한’을 이 답변의 근거(derived-from)로 연결해 줘. 저장한 연결과 전체 현황의 rechecks 항목에 이 답변이 나오는지 보여 줘.
+
+   답변의 근거가 `[[환불 기한]]`으로 표시된다. 아직 이 답변은 재검토 목록에 없다.
+
+3. **결정을 바꾼다.**
+
+   > 결제사의 접수 기한에 맞춰 구매 후 14일 이내로 환불 기한을 줄였어. 기존 ‘환불 기한’ 문서의 본문과 요약을 갱신해 줘. 안내 답변은 내가 검토할 수 있게 그대로 둬.
+
+   두 문서를 열어 보면 결정에는 **14일**, 고객 답변에는 **30일**이 적혀 있다.
+
+4. **어느 문서를 왜 다시 봐야 하는지 확인한다.**
+
+   > OSK 전체 현황에서 다시 볼 문서와 그 이유를 찾아 줘. 두 문서를 읽고 지금 고객에게 어떤 약속을 하게 되는지 짚어 줘.
+
+   `rechecks.items`에서 `node`는 `환불 안내 답변`, `target`은 `[[환불 기한]]`, `why`는 `근거가 바뀌었다`로 나온다. 고객에게는 현재 기한보다 16일 더 긴 환불을 약속하고 있다. 두 Markdown 파일은 `00_Scope/refund-demo/`에서 직접 열어 볼 수 있다.
+
+   같은 결과를 직접 보려면 예제 폴더에서 `sh osk-cli.sh rechecks`를 실행한다. PowerShell에서는 `.\osk-cli.cmd rechecks`를 쓴다.
 
 ## 1단계: vault 만들기
 
