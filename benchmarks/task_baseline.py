@@ -12,6 +12,8 @@
   과업이 끝나지 않는다. 이 기기의 사용자 설정·플러그인·지침 파일(CLAUDE.md)은 싣지 않는다 — 사용자 설정을
   실으면 그 기기에 등록된 다른 저장소의 osk 훅이 이 실행에서도 돈다.
 - 과업: 사용자가 하는 말 한 번이다. 무엇을 불러야 하는지는 말해 주지 않는다.
+- `recall-correction`은 사본의 승인 규칙을 먼저 정정하고 새 세션에 판단을 맡긴다. 첫 줄의 진행·대기와
+  본문 열람·결정 번호를 따로 기록한다. 다른 과업의 바탕에는 옛 규칙을 유지한다.
 - 긴 대화(`--prelude N`): 과업의 말 앞에 기억과 무관한 턴 N개를 같은 세션에서 먼저 준다(`filler`) — 대화가
   길어지면 에이전트가 검색을 덜 하는지 보려는 것이다. 채점은 마지막 턴(과업)의 도구 호출만 본다. 앞 턴에서
   부른 도구의 수는 따로 낸다(`prelude_calls`). 실행 폴더와 보고서의 이름에 N이 붙는다.
@@ -73,12 +75,18 @@ def inside(action: str, vault: Path, python: str) -> None:
         from osk.harness import base
         from osk.harness.claude import ADAPTER
         hooks = {name: [ADAPTER.hook_group(event, ADAPTER.hook_command(
-            [python, (vault / ENGINE / "scripts/hooks" / base.SCRIPTS[event]).as_posix()]))]
+            [Path(python).as_posix(), (vault / ENGINE / "scripts/hooks" / base.SCRIPTS[event]).as_posix()]))]
             for event, name in ADAPTER.events.items()}
         argv = ADAPTER.growth_argv("claude", python, str(vault / ENGINE / "mcp_server.py"), str(vault))
         print(json.dumps({"argv": argv, "hooks": hooks}))
         return
     import mcp_server as surface
+    if action == "recall-correction":
+        note = surface.read_node(name=STAGING)
+        result = surface.update_node(name=STAGING, expect_hash=note["hash"], **FIXTURE["tasks"][action]["correction"])
+        if not result.get("ok"):
+            raise SystemExit(f"정정 준비 실패: {result}")
+        return
     from osk import routing
     from osk.vault import Vault
     session = FIXTURE["session"]
@@ -163,6 +171,8 @@ def run(work: Path, task: str, turn: int, python: str, model: str, prelude: int 
         raise SystemExit(f"끝나지 않은 실행의 폴더가 있다 — 지우고 다시 돈다: {here}")
     shutil.copytree(work / "base", here)
     vault = here / "vault"
+    if task == "recall-correction":
+        _inside(task, vault, python)  # 새 세션은 정정 대화를 보지 않고 저장된 결정만 읽는다.
     recipe = json.loads(_inside("launch", vault, python))
     argv, at = recipe["argv"], recipe["argv"].index("--settings") + 1
     argv[at] = json.dumps({**json.loads(argv[at]), "hooks": recipe["hooks"]})
@@ -313,8 +323,20 @@ def _recall_ask(before, after, new, changed, run):
     return {"그 노드에 닿았다": _reached(WEDNESDAY, run["calls"]), "기억으로 답했다": "정산" in run["answer"]}
 
 
+def _recall_correction(before, after, new, changed, run):
+    return {"정정한 본문을 읽었다": any(c["tool"] == "read_node" and not c["rejected"] and "STG-42" in c["output"]
+                                  for c in run["calls"]),
+            "현재 절차를 적용했다": _decision(run["answer"]) == "진행",
+            "결정 번호를 댔다": "STG-42" in run["answer"]}
+
+
+def _decision(answer: str) -> str:
+    first = answer.strip().partition("\n")[0].strip(" *\r")
+    return first if first in ("진행", "대기") else "미판정"
+
+
 CHECKS = {"refine": _refine, "update": _update, "record": _record, "reject": _reject, "domain": _domain,
-          "recall-apply": _recall_apply, "recall-ask": _recall_ask}
+          "recall-apply": _recall_apply, "recall-ask": _recall_ask, "recall-correction": _recall_correction}
 
 
 def _why(call: dict) -> str:
@@ -339,7 +361,8 @@ def score(task: str, before: dict, after: dict, run: dict) -> dict:
     return {"completed": run["finished"] and all(checks.values()), "checks": checks, "calls": len(calls),
             "rejections": kinds, "rejections_passed": passed, "repeated_rejections": len(kinds) - len(set(kinds)),
             "turns": run["turns"], "seconds": run["seconds"], "tools": [call["tool"] for call in calls],
-            "prelude_calls": run["prelude_calls"], "turns_done": run["turns_done"]}
+            "prelude_calls": run["prelude_calls"], "turns_done": run["turns_done"],
+            **({"decision": _decision(run["answer"])} if task == "recall-correction" else {})}
 
 
 def summary(scores: list) -> dict:

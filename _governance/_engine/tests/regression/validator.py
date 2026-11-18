@@ -373,6 +373,16 @@ def test_surface_name_roundtrip():
           not _w(write.create_node, VAULT, "regr-rt-ref", "참조", "본문",
                  "fable-5", space="00_Scope/W1",
                  edges={"derived-from": h["id"]})["dangling"])
+    current = "dry-run 통과 뒤 자동 적용"
+    corrected = M.update_node(h["title"], summary=current, old_text="본문 내용",
+                              new_text="dry-run이 호환성을 검증하므로 수동 승인을 폐지했다.")
+    check("정정한 결정을 저장했다", corrected.get("ok"), corrected)
+    first = M.search(h["title"], 1)[0]
+    check("옛 이름으로 찾아도 정정한 요약을 먼저 보여 준다",
+          next(iter(first)) == "summary" and first["summary"] == current, first)
+    check("정정 전 이름과 id로 변경 이유를 열 수 있다",
+          first["title"] == h["title"] and first["id"] == h["id"] and
+          all("호환성" in M.read_node(key)["body"] for key in (first["title"], first["id"])), first)
     for nm in ("regr-rt-name", "regr-rt-ref"):
         (ROOT / f"00_Scope/W1/{nm}.md").unlink(missing_ok=True)
 

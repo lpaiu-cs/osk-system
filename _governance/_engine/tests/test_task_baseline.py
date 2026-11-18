@@ -79,6 +79,17 @@ def problems() -> list[str]:
     if tb.COMMIT not in run["calls"][0]["output"]:
         bad.append("record: 응답의 한글이 풀리지 않았다")
 
+    read = {"tool": "read_node", "rejected": False, "output": "결정 STG-42"}
+    for answer, calls, decision, expected in [
+        ("진행\n근거 STG-42", [read], "진행", [True, True, True]),
+        ("**대기**\n근거 STG-42", [read], "대기", [True, False, True]),
+        ("진행", [], "진행", [False, True, False]),
+        ("", [{**read, "rejected": True}], "미판정", [False, False, False]),
+    ]:
+        result = tb.score("recall-correction", {}, {}, {**QUIET, "calls": calls, "answer": answer})
+        if list(result["checks"].values()) != expected or result["decision"] != decision:
+            bad.append(f"정정 회상 채점: {result}")
+
     applied = tb.score("recall-apply", {}, {}, run)
     got = (applied["completed"], list(applied["checks"].values()), applied["calls"], applied["rejections"],
            applied["rejections_passed"], applied["repeated_rejections"])
