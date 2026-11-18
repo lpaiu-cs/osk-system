@@ -5,7 +5,7 @@
 This tutorial is for people who use Claude Code or Codex but have never set up
 osk-system. It starts from an empty folder and ends with a verified setup. At the
 end, your agent writes its first memory, then finds it and reads it back. Written
-for release v6.1.0.
+for release v6.1.2.
 
 To try OSK in a disposable vault first, [follow a refund decision through to the customer reply it affects](#try-a-decision-change).
 
@@ -152,7 +152,7 @@ Your shop shortens its refund window. Which customer-facing note still promises 
 **Prepare a disposable vault.** You need Git, Python 3.11+ and a signed-in Claude Code CLI. In a folder outside your projects, run:
 
 ```sh
-git clone --depth 1 --branch v6.1.1 https://github.com/lpaiu-cs/osk-system.git osk-demo
+git clone --depth 1 --branch v6.1.2 https://github.com/lpaiu-cs/osk-system.git osk-demo
 cd osk-demo
 ```
 
@@ -217,7 +217,7 @@ claude --setting-sources project --strict-mcp-config --mcp-config demo-mcp.json
 
 Clone a release tag, not the `main` branch, which moves between releases. The
 updater compares your files with a release. Starting exactly on one lets Step 2
-record a clean baseline. `v6.1.0` works as written. You can use the newest tag
+record a clean baseline. `v6.1.2` works as written. You can use the newest tag
 from the [releases page](https://github.com/lpaiu-cs/osk-system/releases) instead,
 as long as you use the same tag again in Step 2.
 
@@ -225,7 +225,7 @@ Run these in the folder that will contain the vault, such as `C:/osk` on
 Windows (create it first). The commands are the same on every OS:
 
 ```bash
-git clone --branch v6.1.0 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
+git clone --branch v6.1.2 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
 cd my-osk-vault
 git switch -c main
 ```
@@ -295,13 +295,13 @@ from local edits. The updater downloads the release from GitHub to compare.
 macOS/Linux:
 
 ```bash
-.venv/bin/python -m osk.update --to v6.1.0 --apply
+.venv/bin/python -m osk.update --to v6.1.2 --apply
 ```
 
 Windows (PowerShell):
 
 ```powershell
-.venv\Scripts\python.exe -m osk.update --to v6.1.0 --apply
+.venv\Scripts\python.exe -m osk.update --to v6.1.2 --apply
 ```
 
 The first run changes none of your files. It prints the plan, then exits with
@@ -345,7 +345,7 @@ git push
 ```
 
 **Check:** `.venv/bin/python -m osk.update` reports the selected version as
-`current` (`v6.1.0` in this example). On Windows, use
+`current` (`v6.1.2` in this example). On Windows, use
 `.venv\Scripts\python.exe -m osk.update`. `git status` is clean.
 `osk.cli status` shows `"protected_regions": {"_governance": "clean"}`.
 

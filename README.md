@@ -194,7 +194,7 @@ release tag rather than `main` (newer tags are on the
 [releases page](https://github.com/lpaiu-cs/osk-system/releases)):
 
 ```bash
-git clone --branch v6.1.0 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
+git clone --branch v6.1.2 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
 cd my-osk-vault
 git switch -c main
 python _governance/_engine/scripts/setup.py --interactive
