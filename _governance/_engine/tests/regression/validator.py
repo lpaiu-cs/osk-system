@@ -354,7 +354,8 @@ def test_surface_name_roundtrip():
     """list_nodes를 없앤 설계에서 search는 이름을 얻는 유일한 통로다. 그 이름이
     그대로 쓰이지 않으면 발견과 지목 사이가 끊어진다."""
     import mcp_server as M
-    r = _w(write.create_node, VAULT, "regr-rt-name", "왕복", "본문 내용",
+    old_rule = "검토자가 승인 버튼을 눌러야 적용한다."
+    r = _w(write.create_node, VAULT, "regr-rt-name", "왕복", old_rule,
            "fable-5", space="00_Scope/W1")
     check("전제: 생성", r["ok"], r)
     hits = [h for h in M.search("왕복", 8) if h["path"].endswith("regr-rt-name.md")]
@@ -365,7 +366,7 @@ def test_surface_name_roundtrip():
     check("그 title로 read_node가 된다",
           "error" not in M.read_node(h["title"]), M.read_node(h["title"]))
     check("그 title로 update_node가 된다",
-          _w(write.update_node, VAULT, h["title"], summary="갱신")["ok"])
+          _w(write.update_node, VAULT, h["title"], summary="수동 승인 뒤 적용")["ok"])
     # derived-from의 노드 근거는 id다 — 그 id도 같은 검색 결과가 함께 준다.
     # (발견→지목이 끊어지지 않는 것은 title이 아니라 이 id가 담보한다)
     check("검색 결과가 id도 함께 준다", bool(h.get("id")), h)
@@ -374,15 +375,30 @@ def test_surface_name_roundtrip():
                  "fable-5", space="00_Scope/W1",
                  edges={"derived-from": h["id"]})["dangling"])
     current = "dry-run 통과 뒤 자동 적용"
-    corrected = M.update_node(h["title"], summary=current, old_text="본문 내용",
-                              new_text="dry-run이 호환성을 검증하므로 수동 승인을 폐지했다.")
-    check("정정한 결정을 저장했다", corrected.get("ok"), corrected)
+    reason = "dry-run이 호환성을 검증하므로 수동 승인을 폐지했다."
+    amended = M.update_node(h["title"], old_text=old_rule, new_text=reason)
+    check("본문만 고치면 검색에 남은 요약을 쓰기 응답에서 확인할 수 있다",
+          amended.get("ok") and amended.get("review_summary", {}).get("summary") == "수동 승인 뒤 적용", amended)
+    corrected = M.update_node(h["title"], summary=current, expect_hash=amended["new_hash"])
+    check("정정한 요약을 저장했다", corrected.get("ok") and "review_summary" not in corrected, corrected)
     first = M.search(h["title"], 1)[0]
     check("옛 이름으로 찾아도 정정한 요약을 먼저 보여 준다",
           next(iter(first)) == "summary" and first["summary"] == current, first)
     check("정정 전 이름과 id로 변경 이유를 열 수 있다",
           first["title"] == h["title"] and first["id"] == h["id"] and
           all("호환성" in M.read_node(key)["body"] for key in (first["title"], first["id"])), first)
+    evidence = "\n\n# 관측\n- 2026-11-19 · `https://example.org/policy` · 지지 — 적용 조건"
+    for label, claim, supplied, review in [
+        ("근거 추가", reason + evidence, None, False),
+        ("근거 정정", reason + evidence.replace("적용 조건", "적용 일자"), None, False),
+        ("본문 설명 추가", reason + "\n\n예외는 배포 기록에 적는다." + evidence, None, False),
+        ("전문에서 기존 규칙 교체", "이제 샌드박스에서 먼저 검증한다." + evidence, None, True),
+        ("기존 문단 끝에서 결론 번복", "이제 샌드박스에서 먼저 검증한다. 이 절차는 오늘부로 폐지한다." + evidence, None, True),
+        ("호출자가 기존 요약을 명시", "검증 환경을 별도로 둔다." + evidence, current, False),
+        ("요약과 본문을 함께 정정", "격리된 환경에서 확인한다." + evidence, "격리 환경에서 검증", False),
+    ]:
+        result = M.update_node(h["id"], body=claim, summary=supplied, expect_hash=M.read_node(h["id"])["hash"])
+        check(label + "의 요약 확인 신호", result.get("ok") and ("review_summary" in result) == review, result)
     for nm in ("regr-rt-name", "regr-rt-ref"):
         (ROOT / f"00_Scope/W1/{nm}.md").unlink(missing_ok=True)
 
