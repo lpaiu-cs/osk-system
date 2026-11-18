@@ -136,8 +136,8 @@ Never edit these files by hand.
 
 ## Prerequisites
 
-- **Python 3.11 or newer.** README and SETUP use 3.12, and so do the commands
-  below. Any 3.11+ interpreter works if you change the version in the commands.
+- **Python 3.11 or newer.** The installation steps use 3.12 in their examples.
+  If a command names 3.12, you can substitute your installed version.
 - **Git**, with `user.name` and `user.email` set so that commits work, and
   credentials that can push to your private remote.
 - **Claude Code and/or Codex.** You can connect one or both.
@@ -156,7 +156,14 @@ git clone --depth 1 --branch v6.1.1 https://github.com/lpaiu-cs/osk-system.git o
 cd osk-demo
 ```
 
-On macOS/Linux run `python3 -m venv .venv`, then `.venv/bin/python -m pip install -r _governance/_engine/requirements.txt`. In Windows PowerShell run `py -3.12 -m venv .venv`, then `.venv/Scripts/python.exe -m pip install -r _governance/_engine/requirements.txt`.
+On macOS/Linux run `python3 -m venv .venv`, then `.venv/bin/python -m pip install -r _governance/_engine/requirements.txt`.
+
+In Windows PowerShell, check that `py -3 --version` reports Python 3.11 or newer. Then create the environment and install the dependencies.
+
+```powershell
+py -3 -m venv .venv
+.venv/Scripts/python.exe -m pip install -r _governance/_engine/requirements.txt
+```
 
 Save the following as `demo-mcp.json` in `osk-demo`. On Windows use `.venv/Scripts/python.exe` for `command`.
 

@@ -123,8 +123,8 @@ scope 기억으로 남기고, 그 노드에 필요한 턴만 인용한다.
 
 ## 준비물
 
-- **Python 3.11 이상.** README와 SETUP은 3.12를 쓰고, 아래 명령도 그렇다. 3.11
-  이상의 인터프리터라면 명령의 버전만 바꿔 쓰면 된다.
+- **Python 3.11 이상.** 설치 절차의 예시는 3.12를 사용한다. 명령에 3.12가 명시돼 있으면
+  자신이 설치한 버전으로 바꿔 실행할 수 있다.
 - **Git.** 커밋할 수 있도록 `user.name`과 `user.email`을 설정해 두고, 개인 원격에
   push할 수 있는 인증 정보도 갖춘다.
 - **Claude Code나 Codex.** 하나만 연결해도, 둘 다 연결해도 된다.
@@ -142,7 +142,14 @@ git clone --depth 1 --branch v6.1.1 https://github.com/lpaiu-cs/osk-system.git o
 cd osk-demo
 ```
 
-macOS/Linux에서는 `python3 -m venv .venv`를 실행한 뒤 `.venv/bin/python -m pip install -r _governance/_engine/requirements.txt`를 실행한다. Windows PowerShell에서는 `py -3.12 -m venv .venv`를 실행한 뒤 `.venv/Scripts/python.exe -m pip install -r _governance/_engine/requirements.txt`를 실행한다.
+macOS/Linux에서는 `python3 -m venv .venv`를 실행한 뒤 `.venv/bin/python -m pip install -r _governance/_engine/requirements.txt`를 실행한다.
+
+Windows PowerShell에서는 `py -3 --version`으로 Python 3.11 이상인지 확인한다. 이어서 가상환경을 만들고 의존성을 설치한다.
+
+```powershell
+py -3 -m venv .venv
+.venv/Scripts/python.exe -m pip install -r _governance/_engine/requirements.txt
+```
 
 아래 내용을 `osk-demo` 폴더에 `demo-mcp.json`으로 저장한다. Windows라면 `command` 값은 `.venv/Scripts/python.exe`로 쓴다.
 
