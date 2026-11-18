@@ -246,9 +246,19 @@ The body is Markdown, as Obsidian reads it.
   reference reviews (Mechanism §9-4 1). The section is not part of the node's
   state for rechecks (Bylaws §7 2):
   adding a line does not make the nodes that cite this one recheck candidates. The
-  validator rule `evidence-section` checks each line's form and resolves its
-  coordinate; it also reports a line that points at a node and a non-node still
-  left in `derived-from` (Mechanism §6-1 4). It reports until activated.
+  validator rule `evidence-section` checks each line's form, resolves local
+  coordinates, and checks a URL's format. It also reports a line that points
+  at a node and a non-node still left in `derived-from` (Mechanism §6-1 4).
+  It reports until activated.
+
+  The CLI and MCP validation reports include `evidence_section_checks`.
+  For example, `https://source.invalid/policy` passes the URL format check
+  (`url: format_only`). To assess support (`claim_support: not_checked`),
+  open the source and compare the passage with the claim. The v6.1.1
+  installation guide supports “OSK requires Python 3.11 or newer.” Its
+  prerequisites give no evidence for a shop's refund deadline. If the source
+  is unavailable, record what still needs checking in the note body.
+  [OSK v6.1.1 prerequisites](https://github.com/lpaiu-cs/osk-system/blob/v6.1.1/docs/GETTING-STARTED.md#prerequisites)
 
 ### 2.3 Predicate Edges
 

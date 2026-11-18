@@ -331,6 +331,7 @@ class RecheckCases:
             quoted = chr(10).join(['x', '', '> ## 근거', '>', '> - a'])
             assert validate.evidence_errors(VAULT, quoted, []) == [], 'a quoted heading was read as the section'
             node('A', body=chr(10).join(['A claim.', '', '## 근거', '', '- 2026-10-05 · `deadbeef#2` · 지지 — none',
+                                         '- 2026-10-05 · `https://source.invalid/policy` · 지지 — url',
                                          '- 2026-10-05 · `brain:wiki/x.md` · 지지 — held']))
             # B was written before v5.4 with a round in derived-from; writes no longer add one
             from unittest import mock
@@ -341,6 +342,7 @@ class RecheckCases:
             from osk import roots
             roots.declare(VAULT, 'brain', 'wiki')
             rep = validate.run(VAULT, cli.published_tools)
+            assert rep['evidence_section_checks'] == {'url': 'format_only', 'claim_support': 'not_checked'}
             # a non-node left in derived-from is counted by node, not listed line by line
             assert list(rep['evidence_section']) == ['A'] and rep['evidence_section_leftovers'] == 1, rep['evidence_section']
             # a declared root that is not on this device is held, not a violation (Mechanism §6-1 4)

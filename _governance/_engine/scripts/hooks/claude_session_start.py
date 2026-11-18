@@ -346,6 +346,10 @@ def _memory_block(vault, scope_memory, key: str, st: dict | None = None) -> str:
 
 def _bootstrap(vault, key: str, *, bound: bool, ident: tuple | None = None, workspace: dict | None = None,
                landing: str | None = None, bindings: dict | None = None) -> str:
+    from osk import update_check, update_state
+    installed = update_check.current(vault)
+    if not isinstance(installed, str) or not re.fullmatch(update_state.VERSION_RE, installed):
+        installed = "확인 불가"
     arg = json.dumps(key, ensure_ascii=False)
     workspace = workspace or {}
     bindings = bindings or {}
@@ -369,6 +373,7 @@ def _bootstrap(vault, key: str, *, bound: bool, ident: tuple | None = None, work
                         "확인한 뒤 scope_memory를 읽어라.")
     guide = vault.root / "docs" / "OPERATE-AGENT.md"     # 세션은 vault 밖 작업 폴더에서 돈다 — 절대 경로로
     return (f"[osk 세션 시작 — session={arg}{conversation}]\n"
+            f"OSK 설치판(갱신 저널 기준): {installed}\n"
             f"이 세션에서 노드를 처음 쓰기 전에 `overview(session={arg})`를 한 번 불러 군집·허브 트리(`hub_tree`)·열린 사건·근거 "
             "재검토 후보를 확인하라. 새 노드는 허브 트리에서 주제를 덮는 가장 깊은 군집에 둔다(시행령 §3 8항). "
             f"기억을 묻는 질문에는 `search(session={arg})`를 먼저 쓴다. 노드를 새로 쓰기 전에도 그 주제로 먼저 "
