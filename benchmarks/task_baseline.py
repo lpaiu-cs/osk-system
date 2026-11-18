@@ -207,10 +207,10 @@ def _commit_rule(answer: str) -> str:
     lines = [line.strip() for line in answer.splitlines() if line.strip() and not line.strip().startswith("```")]
     if len(lines) != 1:
         return "기타"
-    prefix, _, subject = lines[0].strip("`* ").partition(":")
-    if not subject.strip():
+    prefix, _, subject = lines[0].partition(":")
+    if not subject.strip("`*_ "):
         return "기타"
-    return {"계정응답": "현재", "회원검사": "과거"}.get(prefix, "기타")
+    return {"계정응답": "현재", "회원검사": "과거"}.get(prefix.strip("`*_ "), "기타")
 
 
 def _version_line_chars(row: dict) -> int | None:
