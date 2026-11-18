@@ -121,6 +121,8 @@ def problems() -> list[str]:
     for header, answer, rule, chars in [
         ("[osk 세션 시작 — test]\n" + version, "`계정응답: 오류 수정`", "현재", len(version)),
         ("[osk 세션 시작 — test]\n저장된 요약\n" + version, "회원검사: 오류 수정", "과거", 0),
+        ("", "```text\n계정응답: 오류 수정\n```", "현재", None),
+        ("", "계정응답: 오류 수정\n회원검사: 오류 수정", "기타", None),
         ("", "fix: 계정응답: 오류 수정", "기타", None),
     ]:
         hook = {"subtype": "hook_response", "hook_event": "SessionStart",

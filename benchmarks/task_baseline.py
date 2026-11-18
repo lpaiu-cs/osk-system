@@ -204,7 +204,10 @@ def _ends_turn(row: bytes) -> bool:
 
 
 def _commit_rule(answer: str) -> str:
-    prefix, _, subject = answer.strip().strip("`* ").partition(":")
+    lines = [line.strip() for line in answer.splitlines() if line.strip() and not line.strip().startswith("```")]
+    if len(lines) != 1:
+        return "기타"
+    prefix, _, subject = lines[0].strip("`* ").partition(":")
     if not subject.strip():
         return "기타"
     return {"계정응답": "현재", "회원검사": "과거"}.get(prefix, "기타")
@@ -342,7 +345,7 @@ def _record(before, after, new, changed, run):
 
 
 def _startup_rule(before, after, new, changed, run):
-    return {"현재 규약으로 제목을 썼다": _commit_rule(run["answer"]) == "현재"}
+    return {"현재 규약으로 제목을 썼다": run["startup"]["rule"] == "현재"}
 
 
 def _reject(before, after, new, changed, run):
@@ -365,8 +368,10 @@ def _recall_ask(before, after, new, changed, run):
     return {"그 노드에 닿았다": _reached(WEDNESDAY, run["calls"]), "기억으로 답했다": "정산" in run["answer"]}
 
 
-CHECKS = {"startup-rule": _startup_rule, "refine": _refine, "update": _update, "record": _record, "reject": _reject, "domain": _domain,
+CHECKS = {"refine": _refine, "update": _update, "record": _record, "reject": _reject, "domain": _domain,
           "recall-apply": _recall_apply, "recall-ask": _recall_ask}
+
+CHECKS["startup-rule"] = _startup_rule
 
 
 def _why(call: dict) -> str:
