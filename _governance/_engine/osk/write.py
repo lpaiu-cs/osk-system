@@ -639,19 +639,7 @@ def update_node_locked(vault: Vault, name: str, body: str | None = None,
     if _seen is not None and _seen.get(n.id) == rc_pre:
         _seen[n.id] = rechecks.state(data)
     if body is not None:
-        saved_body = norm_body(new_body)
-        if old_text is None:
-            # 전문 치환은 긴 글을 다시 쓰다 흘릴 수 있다. 앵커 편집은 지울 글을 호출자가 직접 적었다.
-            dropped = _dropped(n.body, saved_body)
-            if dropped:
-                out["dropped"] = dropped
-        if summary is None:
-            before, after = _claim_text(n.body), _claim_text(saved_body)
-            if before != after and not set(prose.segment_texts(before)).issubset(prose.segment_texts(after)):
-                out["review_summary"] = {
-                    "summary": meta["summary"],
-                    "note": "검색에 표시되는 요약이다. 바뀐 결정과 다르면 new_hash를 expect_hash로 주어 summary를 갱신하라.",
-                }
+        out.update(_body_feedback(n, norm_body(new_body), old_text, summary))
     if replaced_summary is not None:
         out["replaced_summary"] = replaced_summary
     return evictions.after_node_write(vault, out, settle, "merged", path.stem)
@@ -667,6 +655,23 @@ def _edge_echo(node, add_edges, remove_edges) -> dict:
 def _claim_text(body: str) -> str:
     span = rechecks.evidence_span(body)
     return (body[:span[0]] if span else body).strip()
+
+
+def _body_feedback(node: contract.Node, saved: str, old_text: str | None, summary: str | None) -> dict:
+    out = {}
+    if old_text is None:
+        # 전문 치환은 긴 글을 다시 쓰다 흘릴 수 있다. 앵커 편집은 지울 글을 호출자가 직접 적었다.
+        dropped = _dropped(node.body, saved)
+        if dropped:
+            out["dropped"] = dropped
+    if summary is None:
+        before, after = _claim_text(node.body), _claim_text(saved)
+        if before != after and not set(prose.segment_texts(before)).issubset(prose.segment_texts(after)):
+            out["review_summary"] = {
+                "summary": node.meta["summary"],
+                "note": "검색에 표시되는 요약이다. 바뀐 결정과 다르면 new_hash를 expect_hash로 주어 summary를 갱신하라.",
+            }
+    return out
 
 
 def _dropped(old_body: str, new_body: str) -> list[str]:
