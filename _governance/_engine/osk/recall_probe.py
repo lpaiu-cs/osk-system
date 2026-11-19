@@ -31,6 +31,7 @@ def submit(vault: Vault, session: str, sid: str, transcript: str | None, turn: i
         boundary = None
         if transcript and harness.get("claude").claims(sid, transcript):
             try:
+                transcript = str(Path(transcript).resolve())
                 stat = Path(transcript).stat()
                 boundary = [stat.st_dev, stat.st_ino, stat.st_size]
             except OSError:
@@ -38,7 +39,7 @@ def submit(vault: Vault, session: str, sid: str, transcript: str | None, turn: i
         payload = {"session": session, "sid": sid, "turn": turn, "requested_ns": requested,
                    "prompt": prompt[:2000], "transcript": transcript, "boundary": boundary}
         core.spawn_worker(vault, "osk.recall_probe", stdin=json.dumps(payload, ensure_ascii=False).encode("utf-8"))
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         # An optional measurement cannot replace the normal input-hook response.
         try:
             _save(record, {**row, "status": "failed", "error": type(exc).__name__})
@@ -92,7 +93,7 @@ def _candidates(vault: Vault, job: dict) -> dict:
     local = routing.bindings(vault, job["session"])
     query = job["prompt"]
     plain = [r["id"] for r in searcher.work_search(query, 8, local)]
-    paired = (query + "\n" + prior)[:2000]
+    paired = (query + "\n" + prior)[:2000].rstrip()
     with_reply = [r["id"] for r in searcher.work_search(paired, 8, local)] if prior and paired != query else None
     return {"status": "measured", "prompt_ids": plain, "prompt_reply_ids": with_reply}
 

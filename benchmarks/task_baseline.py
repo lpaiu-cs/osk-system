@@ -174,7 +174,8 @@ def filler(count: int) -> list[str]:
     return turns
 
 
-def run(work: Path, task: str, turn: int, python: str, model: str, prelude: int | None = None) -> Path:
+def run(work: Path, task: str, turn: int, python: str, model: str, prelude: int | None = None,
+        *, recall_shadow: bool = False) -> Path:
     """과업 하나를 새 사본에서 한 번 — 실행 기록(`stream.jsonl`)과 끝난 저장소를 실행 폴더에 남긴다. `prelude`를
     주면 무관한 턴들을 같은 세션에 먼저 넣는다(`_converse`)."""
     here = work / "runs" / (f"{task}-{turn}" if prelude is None else f"{task}-p{prelude}-{turn}")
@@ -193,6 +194,8 @@ def run(work: Path, task: str, turn: int, python: str, model: str, prelude: int 
     argv[at] = json.dumps({**json.loads(argv[at]), "hooks": recipe["hooks"]})
     argv += ["--model", model, "--setting-sources", "project"]       # 사용자 설정(훅·플러그인)을 싣지 않는다
     env = {**{k: v for k, v in os.environ.items() if k not in SCRUB}, **QUIET}
+    if recall_shadow:
+        env.update(OSK_RECALL_SHADOW="1", OSK_HOOK_WORKER="1")
     said, folder = FIXTURE["tasks"][task]["prompt"], here / FIXTURE["session"]
     if prelude is None:
         done = subprocess.run(argv, input=said.encode("utf-8"), capture_output=True, cwd=folder, env=env, timeout=LIMIT)
@@ -449,14 +452,19 @@ def main() -> int:
     parser.add_argument("--task", action="append", choices=list(FIXTURE["tasks"]))
     parser.add_argument("--python", default=sys.executable, help="MCP 서버와 훅을 돌릴 파이썬(mcp가 깔린 것)")
     parser.add_argument("--prelude", type=int, default=None, help="과업 앞에 둘 무관한 턴의 수 — 긴 대화로 잰다")
+    parser.add_argument("--recall-shadow", action="store_true", help="입력 훅의 후보 측정도 켜고 별도 폴더에 기록한다")
     args = parser.parse_args()
     work = args.work.resolve()
+    if args.recall_shadow:
+        work = work / "recall-shadow"
     build(work, args.ref, args.python, args.model)
+    if args.recall_shadow and not (work / "base/vault" / ENGINE / "osk/recall_probe.py").is_file():
+        parser.error("지정한 --ref는 입력 훅의 후보 측정을 지원하지 않는다")
     before, report = nodes(work / "base/vault"), {}
     for task in args.task or FIXTURE["tasks"]:
         scores = []
         for turn in range(1, args.repeat + 1):
-            here = run(work, task, turn, args.python, args.model, args.prelude)
+            here = run(work, task, turn, args.python, args.model, args.prelude, recall_shadow=args.recall_shadow)
             stream = (here / "stream.jsonl").read_text(encoding="utf-8", errors="replace")
             result = record(stream, startup=task == "startup-rule")
             scores.append(score(task, before, nodes(here / "vault"), result))

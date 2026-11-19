@@ -276,9 +276,13 @@ with patch.dict(os.environ, OSK_HOOK_WORKER="1", OSK_RECALL_SHADOW="0"), patch.o
     hook._input_tick(VAULT, prompt, "W1", "claude", sid, str(source))
     assert not spawn.called and recall_probe.report(VAULT, sid) == []
     os.environ["OSK_RECALL_SHADOW"] = "1"
-    received = hook._input_tick(VAULT, prompt, "W1", "claude", sid, str(source))
+    notice = "<system-reminder>cobaltbaseline</system-reminder>"
+    recall_probe.submit(VAULT, "W1", sid, str(source), 1, notice)
+    assert not spawn.called and recall_probe.report(VAULT, sid) == []
+    received = hook._input_tick(VAULT, {"prompt": notice + prompt["prompt"]}, "W1", "claude", sid, str(source))
     assert received["prompt_count"] == 2 and "prompt_ids" not in received
     job = json.loads(spawn.call_args.kwargs["stdin"])
+    assert job["prompt"] == prompt["prompt"]
 assert recall_probe.report(VAULT, sid)[0]["status"] == "pending"
 with source.open("a", encoding="utf-8") as f:
     f.write(json.dumps(reply("answer written after submit")) + "\n")
