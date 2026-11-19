@@ -46,6 +46,7 @@ import subprocess
 import sys
 import tarfile
 import threading
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -180,7 +181,10 @@ def run(work: Path, task: str, turn: int, python: str, model: str, prelude: int 
     """과업 하나를 새 사본에서 한 번 — 실행 기록(`stream.jsonl`)과 끝난 저장소를 실행 폴더에 남긴다. `prelude`를
     주면 무관한 턴들을 같은 세션에 먼저 넣는다(`_converse`)."""
     here = work / "runs" / (f"{task}-{turn}" if prelude is None else f"{task}-p{prelude}-{turn}")
-    if (here / "stream.jsonl").exists():
+    recorded = here / "stream.jsonl"
+    if recorded.exists():
+        if not (here / "transcript.jsonl").exists():
+            _keep_transcript(recorded.read_bytes(), here, recall_shadow=recall_shadow)
         return here
     if here.exists():
         raise SystemExit(f"끝나지 않은 실행의 폴더가 있다 — 지우고 다시 돈다: {here}")
@@ -205,8 +209,8 @@ def run(work: Path, task: str, turn: int, python: str, model: str, prelude: int 
     else:
         stream = _converse(argv + ["--input-format", "stream-json"], [*filler(prelude), said], folder, env,
                            LIMIT * (1 + prelude // 10), here / "stderr.txt")
-    _keep_transcript(stream, here)
-    (here / "stream.jsonl").write_bytes(stream)
+    recorded.write_bytes(stream)   # A retry can finish archiving without repeating a model run.
+    _keep_transcript(stream, here, recall_shadow=recall_shadow)
     return here
 
 
@@ -269,10 +273,18 @@ def _converse(argv: list, texts: list, folder: Path, env: dict, limit: int, erro
     return b"".join(got)
 
 
-def _keep_transcript(stream: bytes, here: Path) -> None:
+def _keep_transcript(stream: bytes, here: Path, *, recall_shadow: bool) -> None:
     home = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
     found = re.search(rb'"session_id":\s*"([0-9a-f\-]{36})"', stream)
     for path in home.glob(f"projects/*/{found[1].decode()}.jsonl") if found else ():
+        if recall_shadow:
+            # Each input hook registered its worker before Claude returned. This run owns its vault.
+            samples = list((here / "vault/.git").glob("*.recall-shadow/*.json"))
+            deadline = time.monotonic() + 60
+            while any(json.loads(sample.read_bytes())["status"] == "pending" for sample in samples):
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(f"후보 측정이 대기 중이라 전사를 원래 위치에 남겼다. 같은 실행을 다시 조회한다: {here}")
+                time.sleep(0.1)
         shutil.move(path, here / "transcript.jsonl")
         if not any(left.is_file() for left in path.parent.rglob("*")):      # 빈 기억 폴더만 남는다
             shutil.rmtree(path.parent)

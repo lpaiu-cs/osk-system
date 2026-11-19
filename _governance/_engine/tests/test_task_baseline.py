@@ -8,8 +8,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sys
+import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "benchmarks"))
 import task_baseline as tb  # noqa: E402
@@ -67,7 +70,42 @@ CASES = [
 ]
 
 
+def check_recall_archive() -> None:
+    with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, CLAUDE_CONFIG_DIR=temp):
+        work = Path(temp)
+        here = work / "runs/startup-rule-p30-1"
+        sample = here / "vault/.git/session.recall-shadow/31.json"
+        sample.parent.mkdir(parents=True)
+        sample.write_text('{"status":"pending"}')
+        sid = "01234567-89ab-cdef-0123-456789abcdef"
+        (here / "stream.jsonl").write_text(json.dumps({"session_id": sid}))
+        source = work / "projects/harbor" / (sid + ".jsonl")
+        source.parent.mkdir(parents=True)
+        source.write_text("previous reply")
+
+        def retry():
+            return tb.run(work, "startup-rule", 1, "unused", "unused", 30, recall_shadow=True)
+
+        with patch.object(tb.time, "monotonic", side_effect=[0, 60]):
+            try:
+                retry()
+            except TimeoutError:
+                pass
+            else:
+                raise AssertionError("a pending sample must keep its source transcript")
+        assert source.exists() and not (here / "transcript.jsonl").exists()
+
+        def finish_worker(_):
+            assert source.read_text() == "previous reply"
+            sample.write_text('{"status":"measured"}')
+
+        with patch.object(tb.time, "sleep", side_effect=finish_worker):
+            assert retry() == here
+        assert (here / "transcript.jsonl").read_text() == "previous reply" and not source.exists()
+
+
 def problems() -> list[str]:
+    check_recall_archive()
     bad = []
     run = tb.record(STREAM)
     got = ([c["tool"] for c in run["calls"]], [c["rejected"] for c in run["calls"]],
