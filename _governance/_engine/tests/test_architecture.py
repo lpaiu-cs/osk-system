@@ -47,7 +47,7 @@ LAYERS = {
               "osk.response_growth", "osk.update_plan", "osk.daemon_control", "osk.update", "osk.release", "osk.publish", "osk.update_check",
               "osk.setup", "osk.services", "osk.doctor", "osk.cli_parser", "osk.evidence_migration", "osk.hook_text", "osk.sync_status",
               "osk._fixture_approvals", "vault_sync"],
-    SURFACE: ["osk.cli", "mcp_server", "sync_daemon", "scripts.growth_run", "scripts.setup",
+    SURFACE: ["osk.cli", "osk.recall_probe", "mcp_server", "sync_daemon", "scripts.growth_run", "scripts.setup",
               "scripts.recover", "scripts.osk_turn_ledger", "scripts.configure_obsidian_graph",
               "scripts.hooks.claude_session_start", "scripts.hooks.claude_prompt_submit",
               "scripts.hooks.capture_stop"],

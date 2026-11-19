@@ -522,6 +522,17 @@ def _once(vault, ident, text: str, view: dict, startup: bool) -> bool:
     return bool(text) and (shown or startup)
 
 
+def _input_tick(vault, env, key, harness, sid, transcript):
+    from osk import conversation_capture
+    captured = conversation_capture.tick(vault, harness, sid)
+    prompt = env.get("prompt")
+    if (harness == "claude" and os.environ.get("OSK_RECALL_SHADOW") == "1"
+            and os.environ.get("OSK_HOOK_WORKER") != "0" and isinstance(prompt, str) and prompt.strip()):
+        from osk import recall_probe
+        recall_probe.submit(vault, key, sid, transcript, captured["prompt_count"], prompt)
+    return captured
+
+
 def capture_blocks(vault, env: dict, key: str, *, startup: bool = False):
     """이 대화의 포착·검토 조각 — `([Block], (harness, 대화 ID) | None)`. 조립과 예산은
     호출자가 한다(`osk.hook_text`). None이면 이 대화의 사건이 아니다.
@@ -538,10 +549,10 @@ def capture_blocks(vault, env: dict, key: str, *, startup: bool = False):
             captured = conversation_capture.hook_land(vault, env, key)
             harness, sid, cadence = captured["harness"], captured["conversation_id"], None
         else:
-            harness, sid, _ = conversation_capture.hook_source(vault, env)
+            harness, sid, transcript = conversation_capture.hook_source(vault, env)
             # Always retain the input clock, even while Stop owns background scheduling.
             # Losing CLI auth must not start the fallback's overdue work at zero again.
-            captured = cadence = conversation_capture.tick(vault, harness, sid)
+            captured = cadence = _input_tick(vault, env, key, harness, sid, transcript)
         ident = (harness, sid)
         selected = response_growth.route(vault, env)
         try:

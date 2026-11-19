@@ -257,6 +257,47 @@ assert sorted(found) == (sorted(expected) if os.name == 'nt' else []), found
 ''')
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
 
+    def test_opt_in_recall_samples_the_input_without_changing_hook_context(self):
+        self.check_case(r'''
+from unittest.mock import patch
+from osk import core, recall_probe, write
+from osk._portalock import lock_exclusive
+sys.path.insert(0, str(tested_hooks))
+import claude_session_start as hook
+sid = "shadow1"
+source = claude_home / "projects" / "p" / (sid + ".jsonl")
+def reply(text, **extra):
+    return {"type": "assistant", "sessionId": sid, "message": {"content": [{"type": "text", "text": text}]}, **extra}
+rows(source, reply("cobaltbaseline"), reply("foreign", sessionId="other"), reply("side", isSidechain=True))
+saved = write.create_node(VAULT, "cobaltbaseline", "cobaltbaseline", "cobaltbaseline", "fixture", space="00_Scope/W1")
+assert saved["ok"], saved
+prompt = {"prompt": "qqqunrelatedsecret"}
+with patch.dict(os.environ, OSK_HOOK_WORKER="1", OSK_RECALL_SHADOW="0"), patch.object(core, "spawn_worker") as spawn:
+    hook._input_tick(VAULT, prompt, "W1", "claude", sid, str(source))
+    assert not spawn.called and recall_probe.report(VAULT, sid) == []
+    os.environ["OSK_RECALL_SHADOW"] = "1"
+    received = hook._input_tick(VAULT, prompt, "W1", "claude", sid, str(source))
+    assert received["prompt_count"] == 2 and "prompt_ids" not in received
+    job = json.loads(spawn.call_args.kwargs["stdin"])
+assert recall_probe.report(VAULT, sid)[0]["status"] == "pending"
+with source.open("a", encoding="utf-8") as f:
+    f.write(json.dumps(reply("answer written after submit")) + "\n")
+recall_probe.observe(VAULT, job)
+sample, = recall_probe.report(VAULT, sid)
+assert sample["turn"] == 2 and sample["status"] == "measured" and sample["prompt_ids"] == [], sample
+assert saved["id"] in sample["prompt_reply_ids"], sample
+encoded = json.dumps(sample)
+assert all(text not in encoded for text in (prompt["prompt"], "cobaltbaseline", "foreign", "answer written")), sample
+with core.local_lock_path("osk-recall-shadow.lock", VAULT.root).open("a+b") as held:
+    lock_exclusive(held)
+    recall_probe.observe(VAULT, {**job, "turn": 3})
+assert recall_probe.report(VAULT, sid)[-1]["status"] == "busy"
+with patch.object(core, "spawn_worker", side_effect=OSError("qqqunrelatedsecret")):
+    recall_probe.submit(VAULT, "W1", sid, None, 4, prompt["prompt"])
+failed = recall_probe.report(VAULT, sid)[-1]
+assert failed["status"] == "failed" and prompt["prompt"] not in json.dumps(failed)
+''')
+
     def test_hooks_record_runs_and_keep_their_output(self):
         self.check_case(r'''
 proj = root.parent / 'proj'           # not a Git work tree: the folder name is the session key
