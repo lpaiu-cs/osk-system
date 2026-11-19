@@ -1187,7 +1187,7 @@
  },
  "mcp_tools": {
   "search": {
-   "description": "query로 전 Space 어휘 검색(인용 기록·Workbench 제외). 결과 title이 다른 도구의\nname. summary는 미리보기이며 인용·판단 전에 read_node로 확인한다.",
+   "description": "query로 전 Space 어휘 검색(인용 기록·Workbench 제외). summary=요약, title=조회명(name, 옛 주장일 수 있음). 판단·인용 전 read_node.",
    "inputSchema": {
     "additionalProperties": false,
     "properties": {
@@ -1463,7 +1463,7 @@
    }
   },
   "update_node": {
-   "description": "`name`의 같은 주장·조건을 정정한다. 독립 주장은 분화한다.\n`old_text`→`new_text`는 유일 앵커 치환(해시 불필요).\n전문 `body`는 `expect_hash` 필수. 엣지는 선-읽기 없는 델타.\n`dangling`=대상 없는 링크. `settle`=이 본문 갱신으로 보존한 evict rid;\n처분 결과: `settlement`. `distill`은 `create_node`와 같다.\n저장 후 연결만 재개: `distill={resume:키}`.",
+   "description": "name의 주장·조건을 정정한다. 결정 변경은 summary에, 이유는 본문에 반영한다. 독립 주장은 분화한다.\nold_text→new_text는 유일 앵커 치환(해시 불필요). 전문 body는 expect_hash 필수. 엣지는 선-읽기 없는 델타.\ndangling=대상 없는 링크. settle=이 갱신으로 보존한 evict rid, 처분 결과는 settlement.\ndistill은 create_node와 같다. 저장 후 연결만 재개: distill={resume:키}.",
    "inputSchema": {
     "additionalProperties": false,
     "properties": {

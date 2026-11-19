@@ -55,6 +55,19 @@ per run instead of once per record reference: on a copy of a real vault with 1,2
 16–25 minutes to about 15 seconds, with the same output (#402). The release check gives the full upgrade
 matrix more time (#404).
 
+### v6.1.2
+
+Apply the update as usual. Your notes need no migration.
+
+- Search results put the saved summary first. An old title still opens the same note. If you replace or
+  remove existing text and omit the summary, `update_node` can return `review_summary`. Compare it with
+  the new decision. If it needs correcting, send the new summary with the write response’s `new_hash`
+  as `expect_hash`.
+- The session-start message shows the installed version recorded in the update journal.
+- `validate` reports that it checks URL format and leaves the assessment of whether a source supports a
+  claim to the reader. The [refund example](GETTING-STARTED.md#try-a-decision-change) shows how a policy
+  change flags an earlier customer reply for review.
+
 ## From v5.6 to v6.0
 
 v5.7.0 was not released. v6.0.0 adds no feature: it restructures the engine

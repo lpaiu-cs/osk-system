@@ -323,6 +323,7 @@ def _evidence_section(s: _Suite) -> None:
     left = [n for n, es in ev.items() if any(e.startswith(LEFTOVER) for e in es)]
     s.rep["evidence_section"] = {n: shown for n, es in ev.items()
                                  if (shown := [e for e in es if not e.startswith(LEFTOVER)])}
+    s.rep["evidence_section_checks"] = {"url": "format_only", "claim_support": "not_checked"}
     s.rep["evidence_section_leftovers"] = len(left)
     # 이 기기에 없는 외부 루트 — 위반이 아니라 보류이며 루트마다 한 번 알린다
     s.rep["evidence_section_held"] = external.held

@@ -15,8 +15,8 @@
   "boundary_excepts": 43,
   "isolated_excepts": 44,
   "oversize_functions": 107,
-  "excess_lines": 959,
-  "excess_branches": 963,
+  "excess_lines": 954,
+  "excess_branches": 961,
   "late_loads": 1
  },
  "upward_imports": {},
@@ -452,8 +452,8 @@
    29
   ],
   "osk.write:update_node_locked": [
-   81,
-   33
+   76,
+   31
   ],
   "scripts.hooks.claude_session_start:_checkout_cached": [
    29,
