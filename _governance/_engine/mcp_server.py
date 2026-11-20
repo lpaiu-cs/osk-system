@@ -202,7 +202,7 @@ SEARCH_FIRST = ("새 노드를 세우기 전에 그 주제로 search를 먼저 �
 @mcp.tool()
 def search(query: str, k: Annotated[int, Field(ge=1, le=50)] = 8,
            session: str | None = None) -> list[dict]:
-    """query로 전 Space 어휘 검색(인용 기록·Workbench 제외). summary=요약, title=조회명(name, 옛 주장일 수 있음). 판단·인용 전 read_node."""
+    """query로 전 Space 검색(인용 기록·Workbench 제외). summary=요약, title=조회명(name, 옛 주장일 수 있음). 판단·인용 전 read_node."""
     # `session`의 결속 scope가 순위 자질이 된다(시행령 §8 3항 locality). 쓰는 법은 세션 시작
     # 문구가 가르치므로 설명에는 싣지 않는다(상주 예산, validate.SCHEMA_BUDGET).
     global _searched

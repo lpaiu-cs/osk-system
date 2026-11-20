@@ -10,8 +10,8 @@
 않는다(헌법 11조 3항).
 
 랭킹: 관련성은 문자 bigram BM25 (rank_bm25)이고, 노출 순위는 거기에 최신성·중심성·
-locality를 곱한다(시행령 §8 3항, 계수는 Mechanism §8 8항). 임베딩·데몬 인덱스는 후속 —
-파일 정본에서 매 호출 재계산 가능해야 한다는 원칙(시행령 §11 1항)이 우선.
+locality를 곱한다(시행령 §8 3항, 계수는 Mechanism §8 8항). 준비한 로컬 의미 색인은
+어휘 검색의 선두를 보존하고 기본 결과 여덟 자리까지 보충한다.
 """
 from __future__ import annotations
 import math
@@ -23,7 +23,7 @@ from rank_bm25 import BM25Okapi
 
 from . import core
 from .core import TS_FMT, posix_rel
-from . import graph, placement, topology
+from . import graph, placement, search_vectors, topology
 from .vault import Vault
 
 # 노출 순위의 계수(Mechanism §8 8항). 관련성에 상한 있는 가산을 곱하며, 모두 0이면 BM25 순서다.
@@ -78,6 +78,7 @@ class Searcher:
             self.tokens.append(set(toks))
             corpus.append(toks)
         self.bm25 = BM25Okapi(corpus) if corpus else None
+        self.vectors = search_vectors.VectorIndex(vault, self.paths)
         # 중심성은 파일 내용에만 매이므로 검색기와 함께 둔다. 최신성은 시각에 매이므로 시각만 두고
         # 검색할 때 잰다 — 파일이 그대로인 채 검색기를 오래 쓰는 서버에서도 시간이 흐른다(#234 리뷰).
         # 허브는 갈래의 입구라 둘 다 얹지 않는다 — 본문이 배선마다 바뀌고(시행령 §7 2항이 그 변경을
@@ -114,9 +115,17 @@ class Searcher:
         # A known title is a handle, not a BM25 length-normalization contest. The rest follow
         # the exposure score; the factor breaks the ties BM25 leaves, a zero IDF among them.
         ranked = sorted(adjusted, key=lambda x: (
-            x[2][0] != query.strip(), x[2][0].casefold() != title_query, -x[0], -x[1]))[:k]
+            x[2][0] != query.strip(), x[2][0].casefold() != title_query, -x[0], -x[1]))
+        rows = [(score, item) for score, _, item in ranked[:k]]
+        if q and k > min(3, len(ranked)):
+            dense = self.vectors.nearest(query)
+            if dense:
+                lexical = {item[0]: score for score, _, item in ranked}
+                documents = {item[0]: item for item in self.paths}
+                titles = search_vectors.combine(list(lexical), dense, k)
+                rows = [(lexical.get(title, 0.0), documents[title]) for title in titles]
         out = []
-        for score, _, (stem, p, n) in ranked:
+        for score, (stem, p, n) in rows:
             out.append({
                 # 정정 뒤에도 제목은 옛 주장을 담을 수 있다. 현재 요약을 먼저 보여 준다.
                 "summary": str(n.meta.get("summary", "")),

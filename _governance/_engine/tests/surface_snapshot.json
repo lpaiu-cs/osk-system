@@ -919,6 +919,11 @@
     ],
     "commands": {}
    },
+   "search-index": {
+    "help": "로컬 bge-m3 검색 색인을 준비하거나 갱신",
+    "options": [],
+    "commands": {}
+   },
    "sm": {
     "help": "scope 기억 (훅 경로)",
     "options": [],
@@ -1187,7 +1192,7 @@
  },
  "mcp_tools": {
   "search": {
-   "description": "query로 전 Space 어휘 검색(인용 기록·Workbench 제외). summary=요약, title=조회명(name, 옛 주장일 수 있음). 판단·인용 전 read_node.",
+   "description": "query로 전 Space 검색(인용 기록·Workbench 제외). summary=요약, title=조회명(name, 옛 주장일 수 있음). 판단·인용 전 read_node.",
    "inputSchema": {
     "additionalProperties": false,
     "properties": {

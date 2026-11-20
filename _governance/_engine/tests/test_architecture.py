@@ -34,7 +34,7 @@ KERNEL, MODEL, STORE, SERVICE, SURFACE = range(5)
 LAYERS = {
     KERNEL: ["osk", "osk._portalock", "osk.epoch", "osk.layout", "osk.vault", "osk.core", "osk.errors"],
     MODEL: ["osk.contract", "osk.naming", "osk.prose", "osk.secrets", "osk.raw_view"],
-    STORE: ["osk.placement", "osk.graph", "osk.topology", "osk.nodefile", "osk.cluster_gate", "osk.raw", "osk.evidence", "osk.roots", "osk.workspaces", "osk.signatures", "osk.routing",
+    STORE: ["osk.placement", "osk.graph", "osk.topology", "osk.search_vectors", "osk.nodefile", "osk.cluster_gate", "osk.raw", "osk.evidence", "osk.roots", "osk.workspaces", "osk.signatures", "osk.routing",
             "osk.region_tree", "osk.approvals", "osk.approval_acts", "osk.scope_memory", "osk.evictions", "osk.rechecks", "osk.transcripts",
             "osk.conversation_state", "osk.growth_ledger", "osk.worker_process", "osk.worker_preflight",
             "osk.worker_usage",

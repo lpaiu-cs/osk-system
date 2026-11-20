@@ -9,7 +9,7 @@ import json, sys
 from pathlib import Path
 
 from .core import StaleEngineError
-from . import (graph, approvals, authority, raw, scope_memory, validate, search,
+from . import (graph, approvals, authority, raw, scope_memory, validate, search, search_vectors,
                write, evictions, approval_acts, node_moves, region_tree, placement)
 from . import harness as adapters
 from .vault import Vault
@@ -500,6 +500,12 @@ def _status_cmd(vault: Vault, a) -> None:
 
 def _search_cmd(vault: Vault, a) -> None:
     s = search.Searcher(vault)
+    if a.cmd == "search-index":
+        try:
+            print(json.dumps(s.vectors.prepare(), ensure_ascii=False))
+        except search_vectors.EmbeddingError as exc:
+            raise SystemExit(str(exc)) from exc
+        return
     rows = s.work_search(a.query, a.k) if a.cmd == "search"\
         else s.view_search(a.query, a.k)
     print(json.dumps(rows, ensure_ascii=False, indent=2))
@@ -618,7 +624,7 @@ def _store_reconcile_cmd(vault: Vault, a) -> None:
 # 명령마다 하는 일. `update`·`release`는 여기 없다 — 파서 앞에서 위임된다(`cli_parser.DELEGATED`).
 _COMMANDS = {
     "validate": _validate_cmd, "rechecks": _rechecks_cmd, "validators": _validators_cmd, "status": _status_cmd,
-    "search": _search_cmd, "view": _search_cmd, "check": _check_cmd,
+    "search": _search_cmd, "view": _search_cmd, "search-index": _search_cmd, "check": _check_cmd,
     "raw": _raw_cmd, "integration": _integration_cmd, "growth": _growth_cmd, "organization": _organization_cmd,
     "fork": _fork_cmd, "doctor": _doctor_cmd, "sm": _sm_cmd, "routing": _routing_cmd, "roots": _roots_cmd,
     "evidence": _evidence_cmd, "tidy": _tidy_cmd,

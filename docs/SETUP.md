@@ -294,6 +294,7 @@ sh osk-cli.sh --help       # vault 루트의 런처 — 같은 것(Windows: .\os
 | `validate` | 검증기 수트 전체 |
 | `status` | 체계 현황 |
 | `search` / `view` | 작업 검색 / 열람 검색 |
+| `search-index` | 로컬 Ollama의 bge-m3로 검색용 제목·요약 색인을 준비하거나 갱신 |
 | `check` | 권한 사전 검사 |
 | `validators` | 검증기 활성화 현황. 기록이 없는 규칙은 위반이 0이면 엔진이 켜고(하루 한 번 잰다), 해제·재활성화는 **사용자 전속**이다 (시행령 §11 3항 · Mechanism §6-1) |
 | `raw migrate` | `_raw/` 구 Markdown 기록의 숨김 `.txt` 이관 계획; `--apply`로 적용 |
@@ -315,6 +316,16 @@ sh osk-cli.sh --help       # vault 루트의 런처 — 같은 것(Windows: .\os
 | `approve` / `revert` | **사용자 전속** — 변경집합 승인·반려 |
 | `store-reconcile` | 내용 주소 저장소를 파일 이름 기준으로 판독·이행 (EOL 이행) |
 | `update` / `release` | 갱신 / 릴리스 선언 — 인자를 그대로 위임한다 |
+
+**로컬 의미 검색**을 사용하려면 Ollama가 같은 기기의 `127.0.0.1:11434`에서 실행 중일 때
+`ollama pull bge-m3` 후 vault 루트에서 `sh osk-cli.sh search-index`를 한 번 실행한다
+(Windows PowerShell은 `.\osk-cli.cmd search-index`).
+이후 일반 `search`와 `view`, MCP `search`가 어휘 순위의 첫 세 결과를 앞에 두고 여덟 번째까지
+의미 순위와 결합한다. 반환 순서가 결합 순위이며 `score`는 기존 어휘 점수다. 어휘 일치가 없는
+후보의 `score`는 0이다. 색인은 무시되는 로컬 파일 `.osk/search-vectors.sqlite3`에 둔다.
+제목·요약이 바뀌면 현재 내용의 벡터만 쓴다. 미색인 변경이 24개 이하면 검색 때 갱신하며,
+그보다 많은 일괄 변경이나 모델 교체 후에는 `search-index`를 다시 실행한다. 색인이 없거나
+로컬 모델을 쓸 수 없을 때는 어휘 검색으로 답한다.
 
 보호영역 권위(`protect`·`unprotect`·`approve`·`revert`)는 MCP로 노출되지 않는다.
 헌법 10조 1~2항이 지정·해제·승인·반려를 사용자에게 전속시키고, 표면은 그 경계를
