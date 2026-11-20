@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import threading
 from . import harness as adapters, worker_preflight, worker_process
@@ -92,6 +93,23 @@ def output_events(output: Path) -> list[dict]:
     return rows
 
 
+_SESSION_ID = re.compile(r"[0-9A-Za-z][0-9A-Za-z-]{7,79}")
+
+
+def session(output: Path, command: list[str]) -> str | None:
+    """작업자가 남긴 세션의 id — 결과 묶음을 다시 물을 때 그 세션을 잇는다(#420). Claude는 마지막 결과
+    이벤트의 `session_id`, Codex는 `thread.started`의 `thread_id`다. 읽지 못했거나 id 꼴이 아니면 None."""
+    who = provider(command)
+    try:
+        events = output_events(output)
+    except OSError:
+        return None
+    found = [e.get("thread_id") if who == "codex" else e.get("session_id") for e in events
+             if e.get("type") == {"codex": "thread.started", "claude": "result"}.get(who)]
+    sid = found[-1] if found else None
+    return sid if isinstance(sid, str) and _SESSION_ID.fullmatch(sid) else None
+
+
 def limited(vault: Vault, output: Path, command: list[str]) -> bool:
     """끝내지 못한 작업자가 한도에 막혔는가 — 실패가 아니라 대기다(#173). Claude는 조직 설정으로
     초과 사용이 꺼져 있어 100%에서 거절하고, 그 거절을 `rate_limit_event`(status `rejected`)로 낸다.
@@ -168,3 +186,25 @@ def usage(output: Path, command: list[str], *, cold_first: bool) -> dict:
         first = requests[0]
         result["cold_start"] = {"tokens": first[0] - first[1] + first[2], "hit": round(hit(first), 3)}
     return result
+
+
+def with_retry(first: dict, output: Path, command: list[str]) -> dict:
+    """결과 묶음을 다시 물은 턴까지 더한 쓰임 — 다시 물은 몫은 `retry`에 따로 둔다(#420). `first`는 다시
+    묻기 전에 잰 앞 실행의 쓰임이다. Claude는 다시 물은 출력이 그 턴의 요청만 담는다. Codex는 같은 스레드의
+    기록을 다시 읽어 앞 실행의 요청까지 담으므로 앞 실행의 몫을 덜어 낸다. 어느 쪽이든 재지 못하면 앞
+    실행의 쓰임을 그대로 두고 까닭을 `retry`에 남긴다."""
+    later = usage(output, command, cold_first=False)
+    n = first.get("requests", 0)
+    if first.get("measured") and later.get("measured") and provider(command) == "codex":
+        # 같은 스레드 기록에 덧붙었다면 앞 실행의 몫이 그대로 들어 있다 — 줄었으면 덜어 낼 수 없다
+        grown = all(later[k] >= first[k] for k in ("requests", "tokens", "cache_read"))
+        later = ({"measured": True, "tokens": later["tokens"] - first["tokens"],
+                  "cache_read": later["cache_read"] - first["cache_read"], "requests": later["requests"] - n,
+                  "misses": [[i - n, rate] for i, rate in later["misses"] if i >= n]} if grown else
+                 {"measured": False, "reason": "the resumed thread record did not grow"})
+    if not (first.get("measured") and later.get("measured")):
+        # 앞 실행의 몫만 남은 쓰임은 묶음 단가의 표본이 아니다(`growth_daily._scope_unit`)
+        return {**first, "retry": later, **({"partial": True} if first.get("measured") else {})}
+    return {**first, "tokens": first["tokens"] + later["tokens"], "cache_read": first["cache_read"] + later["cache_read"],
+            "requests": n + later["requests"], "misses": first["misses"] + [[i + n, rate] for i, rate in later["misses"]],
+            "retry": later}

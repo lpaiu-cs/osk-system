@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import time
 
 from . import (core, growth_ledger, growth_plan, growth_reviews, harness as adapters, integration, organization,
                rechecks, conversation_review, worker_preflight, worker_process, worker_usage)
@@ -365,6 +366,53 @@ def _launch(vault: Vault, command: list[str], text: str, env: dict, cwd: Path | 
     return error, returncode, cleanup_error
 
 
+# 결과 묶음을 다시 묻는 턴의 시한, 그리고 묶음 시한이 이만큼도 남지 않으면 묻지 않는다(#420)
+RETRY_SECONDS, RETRY_FLOOR = 300, 30
+
+
+def _final_reviews(vault: Vault, planned: dict, directory: Path, launch: tuple, finished: bool, usage: dict) -> tuple:
+    """작업자의 결과 묶음을 받는다 — `(판정, 다시 물은 기록 또는 None, 판정을 읽은 출력, 쓰임)`. 최종
+    메시지가 묶음으로 읽히지 않았으면(`unreadable`) 같은 세션에 한 번 더 묻는다(#420). 묻는 것은 이을 수
+    있는 명령이고 세션 id가 남았으며, 묶음 시한(`launch`의 끝 시각)이 남았고, 한도에 막히지 않았을 때다.
+    대화 검토 fork는 세션을 남기지 않아 묻지 않는다. 다시 물은 턴의 출력은 `retry/`에 따로 남고, 그 쓰임은
+    실행의 쓰임에 더한다(`worker_usage.with_retry`)."""
+    command, env, cwd, deadline = launch
+    output = directory / "stdout.txt"
+    if not finished:
+        return {"state": "not_applied", "errors": ["worker did not exit successfully"]}, None, output, usage
+    reviews = growth_reviews.apply_final_reviews(vault, output, planned)
+    who = worker_usage.provider(command)
+    sid = worker_usage.session(output, command) if reviews.get("unreadable") and who else None
+    again = adapters.get(who).resume_argv(command, sid) if sid else None
+    seconds = min(RETRY_SECONDS, int(deadline - time.monotonic()))
+    # 한도에 막힌 작업자는 묻지 않는다 — 그 실행은 대기다(#173). Codex는 한도를 다시 조회하므로 맨 끝에 본다.
+    if not again or seconds < RETRY_FLOOR or worker_usage.limited(vault, output, command):
+        return reviews, None, output, usage
+    reason = "; ".join(reviews["errors"])
+    retry_dir = directory / "retry"
+    retry_dir.mkdir(exist_ok=True)
+    (retry_dir / "argv.json").write_text(json.dumps(again, ensure_ascii=False), encoding="utf-8")
+    error, returncode, cleanup_error = _launch(vault, again, _retry_prompt(planned, reason), env, cwd, seconds, retry_dir)
+    retry = {"reason": reason, "returncode": returncode, "error": error, "cleanup_error": cleanup_error,
+             "output": core.posix_rel(retry_dir, vault.root)}
+    later = retry_dir / "stdout.txt"
+    usage = worker_usage.with_retry(usage, later, command)
+    if returncode == 0 and error is None:
+        reviews = growth_reviews.apply_final_reviews(vault, later, planned)
+    else:
+        reviews = {**reviews, "errors": [*reviews["errors"], "re-request did not exit successfully"]}
+    return reviews, {**retry, "state": reviews["state"]}, later, usage
+
+
+def _retry_prompt(planned: dict, reason: str) -> str:
+    """결과 묶음을 다시 묻는 지시문 — 이미 한 판정만 처음 지시문의 꼴로 다시 내게 한다(#420)."""
+    return ("Your final message could not be read as this run's review packet: " + reason + "\n"
+            "Do not call tools and do not write anything now. Reply with exactly one JSON object and "
+            "nothing else (no Markdown, no code fence, no prose): {\"osk_reviews\":{\"manifest\":\""
+            + planned["manifest"] + "\",...}} in the form the first instruction gave. Report only the "
+            "judgments you already made in this run and leave out any job you did not judge.\n")
+
+
 def _observe(vault: Vault, planned: dict, manifest: dict) -> tuple:
     """작업마다 저장소에 남은 결과를 본다 — Domain 후보의 영수증과 그 결과, 그리고 큐 넷의 상태."""
     rows, idx = growth_ledger.ledger_records(vault), growth_plan.node_index(vault)
@@ -504,20 +552,19 @@ def run(vault: Vault, command: list[str], limit: int = 3, timeout: int = 600, *,
             env = dict(os.environ if worker_env is None else worker_env, OSK_VAULT_ROOT=str(vault.root),
                        PYTHONPATH=str(Path(__file__).resolve().parent.parent),
                        OSK_GROWTH_WORKER="1")
+            deadline = time.monotonic() + timeout    # 결과 묶음을 다시 묻는 턴도 이 묶음 시한 안이다(#420)
             error, returncode, cleanup_error = _launch(vault, command, text, env, cwd, timeout, directory)
             with core.mutation_lock(vault):
                 needs_review = growth_reviews.needs_review(vault, planned, growth_ledger.ledger_records(vault), growth_plan.node_index(vault))
-            final_reviews = {"state": "not_needed", "errors": []}
+            usage = worker_usage.usage(directory / "stdout.txt", command, cold_first=scope_job is None)
+            final_reviews, retry, last = {"state": "not_needed", "errors": []}, None, directory / "stdout.txt"
             if needs_review:
-                final_reviews = (growth_reviews.apply_final_reviews(vault, directory / "stdout.txt", planned)
-                                 if returncode == 0 and error is None else
-                                 {"state": "not_applied", "errors": ["worker did not exit successfully"]})
-            stdout_path = directory / "stdout.txt"
+                final_reviews, retry, last, usage = _final_reviews(vault, planned, directory, (command, env, cwd, deadline),
+                                                                   returncode == 0 and error is None, usage)
             # 작업자가 끝내지 못했고 그 까닭이 한도 거절이면 실패가 아니라 대기다(#173). Codex는 다시
             # 조회하므로 변경 잠금 밖에서 잰다.
             limited = (returncode != 0 or error is not None or final_reviews["state"] in {
-                "rejected", "not_applied"}) and worker_usage.limited(vault, stdout_path, command)
-            usage = worker_usage.usage(stdout_path, command, cold_first=scope_job is None)
+                "rejected", "not_applied"}) and worker_usage.limited(vault, last, command)
             with core.mutation_lock(vault):
                 (receipts, outcomes, scope_outcomes, organization_outcomes, eviction_outcomes,
                  recheck_outcomes) = _observe(vault, planned, manifest)
@@ -536,7 +583,7 @@ def run(vault: Vault, command: list[str], limit: int = 3, timeout: int = 600, *,
                           "organization_outcomes": organization_outcomes,
                           "eviction_outcomes": eviction_outcomes,
                           "recheck_outcomes": recheck_outcomes,
-                          "final_reviews": final_reviews,
+                          "final_reviews": final_reviews, **({"retry": retry} if retry else {}),
                           "capture": catchup,
                           "output": core.posix_rel(directory, vault.root)}
                 core.ledger_append(growth_ledger.ledger_path(vault), result)

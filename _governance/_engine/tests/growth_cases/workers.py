@@ -227,6 +227,111 @@ class WorkerCases:
             assert [r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind'] == 'plan'][-1]['drafter'] == 'gpt-5.6-sol'
         """)
 
+    def test_an_unreadable_packet_is_asked_again_in_the_same_session(self):
+        # #420: three of 43 Claude batches fenced their packet, the whole bundle was rejected, and that
+        # stopped the day's conversation review. The runner asks the same session once more.
+        self.check_case("""
+            import os
+            node('A')
+            fake = VAULT.root / 'fake-claude.py'
+            fake.write_text(packet_worker(wrapper='claude_resume'), encoding='utf-8')
+            if os.name == 'nt':
+                cli = VAULT.root / 'claude.cmd'
+                cli.write_text('@"' + sys.executable + '" "' + str(fake) + '" %*' + chr(13) + chr(10), encoding='utf-8')
+            else:
+                cli = VAULT.root / 'claude'
+                cli.write_text('#!/bin/sh' + chr(10) + 'exec "' + sys.executable + '" "' + str(fake) + '" "$@"' + chr(10),
+                               encoding='utf-8')
+                cli.chmod(0o755)
+            argv = [str(cli), '-p', '--output-format', 'stream-json']
+            result = growth.run(VAULT, argv)
+            assert result['ok'] and result['final_reviews']['state'] == 'applied', result
+            assert result['final_reviews']['faults'] == [], result['final_reviews']
+            retry = result['retry']
+            assert retry['state'] == 'applied' and 'no readable osk_reviews packet' in retry['reason'], retry
+            resumed = json.loads((VAULT.root / 'resumed.json').read_text(encoding='utf-8'))
+            assert resumed == ['-p', '--output-format', 'stream-json', '--resume', '0001-retry-sess'], resumed
+            assert json.loads((VAULT.root / retry['output'] / 'argv.json').read_text(encoding='utf-8'))[1:] == resumed
+            assert (result['usage']['tokens'], result['usage']['cache_read']) == (10, 100), result['usage']
+            assert result['usage']['retry']['tokens'] == 5, result['usage']
+            assert not growth_ledger.run_failed(result)
+            resumed = VAULT.root / 'resumed.json'
+            def attempt(name, mode='ok', extra=(), **kw):
+                node(name)
+                resumed.unlink(missing_ok=True)
+                os.environ['OSK_TEST_RESUME'] = mode
+                return growth.run(VAULT, argv + list(extra), **kw)
+            # Asked again, the worker still answers unreadably, or the resumed turn fails: one ask, then a fault.
+            again = attempt('B', 'again')
+            assert again['retry']['state'] == 'rejected' and resumed.exists() and growth_ledger.run_failed(again), again
+            failed = attempt('C', 'fail')
+            assert failed['retry']['returncode'] == 3 and failed['final_reviews']['state'] == 'rejected', failed
+            assert 're-request did not exit successfully' in failed['final_reviews']['errors'], failed
+            # Only an unreadable final message is asked again — not a readable packet for another manifest,
+            # not a worker that keeps no session (the conversation review fork), not past the batch's time.
+            for name, mode, extra, kw in (('D', 'manifest', (), {}), ('E', 'ok', ['--no-session-persistence'], {}),
+                                          ('F', 'ok', (), {'timeout': 20})):
+                plain = attempt(name, mode, extra, **kw)
+                assert plain['final_reviews']['state'] == 'rejected' and 'retry' not in plain, (name, plain)
+                assert not resumed.exists() and growth_ledger.run_failed(plain), name
+            assert 'unreadable' not in attempt('G', 'manifest')['final_reviews']
+        """)
+
+    def test_resume_argv_carries_only_known_arguments(self):
+        self.check_case("""
+            from pathlib import Path
+            from unittest.mock import patch
+            from osk import harness, worker_usage
+            claude, codex = harness.get('claude'), harness.get('codex')
+            argv = claude.growth_argv('claude', 'python', 'server.py', 'root')
+            assert claude.resume_argv(argv, 's-0001-abcd') == [*argv, '--resume', 's-0001-abcd']
+            fork = ['claude', '-p', '--resume', 'parent', '--fork-session', '--no-session-persistence']
+            assert claude.resume_argv(fork, 's-0001-abcd') is None
+            assert claude.resume_argv(['claude', '--verbose'], 's-0001-abcd') is None    # not print mode
+            # The daily Codex command is the user's; `--sandbox` becomes the setting resume understands.
+            user = ['codex', 'exec', '--json', '--skip-git-repo-check', '--sandbox', 'read-only', '-c', 'a="b"',
+                    '--model', 'gpt-5.6-sol', '-']
+            assert codex.resume_argv(user, 't-0001-abcd') == [
+                'codex', 'exec', 'resume', '--json', '--skip-git-repo-check', '-c', 'a="b"', '--model', 'gpt-5.6-sol',
+                '-c', 'sandbox_mode="read-only"', 't-0001-abcd', '-']
+            assert codex.resume_argv(['codex', 'exec', '-c', 'sandbox_mode="read-only"', '-'], 't-0001-abcd') == [
+                'codex', 'exec', 'resume', '-c', 'sandbox_mode="read-only"', 't-0001-abcd', '-']
+            for argv in (['codex', 'exec', 'fork', '--ephemeral', '--json', '-'],       # the conversation review fork
+                         ['codex', 'exec', '--ephemeral', '-'], ['codex', 'exec', '--model=x', '-'],
+                         ['codex', 'exec', '--model'], ['codex', 'review', '-'],
+                         # The flag outranks `-c sandbox_mode`; moved, both are `-c` and the later wins (#420 review).
+                         ['codex', 'exec', '--sandbox', 'read-only', '-c', 'sandbox_mode="danger-full-access"', '-'],
+                         ['codex', 'exec', '-c', ' sandbox_mode="x"', '-s', 'read-only', '-'],
+                         ['codex', 'exec', '--sandbox', 'read"x', '-']):
+                assert codex.resume_argv(argv, 't-0001-abcd') is None, argv
+            assert harness.get('kiro').resume_argv(['kiro'], 'x-0001-abcd') is None
+            # Codex reads the whole thread again after a resume, so the run's share is taken off.
+            first = {'measured': True, 'tokens': 100, 'cache_read': 900, 'requests': 3, 'misses': [[1, 0.5]]}
+            whole = {'measured': True, 'tokens': 120, 'cache_read': 1890, 'requests': 4, 'misses': [[1, 0.5], [3, 0.7]]}
+            with patch.object(worker_usage, 'usage', lambda *a, **k: whole):
+                got = worker_usage.with_retry(first, Path('x'), ['codex', 'exec', '-'])
+            assert (got['tokens'], got['cache_read'], got['requests'], got['misses']) == (120, 1890, 4, whole['misses']), got
+            assert got['retry'] == {'measured': True, 'tokens': 20, 'cache_read': 990, 'requests': 1, 'misses': [[0, 0.7]]}
+            unmeasured = {'measured': False, 'reason': 'no per-request usage'}
+            with patch.object(worker_usage, 'usage', lambda *a, **k: unmeasured):
+                got = worker_usage.with_retry(first, Path('x'), ['codex', 'exec', '-'])
+            assert got == {**first, 'retry': unmeasured, 'partial': True}, got
+            # A thread record that did not grow (resume wrote elsewhere) is not subtracted into negative tokens.
+            with patch.object(worker_usage, 'usage', lambda *a, **k: dict(whole, requests=2, tokens=50)):
+                got = worker_usage.with_retry(first, Path('x'), ['codex', 'exec', '-'])
+            assert got['partial'] and got['tokens'] == 100 and not got['retry']['measured'], got
+            rows = [{'kind': 'plan', 'rid': 'p', 'daily': {'kind': 'scope'}},
+                    {'kind': 'run', 'manifest': 'p', 'usage': {**first, 'partial': True}}]
+            from osk import growth_daily
+            assert growth_daily._scope_unit(rows) == (growth_daily.SCOPE_UNIT_COST, 0)
+            out = VAULT.root / 'events.jsonl'
+            out.write_text(json.dumps({'type': 'thread.started', 'thread_id': 't-0001-abcd'}) + chr(10), encoding='utf-8')
+            assert worker_usage.session(out, ['codex', 'exec', '-']) == 't-0001-abcd'
+            assert worker_usage.session(out, ['claude', '-p']) is None
+            out.write_text(json.dumps({'type': 'result', 'session_id': 'bad id; rm'}) + chr(10), encoding='utf-8')
+            assert worker_usage.session(out, ['claude', '-p']) is None
+        """)
+
     def test_worker_hooks_do_not_feed_maintenance_into_new_conversations(self):
         self.check_case("""
             node('A')
