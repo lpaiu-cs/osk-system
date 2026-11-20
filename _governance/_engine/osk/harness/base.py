@@ -334,6 +334,12 @@ class Adapter:
         fork와 같은 자격(API 자격 변수를 걷고, 구독·설정·공급자를 먼저 확인)으로만 띄운다."""
         return False
 
+    def resume_argv(self, argv: list[str], session: str) -> list[str] | None:
+        """작업자 명령 `argv`가 남긴 세션 `session`을 이어 stdin의 지시문을 다음 턴으로 건네는 명령 — 같은
+        도구·권한·모델이다(#420, 결과 묶음을 다시 묻는다). 세션을 남기지 않거나 다른 세션을 이어받는
+        명령, 옮기는 법을 모르는 인자가 든 명령이면 None."""
+        return None
+
     def hook_command(self, argv) -> str:
         """훅 설정에 넣을 명령 한 줄 — 그 호스트가 명령을 넘기는 셸(`hook_shell`)이 풀 수 있는
         표기다. 풀 수 없으면 올린다(설치가 그 파일의 오류로 보인다)."""

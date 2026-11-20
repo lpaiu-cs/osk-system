@@ -7,7 +7,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import re
-from . import conversation_review, core, evictions, graph, growth_ledger, growth_plan, organization, rechecks
+from . import contract, conversation_review, core, evictions, graph, growth_ledger, growth_plan, organization, rechecks
+from .errors import LedgerDamage
 from .vault import Vault
 
 
@@ -63,6 +64,11 @@ def strict_json(text: str):
 _TRAILING = {"system", "rate_limit_event"}     # provider events that carry no answer
 
 
+class UnreadablePacket(ValueError):
+    """작업자의 최종 메시지는 성공했지만 결과 묶음으로 읽히지 않았다. 같은 세션에 다시 물을 수 있는 거절은
+    이것뿐이다(#420) — 작업자 턴의 실패나 읽힌 묶음의 오류(manifest 불일치 등)는 다시 묻지 않는다."""
+
+
 def _final_packet(output: Path) -> dict:
     """Read provider final messages, never JSON found inside tool output or prose."""
     if output.stat().st_size > 8 * 1024 * 1024:
@@ -99,28 +105,56 @@ def _final_packet(output: Path) -> dict:
         raise ValueError("provider final message is not text")
     packet = _message_packet(final_text)
     if not isinstance(packet, dict) or set(packet) != {"osk_reviews"}:
-        raise ValueError("final message must contain only osk_reviews")
+        raise UnreadablePacket("final message must contain only osk_reviews")
     return packet
 
 
+# 결과 묶음을 담은 펜스의 여는 행(정보 문자열은 없거나 `json`)과 닫는 행 — 판독용 행(`contract.md_lines`)에 맞춘다
+_FENCE_OPEN = re.compile(r" {0,3}(`{3,}|~{3,})[ \t]*(?:json)?[ \t]*", re.IGNORECASE)
+_FENCE_CLOSE = re.compile(r" {0,3}(`{3,}|~{3,})[ \t]*")
+
+
 def _message_packet(text: str):
-    """최종 메시지의 결과 묶음 — 메시지 전체이거나, 아니면 행 머리에서 시작해 메시지 끝까지 가는 끝
-    블록 하나가 통째로 결과 묶음이어야 한다(#306 D1). 설명 한 줄 뒤에 붙인 묶음은 읽고, 산문 가운데의
-    JSON과 코드 펜스 안의 JSON은 읽지 않는다. 엄격 판독(`strict_json`)은 같다."""
+    """최종 메시지의 결과 묶음 — 메시지 전체이거나, 메시지 끝까지 가는 끝 블록 하나가 통째로 결과
+    묶음이어야 한다. 끝 블록은 행 머리에서 시작하는 JSON(#306 D1)이거나 메시지의 하나뿐인 코드 펜스(#420)다.
+    둘 다 설명 줄 뒤에 와도 읽는다. 산문 가운데의 JSON, 코드 안의 JSON, 닫히지 않았거나 뒤에 글이 더 있는
+    펜스, 코드가 그 펜스 하나가 아닌 메시지는 읽지 않는다. 코드인지는 노드 본문과 같은 판정이다
+    (`contract.md_lines` — 펜스 표시의 홀짝을 세던 판정은 네 백틱 펜스 안의 세 백틱 행에 속았다).
+    엄격 판독(`strict_json`)은 같다."""
     try:
         return strict_json(text)
     except ValueError as whole:
-        for m in re.finditer(r"(?m)^\{", text):
-            # 앞에 연 펜스가 홀수면 펜스 안이다 — 닫는 표시가 빠진 펜스도 결과로 읽지 않는다(#313 리뷰)
-            if m.start() == 0 or len(re.findall(r"(?m)^ {0,3}(?:```|~~~)", text[:m.start()])) % 2:
+        rows = list(contract.md_lines(text))
+        for offset, line, _content, code, _cont in rows:
+            if not offset or code or not line.startswith("{"):
                 continue
             try:
-                packet = strict_json(text[m.start():])
+                packet = strict_json(text[offset:])
             except ValueError:
                 continue
             if isinstance(packet, dict) and set(packet) == {"osk_reviews"}:
                 return packet
-        raise whole
+        packet = _fenced_packet(rows)
+        if packet is None:
+            raise UnreadablePacket(f"final message holds no readable osk_reviews packet ({whole})") from None
+        return packet
+
+
+def _fenced_packet(rows: list) -> dict | None:
+    """메시지를 닫는 코드 펜스 하나가 통째로 결과 묶음이면 그것, 아니면 None(#420). Claude 작업자가 결과
+    묶음을 펜스로 싸면 묶음 전체가 거절돼 그날 대화 검토가 멈췄다(43번 중 3번). 메시지의 코드가 그 펜스
+    하나여야 한다 — 둘 이상이면 어느 것이 결과인지 정하지 않는다. `rows`는 `contract.md_lines`의 행이다."""
+    code = [i for i, row in enumerate(rows) if row[3]]
+    if len(code) < 3 or code != list(range(code[0], code[-1] + 1)) or any(r[2].strip() for r in rows[code[-1] + 1:]):
+        return None
+    opened, closed = _FENCE_OPEN.fullmatch(rows[code[0]][2]), _FENCE_CLOSE.fullmatch(rows[code[-1]][2])
+    if not (opened and closed and closed[1][0] == opened[1][0] and len(closed[1]) >= len(opened[1])):
+        return None
+    try:
+        packet = strict_json("\n".join(row[1] for row in rows[code[0] + 1:code[-1]]))
+    except ValueError:
+        return None
+    return packet if isinstance(packet, dict) and set(packet) == {"osk_reviews"} else None
 
 
 _QUEUE_IDS = {"domain": ("key",), "scope": ("harness", "conversation_id", "through"),
@@ -273,6 +307,8 @@ def _check_entry(queue: str, entry, planned: dict, notes: list) -> dict:
 def apply_final_reviews(vault: Vault, output: Path, planned: dict) -> dict:
     try:
         reviews = _validate_packet(_final_packet(output), planned)
+    except UnreadablePacket as exc:
+        return {"state": "rejected", "errors": [str(exc)], "unreadable": True}
     except (ValueError, OSError, TypeError, RecursionError) as exc:
         return {"state": "rejected", "errors": [str(exc)]}
     return _apply_reviews(vault, reviews, planned)
@@ -293,9 +329,18 @@ def checkpoint(vault: Vault, packet: dict) -> dict:
     return {**result, "ok": not result["errors"]}
 
 
+def _failed(result: dict, label: str, exc: Exception) -> None:
+    """받지 못한 항목 하나를 적는다. 모두 `errors`에 들고, 저장소를 읽고 쓰다 난 오류(디스크·잠금·기록부
+    손상)는 `faults`에도 든다 — 판정이 틀린 것은 그 항목만의 일이지만, 저장소 오류는 작업자 이상처럼 실행의
+    실패다(`growth_ledger.run_failed`, #420)."""
+    result["errors"].append(f"{label}: {exc}")
+    if isinstance(exc, (OSError, LedgerDamage)):
+        result["faults"].append(f"{label}: {exc}")
+
+
 def _apply_reviews(vault: Vault, reviews: dict, planned: dict) -> dict:
     result = {"state": "applied", "domain": {}, "scope": {}, "organization": {}, "eviction": {},
-              "errors": list(reviews.get("errors", [])), "notes": list(reviews.get("notes", []))}
+              "errors": list(reviews.get("errors", [])), "faults": [], "notes": list(reviews.get("notes", []))}
     for entry in reviews["domain"]:
         key = entry["key"]
         try:
@@ -307,7 +352,7 @@ def _apply_reviews(vault: Vault, reviews: dict, planned: dict) -> dict:
                 review(vault, **entry, manifest=planned["manifest"])
                 result["domain"][key] = "recorded"
         except (ValueError, OSError) as exc:
-            result["errors"].append(f"Domain {key}: {exc}")
+            _failed(result, f"Domain {key}", exc)
     for entry in reviews["scope"]:
         key = ":".join(entry[k] for k in ("harness", "conversation_id", "through"))
         try:
@@ -318,7 +363,7 @@ def _apply_reviews(vault: Vault, reviews: dict, planned: dict) -> dict:
                 conversation_review.acknowledge(vault, **entry)
                 result["scope"][key] = "recorded"
         except (ValueError, OSError) as exc:
-            result["errors"].append(f"Scope {key}: {exc}")
+            _failed(result, f"Scope {key}", exc)
     selected = {j["key"]: j for j in planned.get("organization_jobs", [])}
     for entry in reviews.get("organization", []):
         try:
@@ -338,7 +383,7 @@ def _apply_reviews(vault: Vault, reviews: dict, planned: dict) -> dict:
                                            "changed after reading and were not recorded")
             result["organization"][entry["key"]] = "recorded"
         except (ValueError, KeyError, OSError) as exc:
-            result["errors"].append(f"Organization {entry['key']}: {exc}")
+            _failed(result, f"Organization {entry['key']}", exc)
     selected_evictions = {j["of"]: j for j in planned.get("eviction_jobs", [])}
     for entry in reviews.get("eviction", []):
         try:
@@ -363,7 +408,7 @@ def _apply_reviews(vault: Vault, reviews: dict, planned: dict) -> dict:
                     core.ledger_append(growth_ledger.ledger_path(vault), record)
                 result["eviction"][entry["of"]] = "recorded"
         except (ValueError, KeyError, OSError) as exc:
-            result["errors"].append(f"Eviction {entry['of']}: {exc}")
+            _failed(result, f"Eviction {entry['of']}", exc)
     selected_rechecks = {j["key"]: j for j in planned.get("recheck_jobs", [])}
     for entry in reviews.get("recheck", []):
         job = selected_rechecks[entry["key"]]
@@ -387,7 +432,7 @@ def _apply_reviews(vault: Vault, reviews: dict, planned: dict) -> dict:
                         "node_state": job["node_state"], "target_state": job["target_state"]})
             result.setdefault("recheck", {})[entry["key"]] = "recorded"
         except (ValueError, OSError) as exc:
-            result["errors"].append(f"Recheck {entry['key']}: {exc}")
+            _failed(result, f"Recheck {entry['key']}", exc)
     if result["errors"]:
         result["state"] = "incomplete"
     return result

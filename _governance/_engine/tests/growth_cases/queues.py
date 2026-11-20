@@ -128,6 +128,21 @@ class QueueCases:
             assert not growth_ledger.run_failed({'ok': True, 'state': 'skipped', 'selected': 0})
             # Another run holding the lock is a wait, not a failure (#175: 10-05 and 10-06 ended busy).
             assert not growth_ledger.run_failed({'ok': False, 'state': 'busy'})
+            # #420: an item the packet could not hand over is that item's lack of progress, not a failed run;
+            # a store error while applying is a failure. Old rows without `faults` read as item errors.
+            item = {**result, 'final_reviews': {'state': 'incomplete', 'errors': ['Scope k: cites no turn'], 'faults': []}}
+            assert not growth_ledger.run_failed(item) and growth_ledger.item_errors(item) == 1
+            assert not growth_ledger.run_failed({**item, 'final_reviews': {'state': 'incomplete', 'errors': ['x']}})
+            store = {**result, 'final_reviews': {'state': 'incomplete', 'errors': ['Scope k: disk full', 'Scope j: no turn'],
+                                                 'faults': ['Scope k: disk full']}}
+            assert growth_ledger.run_failed(store) and growth_ledger.item_errors(store) == 1
+            assert growth_ledger.item_errors({**result, 'final_reviews': {'state': 'rejected', 'errors': ['no packet']}}) == 0
+            from osk.errors import LedgerDamage
+            noted = {'errors': [], 'faults': []}
+            for label, exc in (('Scope k', OSError('disk full')), ('Scope j', ValueError('cites no turn')),
+                               ('Domain d', LedgerDamage('growth ledger damaged'))):
+                growth_reviews._failed(noted, label, exc)
+            assert noted['faults'] == ['Scope k: disk full', 'Domain d: growth ledger damaged'] and len(noted['errors']) == 3
             """.replace('READ_UNITS', repr(read)).replace('RUN_STATE', repr(state)))
 
     def test_scope_tries_count_only_what_the_daily_run_judged(self):
