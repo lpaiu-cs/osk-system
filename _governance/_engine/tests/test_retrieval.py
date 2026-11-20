@@ -56,6 +56,87 @@ def search_checks():
             (round(score, 3), title) for score, title in expected]
 
 
+def semantic_checks():
+    from concurrent.futures import ThreadPoolExecutor
+    from contextlib import closing
+    import sqlite3
+    from unittest.mock import patch
+    import numpy as np
+    from osk import search, search_vectors as vectors
+    from osk.vault import Vault
+
+    def embed(texts, timeout):
+        calls.extend(texts)
+        batch = np.zeros((len(texts), vectors.WIDTH), dtype="<f4")
+        for i, text in enumerate(texts):
+            batch[i, int("갱신" in text or text == "업데이트")] = 1
+        return batch
+
+    with tempfile.TemporaryDirectory() as d, patch.object(vectors, "_model_digest", return_value="one") as model, \
+            patch.object(vectors, "_embed", side_effect=embed) as server:
+        vault = Vault.open(d)
+        folder = vault.root / vault.scope / "desk"
+        folder.mkdir(parents=True)
+        calls = []
+        for i, title in enumerate(("Alpha", "Beta", "Delta", "Gamma", "Zulu")):
+            content = "갱신 절차" if title == "Zulu" else "lexical match"
+            (folder / (title + ".md")).write_text(f"---\nid: '261120-1234-test000{i}'\n---\n{content}", encoding="utf8")
+        for hidden in (vault.root / "_governance", vault.root / vault.scope / "Workbench/transit"):
+            hidden.mkdir(parents=True, exist_ok=True)
+            (hidden / "Excluded.md").write_text("---\nid: excluded\n---\nexcluded secret", encoding="utf8")
+        s = search.Searcher(vault)
+        lexical = s.work_search("lexical", 50)
+        assert not s.work_search("업데이트") and not calls and not model.called
+        assert s.vectors.prepare()["embedded"] == 5
+        assert not any("excluded secret" in text for text in calls)
+        assert s.vectors.prepare()["embedded"] == 0
+        server.reset_mock()
+        assert s.view_search("lexical", 3) == lexical[:3] and not server.called
+        full = s.work_search("lexical", 8)
+        assert full[:3] == lexical[:3] and len({r["title"] for r in full}) == len(full)
+        assert s.view_search("업데이트", 1)[0] == next(row for row in full if row["title"] == "Zulu")
+        assert s.work_search("업데이트", 1)[0]["score"] == 0
+        assert not s.work_search("  ") and not s.work_search("lexical", 0)
+        model.return_value = "two"
+        assert s.work_search("lexical", 8) == lexical and not s.work_search("업데이트")
+        server.side_effect = vectors.EmbeddingError("unavailable")
+        try:
+            s.vectors.prepare()
+        except vectors.EmbeddingError:
+            pass
+        else:
+            raise AssertionError("failed model change published")
+        model.return_value = "one"
+        assert s.work_search("lexical", 8) == lexical
+        server.side_effect = embed
+        calls.clear()
+        (folder / "Zulu.md").rename(folder / "Moved.md")
+        (folder / "Moved.md").write_text("---\nid: '261120-1234-test0004'\n---\n새 내용", encoding="utf8")
+        (folder / "Gamma.md").write_text("---\nid: '261120-1234-test0003'\nsummary: 갱신 담당\n---\n새 본문", encoding="utf8")
+        (folder / "Delta.md").unlink()
+        readers = [search.Searcher(vault) for _ in range(2)]
+        with ThreadPoolExecutor(2) as pool:
+            for hits in pool.map(lambda reader: reader.work_search("업데이트"), readers):
+                assert hits[0]["title"] == "Gamma" and not {"Zulu", "Delta"}.intersection(r["title"] for r in hits)
+        assert "Moved\n새 내용" in calls and "Gamma\n갱신 담당" in calls
+        assert readers[0].vectors.prepare()["embedded"] == 0
+        with closing(sqlite3.connect(s.vectors.path)) as db:
+            assert db.execute("SELECT COUNT(*) FROM vectors").fetchone() == (4,)
+        server.side_effect = vectors.EmbeddingError("unavailable")
+        assert not readers[0].work_search("업데이트")
+        server.side_effect = embed
+        for i in range(vectors.BATCH + 1):
+            (folder / f"Bulk-{i}.md").write_text(f"---\nid: bulk-{i}\n---\nimport", encoding="utf8")
+        imported = search.Searcher(vault)
+        calls.clear()
+        assert imported.work_search("업데이트", 1)[0]["title"] == "Gamma" and calls == ["업데이트"]
+        assert imported.vectors.prepare()["embedded"] == vectors.BATCH + 1
+    lexical = list("abcdefghijklmn")
+    result = vectors.combine(lexical, list("xyzmdcba"), 50)
+    assert result[:3] == lexical[:3] and result[:8] == vectors.combine(lexical, list("xyzmdcba"), 8)
+    assert result[8:] == [name for name in lexical if name not in result[:8]]
+
+
 def ranking_checks():
     """Exposure ranking (Bylaws §8 3, Mechanism §8 8): recency, centrality and locality multiply
     relevance; a hub gets neither recency nor centrality; locality pulls, never filters."""
@@ -310,8 +391,9 @@ if __name__ == '__main__':
         os.environ.update(OSK_VAULT_ROOT=directory, PYTHONPATH=str(ENGINE),
                           PYTHONDONTWRITEBYTECODE='1')
         search_checks()
+        semantic_checks()
         ranking_checks()
         centrality_checks()
         read_checks()
         asyncio.run(asyncio.wait_for(transport_checks(), 60))
-        print('PASS: exact title / unchanged BM25 / bounded reads / MCP CAS boundary')
+        print('PASS: exact title / lexical and local vector search / bounded reads / MCP CAS boundary')

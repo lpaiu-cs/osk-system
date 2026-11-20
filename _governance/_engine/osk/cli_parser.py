@@ -185,6 +185,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("query"); p.add_argument("-k", type=int, default=8)
     p = sub.add_parser("view", help="열람 검색")
     p.add_argument("query"); p.add_argument("-k", type=int, default=8)
+    sub.add_parser("search-index", help="로컬 bge-m3 검색 색인을 준비하거나 갱신")
     p = sub.add_parser("check", help="권한 사전 검사")
     p.add_argument("action")
     _raw(sub)
