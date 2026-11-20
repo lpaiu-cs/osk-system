@@ -73,9 +73,10 @@ class PacketCases:
             assert conversation_capture.status(VAULT, 'claude','second')['reviewed_rounds'] == 0
         """)
 
-    def test_final_packet_reads_a_trailing_block_not_prose_or_fences(self):
+    def test_final_packet_reads_a_trailing_block_or_closing_fence_not_prose(self):
         self.check_case("""
             # #306 D1: four of seven rejected packets were valid JSON after one line of explanation.
+            # #420: three Claude packets came in a code fence that closed the message.
             packet = {'osk_reviews': {'manifest': 'm', 'domain': [], 'scope': []}}
             body = json.dumps(packet, indent=2)
             out = VAULT.root / 'stdout.txt'
@@ -83,18 +84,29 @@ class PacketCases:
                 out.write_text(json.dumps({'type': 'result', 'subtype': 'success', 'is_error': False,
                                            'result': text}) + chr(10), encoding='utf-8')
                 return growth_reviews._final_packet(out)
-            nl = chr(10)
+            nl, fence = chr(10), '`' * 3
             assert final(body) == packet
             assert final('Reviewed both jobs.' + nl + body) == packet
             assert final('Reviewed both jobs.' + nl + nl + body + nl) == packet
+            assert final(fence + 'json' + nl + body + nl + fence) == packet                  # the whole message
+            assert final('Deferred both.' + nl + nl + fence + 'json' + nl + body + nl + fence + nl) == packet
+            assert final('~~~' + nl + json.dumps(packet) + nl + '~~~') == packet
+            assert final((fence + 'json' + nl + body + nl + fence).replace(nl, chr(13) + nl)) == packet   # CRLF
+            assert final(fence + 'JSON' + nl + body + nl + fence + '`') == packet          # a longer closing fence
             for text in ('Here: ' + body,                                   # not at a line start
+                         # a four-backtick fence holds a three-backtick line; counting fence lines was fooled
+                         '`' * 4 + nl + fence + nl + body,
                          body + nl + 'Done.',                               # prose after it
                          'See' + nl + body + nl + 'and more' + nl,          # in the middle of prose
-                         'Result:' + nl + '```json' + nl + body + nl + '```',   # in a code fence
-                         'Example:' + nl + '```json' + nl + body):                # in a fence left open
+                         fence + 'json' + nl + body + nl + fence + nl + 'Done.',          # prose after the fence
+                         fence + nl + 'x' + nl + fence + nl + fence + 'json' + nl + body + nl + fence,  # two fences
+                         fence + 'python' + nl + body + nl + fence,         # not a JSON fence
+                         fence + 'json' + nl + body + nl + 'and more' + nl + fence,       # more than the packet
+                         'Example:' + nl + fence + 'json' + nl + body):     # in a fence left open
                 try:
                     final(text)
-                except ValueError:
+                except ValueError as exc:
+                    assert 'no readable osk_reviews packet' in str(exc), exc
                     continue
                 raise AssertionError(text)
         """)

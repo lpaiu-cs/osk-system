@@ -10,6 +10,10 @@ from ..transcripts import open_native, rollouts
 from .base import MCP_NAME, Adapter, fold, read_config
 
 _SEMVER = r"\d+\.\d+\.\d+(?:-[\w.]+)?"
+# `codex exec`의 인자 가운데 `codex exec resume`(0.130 도움말)에 그대로 옮기는 것 — 값을 받는 것과 받지 않는 것.
+_RESUME_VALUED = {"-c", "--config", "-m", "--model", "--enable", "--disable"}
+_RESUME_FLAGS = {"--json", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules"}
+_SANDBOXES = {"read-only", "workspace-write", "danger-full-access"}
 
 
 class Codex(Adapter):
@@ -92,6 +96,31 @@ class Codex(Adapter):
     def hook_files(self):
         # 훅은 `hooks.json`에도, `config.toml`의 `[hooks]` 표에도 둘 수 있다.
         return [self.home() / "hooks.json", self.home() / "config.toml"]
+
+    def resume_argv(self, argv, session):
+        # `codex exec`만 잇는다 — fork(`exec fork`)와 세션을 남기지 않는 `--ephemeral`은 이을 세션이 없다.
+        # resume에는 `--sandbox`가 없어 같은 뜻의 설정(`sandbox_mode`)으로 옮긴다. 정기 실행의 Codex 명령은
+        # 사용자가 적으므로, 옮기는 법을 모르는 인자가 하나라도 있으면 잇지 않는다.
+        if argv[1:2] != ["exec"]:
+            return None
+        rest = argv[2:-1] if argv[-1:] == ["-"] else argv[2:]
+        out, sandbox, i = [argv[0], "exec", "resume"], [], 0
+        while i < len(rest):
+            arg, value = rest[i], rest[i + 1] if i + 1 < len(rest) else None
+            if arg in _RESUME_FLAGS:
+                out.append(arg)
+            elif arg in _RESUME_VALUED and value is not None:
+                out += [arg, value]
+            elif arg in ("-s", "--sandbox") and value in _SANDBOXES:
+                sandbox = ["-c", f'sandbox_mode="{value}"']
+            else:
+                return None
+            i += 1 if arg in _RESUME_FLAGS else 2
+        # `--sandbox`는 `-c sandbox_mode`보다 앞서지만 옮기면 둘 다 `-c`라 뒤의 것이 이긴다 — 둘이 함께면 잇지
+        # 않는다(#420 리뷰: 첫 실행은 읽기 전용, 다시 묻는 턴은 전체 권한이 될 수 있었다).
+        if sandbox and any(a in ("-c", "--config") and v.lstrip().startswith("sandbox_mode") for a, v in zip(out, out[1:])):
+            return None
+        return [*out, *sandbox, session, "-"]
 
     def cli_candidates(self):
         # Windows 데스크톱 앱이 둔 CLI — 갱신마다 `bin/<해시>/`가 새로 생긴다.

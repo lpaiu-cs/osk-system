@@ -6,9 +6,10 @@
   · 포착은 하루 시작에 한 번, 공급자를 고르기 전에 한다 — 모두 소진인 날에도 한다. Codex 한도는
     묶음마다 조회한다(모델을 부르지 않는다). Codex가 소진이면 Claude 워커가 대신 돈다. 공급자는 주간
     사용률이 0.9에 닿으면 쉰다 — 사용자의 몫을 남긴다(#306 D3). 공급자별 예산은 두지 않는다.
-  · 진척 없던 작업(보류 포함)은 그날 다시 고르지 않고 다음 작업으로 잇는다. 작업자 이상(비정상 종료·
-    시한 초과·결과 묶음 거절)이면 그 큐만 그날 멈추고, 다른 큐는 차례를 받는다 — 대화 검토가 멈춰도
-    재검토 묶음은 돈다(#306 D2). 고를 작업이 없으면 그날 멈춘다. 벽시계 예산(1.5시간)을 넘기면 새
+  · 진척 없던 작업(보류·받지 못한 항목 포함)은 그날 다시 고르지 않고 다음 작업으로 잇는다. 작업자 이상
+    (비정상 종료·시한 초과·결과 묶음 거절·저장소 오류)이면 그 큐만 그날 멈추고, 다른 큐는 차례를 받는다 —
+    대화 검토가 멈춰도 재검토 묶음은 돈다(#306 D2). 진척 없이 항목 오류만 낸 묶음이 연달아 둘이어도 그 큐를
+    멈춘다(#420). 고를 작업이 없으면 그날 멈춘다. 벽시계 예산(1.5시간)을 넘기면 새
     묶음을 띄우지 않는다. 같은 날 다시 불려도 L과 벽시계 예산은 그날 앞선 실행까지 더해 지킨다.
   · 하루 실행마다 멈춘 까닭과 묶음 수를 기기 기록(`DAYS`)에 남긴다. 묶음을 하나도 돌지 못한 날이
     이어지면 세션 시작이 알린다(`idle`, #306 D6).
@@ -38,6 +39,7 @@ LIGHT = tuple(q for q in growth_ledger.QUEUES if q != "scope_jobs")
 BUSY_WAIT = 600                          # 잠금을 쥔 대화별 검토는 작업자 시한(600초) 안에 끝난다
 WEEK = 7                                 # D — 소진일에도 Claude로 대신 돌므로 매일 돈다
 REST_AT = 0.9                            # 공급자의 주간 사용률이 이 이상이면 쉰다(#306 D3)
+ITEM_FAULTS = 2                          # 진척 없이 항목 오류만 낸 묶음이 연달아 이만큼이면 그 큐를 멈춘다(#420)
 OLD_SHARE = 4                            # 오래된 대기는 4주에 나눠 갚는다
 LIMIT_FLOOR, LIMIT_BEFORE = 6, 3         # L의 하한, 첫 조정 전의 L(기존 --limit 3)
 KEEP_WITHIN = 3                          # 새 L과 지금 L의 차가 이보다 작으면 그대로 둔다
@@ -135,9 +137,10 @@ def _at(row: dict) -> datetime | None:
 
 def _scope_unit(rows: list[dict]) -> tuple[int, int]:
     """Scope 묶음 하나의 토큰 — 최근 실측한 정기 Scope 묶음(많아야 20개)의 평균, 없으면 첫 추정.
-    (토큰, 실측한 묶음 수)."""
+    (토큰, 실측한 묶음 수). 결과 묶음을 다시 물은 턴을 재지 못한 묶음(`partial`)은 세지 않는다(#420)."""
     plans = {r.get("rid"): r for r in rows if r.get("kind") == "plan"}
     got = [r["usage"]["tokens"] for r in rows if r.get("kind") == "run" and (r.get("usage") or {}).get("measured")
+           and not r["usage"].get("partial")
            and ((plans.get(r.get("manifest")) or {}).get("daily") or {}).get("kind") == "scope"][-20:]
     return (round(sum(got) / len(got)) if got else SCOPE_UNIT_COST), len(got)
 
@@ -234,6 +237,29 @@ def idle(vault: Vault, today: str | None = None) -> dict | None:
 def _counted(kind: str, run: dict) -> int:
     """L에 세는 작업 수 — Scope 묶음은 작은 꼬리를 함께 묶어도 하나다(#306 D5)."""
     return min(1, run.get("selected", 0)) if kind == "scope" else run.get("selected", 0)
+
+
+def _after_batch(kind: str, result: dict, done: dict, exclude: set, streak: dict, errors: list) -> str | None:
+    """묶음 하나가 끝난 뒤 그날 상태를 갱신하고, 그 큐를 멈출 까닭을 낸다(없으면 None). 작업자 이상(비정상
+    종료·시한 초과·결과 묶음 거절·저장소 오류)이면 바로 멈춘다(#306 D2). 받지 못한 항목은 그 항목만 그날
+    빼고 잇는다. 다만 진척 없이 항목 오류만 낸 묶음이 연달아 `ITEM_FAULTS`번이면 멈춘다 — 같은 원인이 묶음마다
+    되풀이되면 하루 한도(적체 일괄 실행이면 대기열 전체)를 헛되이 쓴다(#420). 진척한 묶음이 나오면 다시 세고,
+    오류 없는 무진척(보류)은 세지도 되돌리지도 않는다."""
+    done[kind] += _counted(kind, result)
+    exclude.update(result["progress"]["none"])
+    if growth_ledger.run_failed(result):
+        errors.append({"manifest": result["manifest"], "state": result.get("state"), "error": result.get("error")})
+        return "worker_fault"
+    if result["progress"]["made"]:
+        streak[kind] = 0
+    elif growth_ledger.item_errors(result):
+        streak[kind] = streak.get(kind, 0) + 1
+        if streak[kind] >= ITEM_FAULTS:
+            errors.append({"manifest": result["manifest"], "state": "item_fault",
+                           "error": f"{ITEM_FAULTS} batches in a row left only rejected items",
+                           "items": result["final_reviews"]["errors"]})
+            return "item_fault"
+    return None
 
 
 def _next_kind(done: dict, left: set, limit: int) -> str | None:
@@ -377,7 +403,8 @@ def _note_day(vault: Vault, day: str, stop: str | None, batches: list, backlog: 
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as f:
             f.write(json.dumps({"day": day, "at": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
-                                "state": stop, "batches": len(batches), **({"backlog": True} if backlog else {})},
+                                "state": stop, "batches": len(batches), **({"backlog": True} if backlog else {}),
+                                **({"item_errors": n} if (n := sum(b["item_errors"] for b in batches)) else {})},
                                ensure_ascii=False) + "\n")
     except OSError as exc:
         errors.append({"days": f"{type(exc).__name__}: {exc}"})
@@ -400,7 +427,7 @@ def daily(vault: Vault, commands: list[list[str]], *, invocation: str = "schedul
     recorded = fresh                 # 새로 정했으면 첫 묶음의 계획에 판단 근거를 싣는다
     limit = adjustment["limit"]
     exclude, done, earlier = _spent_today(rows, day)
-    left, off, faults = {"scope", "light"}, {}, set()
+    left, off, faults, streak = {"scope", "light"}, {}, {}, {}
     batches, stop, skipped = [], None, {}
     while stop is None:
         kind = ("scope" if "scope" in left else None) if backlog else _next_kind(done, left, limit)
@@ -409,7 +436,7 @@ def daily(vault: Vault, commands: list[list[str]], *, invocation: str = "schedul
         elif not backlog and done["scope"] + done["light"] >= limit:
             stop = "daily_limit"
         elif kind is None:
-            stop = "worker_fault" if faults else "empty"
+            stop = next((s for s in ("worker_fault", "item_fault") if s in faults.values()), "empty")
         if stop:
             break
         who, limits, skipped = _choose(vault, by, off)
@@ -428,7 +455,8 @@ def daily(vault: Vault, commands: list[list[str]], *, invocation: str = "schedul
         if result.get("manifest"):
             recorded = False         # 판단 근거는 이 계획에 남았다
             batches.append({k: result.get(k) for k in ("manifest", "state", "provider", "selected", "progress",
-                                                      "usage", "returncode", "error")} | {"kind": kind})
+                                                      "usage", "returncode", "error")}
+                           | {"kind": kind, "item_errors": growth_ledger.item_errors(result)})
         if state == "busy":
             stop = "busy"
         elif state in {"skipped", "capture_pending"}:
@@ -438,13 +466,9 @@ def daily(vault: Vault, commands: list[list[str]], *, invocation: str = "schedul
             if state != "limited":
                 errors.append({"provider": who, "state": state,
                                "error": result.get("error") or result.get("violations")})
-        else:
-            done[kind] += _counted(kind, result)
-            exclude |= set(result["progress"]["none"])
-            if growth_ledger.run_failed(result):
-                errors.append({"manifest": result["manifest"], "state": state, "error": result.get("error")})
-                faults.add(kind)
-                left.discard(kind)   # 작업자 이상 — 이 큐만 그날 멈춘다
+        elif why := _after_batch(kind, result, done, exclude, streak, errors):
+            faults[kind] = why
+            left.discard(kind)       # 이 큐만 그날 멈춘다
     _note_day(vault, day, stop, batches, backlog, errors)
     # `done`과 `day_seconds`는 그날 앞선 실행까지 더한 값이다.
     return {"ok": not errors, "state": stop, "day": day, "limit": limit, "done": done,
@@ -454,4 +478,4 @@ def daily(vault: Vault, commands: list[list[str]], *, invocation: str = "schedul
             "capture": {"ok": not failed, "appended": sum(1 for c in captured["captures"] if c.get("appended")),
                         "failed": len(failed),
                         "known_errors": sum(1 for c in captured["captures"] if not c["ok"] and not c["new_error"])},
-            "batches": batches, "errors": errors}
+            "item_errors": sum(b["item_errors"] for b in batches), "batches": batches, "errors": errors}

@@ -541,6 +541,54 @@ class DailyTests(unittest.TestCase):
             assert hook._daily_note(VAULT) == ''
         """)
 
+    def test_an_item_error_goes_on_and_two_in_a_row_stop_the_queue(self):
+        self.check_case("""
+            # #420: 11-12, 11-14 and 11-17 stopped the conversation review at the batch whose packet left one
+            # item rejected. Such an item is dropped for the day and the queue goes on; two batches in a row with
+            # item errors and no progress stop the queue, as a recurring cause would spend the day's limit (or a
+            # whole backlog run). Progress counts again from zero; a batch that only deferred does not count.
+            def fake_for(script):
+                calls = []
+                def fake(vault, command, **args):
+                    calls.append(args['queues'])
+                    n = len(calls)
+                    step = (script[sum(q == ('scope_jobs',) for q in calls) - 1] if args['queues'] == ('scope_jobs',)
+                            else 'made')
+                    errors = ['Scope k' + str(n) + ': cites no turn of this review'] if step == 'error' else []
+                    return {'kind': 'run', 'manifest': 'm' + str(n), 'state': 'incomplete', 'selected': 1,
+                            'returncode': 0, 'provider': None, 'usage': {'measured': False},
+                            'final_reviews': {'state': 'incomplete' if errors else 'applied', 'errors': errors,
+                                              'faults': []},
+                            'progress': {'made': ['k' + str(n)] if step == 'made' else [],
+                                         'none': [] if step == 'made' else ['k' + str(n)]}}
+                return calls, fake
+            calls, fake = fake_for(['error', 'made', 'error', 'deferred', 'error'])
+            with patch.object(growth, 'run', side_effect=fake):
+                day = growth_daily.daily(VAULT, [['worker']], backlog=True)
+            assert calls == [('scope_jobs',)] * 5, calls
+            assert day['state'] == 'item_fault' and not day['ok'] and day['item_errors'] == 3, day
+            assert [e['state'] for e in day['errors']] == ['item_fault'], day['errors']
+            log = VAULT.root / growth_daily.DAYS
+            assert json.loads(log.read_text(encoding='utf-8').splitlines()[-1])['item_errors'] == 3
+            # In the daily run the light queues keep their turn after the conversation review stops.
+            calls, fake = fake_for(['error', 'error'])
+            with patch.object(growth, 'run', side_effect=fake), \\
+                    patch.object(growth_daily, 'adjust', return_value=adjustment(9)):
+                day = growth_daily.daily(VAULT, [['worker']])
+            assert calls.count(('scope_jobs',)) == 2 and len(calls) == 9, calls
+            assert day['state'] == 'daily_limit' and [e['state'] for e in day['errors']] == ['item_fault'], day
+            # The fork skips a place whose item errors kept it from progress (#259); a store error does not count.
+            from osk import growth_plan
+            at = datetime.now(timezone.utc).isoformat()
+            def row(rid, faults):
+                return [{'kind': 'plan', 'rid': rid, 'organization_jobs': [{'key': 'o1'}]},
+                        {'kind': 'run', 'manifest': rid, 'at': at, 'state': 'incomplete', 'returncode': 0,
+                         'final_reviews': {'state': 'incomplete', 'errors': ['Organization o1: x'], 'faults': faults},
+                         'progress': {'made': [], 'none': ['o1']}}]
+            assert growth_plan.stalled(row('p1', []) + row('p2', [])) == {('o1', None, None)}
+            assert growth_plan.stalled(row('p1', ['Organization o1: x']) + row('p2', ['Organization o1: x'])) == set()
+        """)
+
     def test_day_waits_once_on_a_busy_lock(self):
         self.check_case("""
             answers = []

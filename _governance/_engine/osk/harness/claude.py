@@ -9,6 +9,8 @@ from pathlib import Path
 from .base import MCP_NAME, Adapter
 
 _SEMVER = r"\d+\.\d+\.\d+(?:-[\w.]+)?"
+# 세션을 남기지 않거나 다른 세션을 이어받는 인자(`resume_argv`)
+_NOT_RESUMABLE = {"--no-session-persistence", "--resume", "-r", "--continue", "-c", "--fork-session", "--session-id"}
 
 
 class Claude(Adapter):
@@ -110,6 +112,13 @@ class Claude(Adapter):
                 "--settings", '{"forceLoginMethod":"claudeai"}', "--tools", "",
                 "--strict-mcp-config", "--mcp-config", config,
                 "--allowedTools", f"mcp__{MCP_NAME}", "--permission-mode", "dontAsk"]
+
+    def resume_argv(self, argv, session):
+        # 인쇄 모드(`-p`)만 잇는다. 세션을 남기지 않거나(대화 검토 fork) 이미 다른 세션을 잇는 명령은
+        # 이을 세션이 없다.
+        if not {"-p", "--print"} & set(argv) or _NOT_RESUMABLE & set(argv):
+            return None
+        return [*argv, "--resume", session]
 
     def subscription_only(self, argv):
         # `growth_argv`가 싣는 선언 — `--settings`의 forceLoginMethod가 claude.ai 구독이다.
