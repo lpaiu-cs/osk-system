@@ -4,7 +4,7 @@
 
 Claude Code나 Codex는 쓰고 있지만 osk-system은 처음 설정하는 사람을 위한 따라하기
 안내서다. 빈 폴더에서 출발해 검증까지 마친 설정으로 끝난다. 마지막에는 에이전트가
-첫 기억을 쓰고, 그것을 다시 찾아 읽어 낸다. v6.1.2 릴리스 기준이다.
+첫 기억을 쓰고, 그것을 다시 찾아 읽어 낸다. v6.1.3 릴리스 기준이다.
 
 먼저 예제 보관함에서 [환불 기한을 바꾸고 어떤 고객 답변을 다시 봐야 하는지](#결정-변경-따라하기) 확인해 볼 수 있다.
 
@@ -138,7 +138,7 @@ scope 기억으로 남기고, 그 노드에 필요한 턴만 인용한다.
 **예제 보관함 준비.** Git, Python 3.11 이상, 로그인한 Claude Code CLI가 필요하다. 평소 쓰는 프로젝트 바깥 폴더에서 실행한다.
 
 ```sh
-git clone --depth 1 --branch v6.1.2 https://github.com/lpaiu-cs/osk-system.git osk-demo
+git clone --depth 1 --branch v6.1.3 https://github.com/lpaiu-cs/osk-system.git osk-demo
 cd osk-demo
 ```
 
@@ -203,7 +203,7 @@ claude --setting-sources project --strict-mcp-config --mcp-config demo-mcp.json
 
 `main` 브랜치가 아니라 릴리스 태그를 clone한다. `main`은 릴리스 사이에도 움직인다.
 갱신기는 파일을 릴리스와 대조하므로, 정확히 한 릴리스에서 출발해야 2단계에서 깨끗한
-기준선을 기록할 수 있다. `v6.1.2`는 적힌 그대로 쓰면 된다.
+기준선을 기록할 수 있다. `v6.1.3`는 적힌 그대로 쓰면 된다.
 [릴리스 페이지](https://github.com/lpaiu-cs/osk-system/releases)의 최신 태그를 써도
 되지만, 그때는 2단계에서도 같은 태그를 쓴다.
 
@@ -211,7 +211,7 @@ vault를 담을 폴더(Windows라면 `C:/osk` 등, 먼저 만들어 둔다)에�
 OS에서나 같은 명령이다.
 
 ```bash
-git clone --branch v6.1.2 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
+git clone --branch v6.1.3 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
 cd my-osk-vault
 git switch -c main
 ```
@@ -277,13 +277,13 @@ $env:PYTHONPATH = "_governance\_engine"
 macOS/Linux:
 
 ```bash
-.venv/bin/python -m osk.update --to v6.1.2 --apply
+.venv/bin/python -m osk.update --to v6.1.3 --apply
 ```
 
 Windows (PowerShell):
 
 ```powershell
-.venv\Scripts\python.exe -m osk.update --to v6.1.2 --apply
+.venv\Scripts\python.exe -m osk.update --to v6.1.3 --apply
 ```
 
 첫 실행은 어떤 파일도 바꾸지 않는다. 계획을 출력한 뒤 종료코드 2와
@@ -324,7 +324,7 @@ git push
 ```
 
 **확인:** `.venv/bin/python -m osk.update`의 `current`가 선택한 버전을 가리킨다
-(위 예제에서는 `v6.1.2`).
+(위 예제에서는 `v6.1.3`).
 Windows에서는 `.venv\Scripts\python.exe -m osk.update`를 쓴다. `git status`는
 깨끗하다. `osk.cli status`가 `"protected_regions": {"_governance": "clean"}`을
 보여 준다.

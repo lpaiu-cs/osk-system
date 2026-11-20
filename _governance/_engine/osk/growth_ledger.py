@@ -121,12 +121,24 @@ def daily_active(vault: Vault, days: int = 3) -> bool:
 def run_failed(result: dict) -> bool:
     """실행이 실패했는가 — 작업이 남은 것(`incomplete`)과 가른다. `ok`는 고른 작업을 모두
     끝냈다는 뜻이라, 여러 번에 나눠 끝나는 정돈이 한 구간도 줄지 않았으면 거짓이다(Mechanism §9-4 4항).
-    실패는 돌지 못했거나(잠김·준비 실패), 작업자가 정상 종료하지 않았거나, 결과 묶음을
-    적용하지 못한 것이다. 잠금 대기(`busy`)와 한도 거절(`limited`)은 실패가 아니라 대기다(#173)."""
+    실패는 돌지 못했거나(잠김·준비 실패), 작업자가 정상 종료하지 않았거나(시한 초과 포함), 결과 묶음을
+    거절했거나 적용하다 저장소 오류가 난 것이다(`final_reviews.faults`). 잠금 대기(`busy`)와 한도
+    거절(`limited`)은 실패가 아니라 대기다(#173). 받지 못한 항목(판정 검증 오류)은 실패가 아니다(#420) —
+    그 항목만 진척이 없다(`item_errors`). 실패로 세면 하루 실행이 그 큐를 멈추고, 재검토를 맡은 날이
+    맡지 않은 날이 되며, 정체로도 잡히지 않았다. `faults`가 없는 옛 기록의 오류는 항목 오류로 읽는다."""
     if result.get("state") in WAITS:
         return False
     if result.get("kind") != "run":
         return not result.get("ok", False)
     final = result.get("final_reviews") or {}
     return (result.get("returncode") != 0 or bool(result.get("error"))
-            or final.get("state") in {"rejected", "not_applied"} or bool(final.get("errors")))
+            or final.get("state") in {"rejected", "not_applied"} or bool(final.get("faults")))
+
+
+def item_errors(result: dict) -> int:
+    """적용한 결과 묶음에서 받지 못한 항목 수 — 판정 검증 오류만 센다(#420). 거절·미적용 묶음과 저장소
+    오류(`faults`)는 실행의 실패라 여기에 넣지 않는다(`run_failed`)."""
+    final = result.get("final_reviews") or {}
+    if final.get("state") != "incomplete":
+        return 0
+    return len(final.get("errors") or []) - len(final.get("faults") or [])

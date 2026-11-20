@@ -68,6 +68,20 @@ Apply the update as usual. Your notes need no migration.
   claim to the reader. The [refund example](GETTING-STARTED.md#try-a-decision-change) shows how a policy
   change flags an earlier customer reply for review.
 
+### v6.1.3
+
+Apply the update as usual. Your notes need no migration. The scheduled growth run no longer stops the day's
+conversation review because of one batch (#420).
+
+- A worker that ends its message with its review packet inside one code fence is read. If the packet still
+  cannot be read, the runner resumes the worker's session and asks once more for the packet alone. That turn
+  is kept under `retry/` in the run's folder.
+- An item the packet got wrong is dropped for the day and the queue goes on. Two batches in a row with item
+  errors and no progress stop that queue (`item_fault`). The day's result counts the dropped items in
+  `item_errors`.
+- A single `growth run` that only dropped items now exits with 0. A store error while applying the packet is
+  kept in `final_reviews.faults` and still fails the run (exit code 1).
+
 ## From v5.6 to v6.0
 
 v5.7.0 was not released. v6.0.0 adds no feature: it restructures the engine
